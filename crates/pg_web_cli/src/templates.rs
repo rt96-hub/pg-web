@@ -21,13 +21,19 @@ pub const INDEX_HTML: &str = r#"<!doctype html>
 
 pub const INDEX_SQL: &str = r#"-- Handler for GET /
 --
--- Returns a JSON object consumed by pages/index.html via Tera. Field names
--- in the JSON map to {{ name }} placeholders in the template.
+-- Contract: every handler takes a single `req json` argument and returns
+-- either `json` (rendered through the sibling `.html` via Tera) or `text`
+-- (sent as-is; no sibling `.html`).
 --
--- The function lives in the `pgweb` schema and is referenced by a row in
--- pgweb.routes that `pg-web push` will install on deploy.
+-- `req` shape:
+--   { "body":   { ...parsed form fields... },
+--     "query":  { ...parsed query string... },
+--     "method": "GET", "path": "/" }
+--
+-- Access fields: req->'body'->>'key', (req->'body'->>'n')::int, etc.
+-- See docs/APP-LAYOUT.md for the full contract.
 
-CREATE OR REPLACE FUNCTION pgweb.pages__index() RETURNS json AS $$
+CREATE OR REPLACE FUNCTION pgweb.pages__index(req json) RETURNS json AS $$
   SELECT json_build_object(
     'title',    '{APP}',
     'app_name', '{APP}'

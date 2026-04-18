@@ -80,13 +80,13 @@ pub fn scan(pages_dir: &Path) -> Result<Vec<RouteEntry>> {
             .ok_or_else(|| anyhow!("non-UTF-8 filename: {}", path.display()))?
             .to_string();
 
-        validate_stem(&stem, path)?;
-
         let parent_rel = path
             .parent()
             .and_then(|p| p.strip_prefix(pages_dir).ok())
             .ok_or_else(|| anyhow!("file outside pages/: {}", path.display()))?
             .to_path_buf();
+
+        validate_stem(&stem, &parent_rel, path)?;
 
         let slot = by_key.entry((parent_rel, stem)).or_default();
         match ext {
@@ -125,10 +125,25 @@ pub fn scan(pages_dir: &Path) -> Result<Vec<RouteEntry>> {
 }
 
 /// Reject filenames that aren't one of the Phase 1 method stems. Error
-/// messages point the user at the fix (move file into a subdirectory).
-fn validate_stem(stem: &str, path: &Path) -> Result<()> {
+/// messages point the user at the fix (move file into a subdirectory,
+/// use `index` instead of `get`, etc.).
+///
+/// `_404` is allowed at the root only in Phase 1 — per-subtree fallbacks
+/// land in Phase 2+. `parent_rel` being empty means "at pages/ root."
+fn validate_stem(stem: &str, parent_rel: &Path, path: &Path) -> Result<()> {
     match stem {
         "index" | "post" => Ok(()),
+        "_404" => {
+            if parent_rel.as_os_str().is_empty() {
+                Ok(())
+            } else {
+                bail!(
+                    "{}: per-subtree `_404` fallbacks land in Phase 2+. \
+                     Phase 1 supports `pages/_404.<ext>` at the project root only.",
+                    path.display()
+                );
+            }
+        }
         "get" => bail!(
             "{}: 'get' is reserved — use 'index' for GET handlers",
             path.display()
@@ -150,6 +165,7 @@ fn method_for_stem(stem: &str) -> &'static str {
     match stem {
         "index" => "GET",
         "post" => "POST",
+        "_404" => "404",
         _ => unreachable!("validate_stem should have rejected this"),
     }
 }
@@ -282,20 +298,42 @@ mod tests {
     fn method_for_stem_known() {
         assert_eq!(method_for_stem("index"), "GET");
         assert_eq!(method_for_stem("post"), "POST");
+        assert_eq!(method_for_stem("_404"), "404");
     }
 
     // ---- validate_stem ----
 
+    fn root() -> &'static Path {
+        Path::new("")
+    }
+
+    fn nested() -> &'static Path {
+        Path::new("todos")
+    }
+
     #[test]
-    fn validate_stem_accepts_index_and_post() {
-        let p = Path::new("pages/x/index.html");
-        assert!(validate_stem("index", p).is_ok());
-        assert!(validate_stem("post", p).is_ok());
+    fn validate_stem_accepts_index_and_post_anywhere() {
+        let file = Path::new("pages/x/index.html");
+        assert!(validate_stem("index", root(), file).is_ok());
+        assert!(validate_stem("post", root(), file).is_ok());
+        assert!(validate_stem("index", nested(), file).is_ok());
+        assert!(validate_stem("post", nested(), file).is_ok());
+    }
+
+    #[test]
+    fn validate_stem_accepts_404_at_root_only() {
+        let file = Path::new("pages/_404.html");
+        assert!(validate_stem("_404", root(), file).is_ok());
+
+        let err = validate_stem("_404", nested(), file).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("per-subtree"), "msg: {msg}");
+        assert!(msg.contains("Phase 2+"), "msg: {msg}");
     }
 
     #[test]
     fn validate_stem_rejects_get_with_hint() {
-        let err = validate_stem("get", Path::new("pages/x/get.html")).unwrap_err();
+        let err = validate_stem("get", root(), Path::new("pages/get.html")).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("'get' is reserved"), "msg: {msg}");
         assert!(msg.contains("index"), "msg: {msg}");
@@ -304,14 +342,15 @@ mod tests {
     #[test]
     fn validate_stem_rejects_future_methods() {
         for stem in ["put", "patch", "delete", "head", "options"] {
-            let err = validate_stem(stem, Path::new("pages/x/y.sql")).unwrap_err();
+            let err = validate_stem(stem, root(), Path::new("pages/x/y.sql")).unwrap_err();
             assert!(format!("{err:#}").contains("Phase 2+"));
         }
     }
 
     #[test]
     fn validate_stem_rejects_arbitrary_name_with_fix_hint() {
-        let err = validate_stem("about", Path::new("pages/about.html")).unwrap_err();
+        let err =
+            validate_stem("about", root(), Path::new("pages/about.html")).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("not a recognized method filename"), "msg: {msg}");
         assert!(msg.contains("subdirectory"), "msg: {msg}");
@@ -427,6 +466,29 @@ mod tests {
         write(&pages, "todos/put.sql", "UPDATE ...");
         let err = scan(&pages).unwrap_err();
         assert!(format!("{err:#}").contains("Phase 2+"));
+    }
+
+    #[test]
+    fn scan_accepts_404_at_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        write(&pages, "index.html", "<h1>home</h1>");
+        write(&pages, "_404.html", "<h1>not found</h1>");
+        let got = scan(&pages).unwrap();
+        let fallback = got.iter().find(|e| e.method == "404").unwrap();
+        assert_eq!(fallback.route, "/");
+        assert_eq!(fallback.handler_name, "pgweb.pages___404");
+        assert_eq!(fallback.template_path.as_deref(), Some("pages/_404.html"));
+    }
+
+    #[test]
+    fn scan_rejects_404_in_subdirectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        write(&pages, "admin/_404.html", "<h1>nope</h1>");
+        let err = scan(&pages).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("per-subtree"), "msg: {msg}");
     }
 
     #[test]

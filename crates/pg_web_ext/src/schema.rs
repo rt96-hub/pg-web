@@ -35,9 +35,11 @@ CREATE TABLE pgweb.migrations (
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Default handler for the seeded GET / route. Returns a JSON object that the
--- seeded template below consumes.
-CREATE FUNCTION pgweb.hello_handler() RETURNS json AS $$
+-- Default handler for the seeded GET / route. Follows the standard
+-- app-developer contract: `(req json) RETURNS json`. Ignores `req` —
+-- the handler has no inputs to read — but the signature matches what
+-- every user-authored handler will use.
+CREATE FUNCTION pgweb.hello_handler(req json) RETURNS json AS $$
     SELECT json_build_object('name', 'pg-web')
 $$ LANGUAGE sql STABLE;
 
@@ -107,9 +109,11 @@ mod tests {
 
     #[pg_test]
     fn default_handler_returns_expected_json() {
-        let json = Spi::get_one::<pgrx::JsonB>("SELECT pgweb.hello_handler()::jsonb")
-            .expect("handler call should not error")
-            .expect("handler should return a row");
+        let json = Spi::get_one::<pgrx::JsonB>(
+            "SELECT pgweb.hello_handler('{}'::json)::jsonb",
+        )
+        .expect("handler call should not error")
+        .expect("handler should return a row");
         // pgrx::JsonB wraps a serde_json::Value
         let name = json
             .0
@@ -141,6 +145,30 @@ mod tests {
             .expect("query should not error")
             .expect("count should return a row");
         assert_eq!(count, 0, "migrations ledger should be empty on fresh install");
+    }
+
+    #[pg_test]
+    fn handler_contract_receives_req_json() {
+        // A user-written handler should be able to read from req.body.
+        // This pg_test creates a trivial echo handler, calls it with a
+        // synthetic req, and verifies the field comes back.
+        Spi::run(
+            "CREATE FUNCTION pgweb.test_echo(req json) RETURNS json AS $$ \
+             SELECT json_build_object('echo', req->'body'->>'x') $$ LANGUAGE sql",
+        )
+        .expect("create echo fn");
+
+        let json = Spi::get_one::<pgrx::JsonB>(
+            "SELECT pgweb.test_echo('{\"body\":{\"x\":\"hi\"}}'::json)::jsonb",
+        )
+        .expect("call should succeed")
+        .expect("call should return a row");
+        let echo = json
+            .0
+            .get("echo")
+            .and_then(|v| v.as_str())
+            .expect("echo field present");
+        assert_eq!(echo, "hi");
     }
 
     #[pg_test]

@@ -1547,6 +1547,7 @@ dependencies = [
  "pgrx-tests",
  "reqwest",
  "serde_json",
+ "serde_urlencoded",
  "tera",
  "tokio",
  "tower",

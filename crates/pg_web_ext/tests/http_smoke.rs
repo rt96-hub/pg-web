@@ -63,7 +63,11 @@ fn root_renders_seeded_template() {
 }
 
 #[test]
-fn unknown_route_returns_404() {
+fn unknown_route_returns_404_with_default_body() {
+    // No `_404.html` pushed → router serves the hardcoded default body.
     let resp = get("/definitely/not/a/real/path");
     assert_eq!(resp.status(), 404);
+    let body = resp.text().unwrap();
+    assert!(body.contains("404"), "body should contain 404: {body}");
+    assert!(body.contains("Not found"), "body should say Not found: {body}");
 }

@@ -198,6 +198,7 @@ Feature-matrix rows in `docs/TESTING.md` get checked off as each component lands
 - **`pg-web check` / lint tool** — M1.4 (added to roadmap in this session).
 - **Publishing `pgweb/postgres:latest` to Docker Hub / GHCR** — v0.1 release task.
 - **HTML-escape SQL helper (`pgweb.html_escape`)** — M1.4 closeout; session 2 demo uses Tera for any dynamic fragment so this isn't blocking.
+- **Scaffolded `README.md` in the app directory** — small DX follow-up. `pg-web init` currently produces no README; adding one with next-step commands + a pointer to `docs/APP-LAYOUT.md` would help new users (human or agent). Track as a tiny trailing commit after component D/E.
 
 ---
 
