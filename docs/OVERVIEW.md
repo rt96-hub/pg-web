@@ -2,7 +2,7 @@
 
 Snapshot of what's implemented right now, how the pieces fit, and what's next. Re-generated at every milestone boundary. Read this first; chase into `ARCHITECTURE.md`, `ROADMAP.md`, etc. for depth.
 
-> **Last updated:** 2026-04-18, after M1.1 step 3 completion (commit `c82d50e`).
+> **Last updated:** 2026-04-18, after M1.1 step 4 completion (commit `0cd5a2b`).
 
 ---
 
@@ -26,8 +26,8 @@ Everything a browser sees comes out of a single OS process tree rooted at the Po
 | M1.1 step 1 | ✅ done | Framework schema + install SQL (`pgweb.routes`, `pgweb.templates`) |
 | M1.1 step 2 | ✅ done | pgrx background worker + Axum HTTP on `:8080` |
 | M1.1 step 3 | ✅ done | SPI lookup → Tera render lifecycle |
-| **M1.1 step 4** | 🟡 **next** | **CLI `pg-web init` scaffolding** |
-| M1.1 step 5 | ⏳ | CLI `pg-web push` (sync filesystem → DB) |
+| M1.1 step 4 | ✅ done | CLI `pg-web init` scaffolding |
+| **M1.1 step 5** | 🟡 **next** | **CLI `pg-web push` (sync filesystem → DB)** |
 | M1.1 step 6 | ⏳ | Dockerfile + `pgweb/postgres:latest` image |
 
 Later milestones (M1.2 hot-reload, M1.3 todo-list demo, M1.4 secrets/polish) and phases (2 auth/RLS, 3 async jobs, 4 observability) are tracked in `docs/ROADMAP.md`.

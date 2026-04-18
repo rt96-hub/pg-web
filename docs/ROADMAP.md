@@ -12,12 +12,12 @@ Goal: `pg-web init` a project, `docker compose up -d`, `pg-web push`, `curl loca
 
 - [x] pgrx extension scaffolded (`crates/pg_web_ext/`); workspace compiles on PG 15/16/17.
 - [x] Local pgrx dev environment (`cargo pgrx init` → PG 15.17/16.13/17.9 in `~/.pgrx/`).
-- [ ] Background worker registered via `BackgroundWorkerBuilder`; boots with extension.
-- [ ] HTTP server (**Axum leaning** — see ARCHITECTURE.md) binds `:8080` inside the worker.
-- [ ] Framework schema (`pgweb`) + minimal tables: `routes`, `templates`.
-- [ ] Request lifecycle (happy path only): SPI route lookup → SPI handler call → Tera render → HTTP response.
-- [ ] Tera template engine integrated; auto-escape on by default.
-- [ ] CLI `pg-web init` — scaffolds `pages/index.html`, `pages/index.sql`, `docker-compose.yml`, `pgweb.toml`, `Caddyfile`.
+- [x] Background worker registered via `BackgroundWorkerBuilder`; boots with extension.
+- [x] HTTP server (Axum) binds `:8080` inside the worker.
+- [x] Framework schema (`pgweb`) + minimal tables: `routes`, `templates`.
+- [x] Request lifecycle (happy path only): SPI route lookup → SPI handler call → Tera render → HTTP response.
+- [x] Tera template engine integrated; auto-escape on by default.
+- [x] CLI `pg-web init` — scaffolds `pages/index.html`, `pages/index.sql`, `docker-compose.yml`, `pgweb.toml`, `Caddyfile`, `.gitignore`.
 - [ ] CLI `pg-web push` — one-shot sync of routes + templates to a local/remote DB.
 - [ ] Docker image `pgweb/postgres:latest` (PG 17 + extension preinstalled).
 - [ ] Companion app `examples/demo/` at this stage = minimal hello-world page that proves the loop works. **This is NOT the first "real" demo — see Milestone 1.3.**
