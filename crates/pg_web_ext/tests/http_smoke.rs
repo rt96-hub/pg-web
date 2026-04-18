@@ -10,6 +10,14 @@
 //!     -l $HOME/.pgrx/17.log start
 //! cargo test --test http_smoke -p pg_web_ext --features pg17
 //! ```
+//!
+//! The whole file is gated off under the `pg_test` feature. `cargo pgrx test`
+//! turns `pg_test` on and would otherwise compile + run these — but during a
+//! pgrx test invocation no external PG is serving :8080, so the smoke would
+//! always fail. `scripts/test-http.sh` runs this binary without `pg_test`,
+//! with the extension actually installed and the BGW bound.
+
+#![cfg(not(feature = "pg_test"))]
 
 use std::time::Duration;
 
