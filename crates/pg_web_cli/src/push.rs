@@ -55,8 +55,12 @@ pub fn push(app_dir: &Path, url: &str) -> Result<PushSummary> {
                 .with_context(|| format!("executing {}", sql_path.display()))?;
             summary.sql_files_executed += 1;
         } else if entry.html_path.is_some() {
+            // Static route — no user .sql. Synthesize a trivial handler so the
+            // router's uniform `SELECT (handler(req::json))::text` call path
+            // has something to bind to. Returns `{}` so Tera renders the
+            // template with an empty context.
             let synth = format!(
-                "CREATE OR REPLACE FUNCTION {}() RETURNS json \
+                "CREATE OR REPLACE FUNCTION {}(req json) RETURNS json \
                  LANGUAGE sql IMMUTABLE AS $$ SELECT '{{}}'::json $$",
                 entry.handler_name
             );
