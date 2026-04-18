@@ -2,6 +2,39 @@
 
 Three tiers of tests. Each tier has a distinct scope, a distinct failure mode, and distinct tooling. Tests at tier N don't substitute for tests at tier N+1.
 
+## TL;DR — what actually runs today (M1.1)
+
+One command runs everything:
+
+```bash
+scripts/test-all.sh
+```
+
+It exits non-zero on any failure and prints `All tests passed.` on success. Under the hood it runs three things in order:
+
+| Tier | Command | Tests (today) |
+|---|---|---|
+| 1. SQL / pgrx | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | 4 `#[pg_test]` — schema creation, table emptiness, insert/select round-trip |
+| 2. HTTP smoke | `scripts/test-http.sh` (starts PG if needed, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — `GET /` returns hello, arbitrary paths hit the fallback |
+| 3. CLI | `cargo test -p pg_web_cli` | 0 tests (populates in M1.1 steps 4-5) |
+
+Env knobs: `PG_MAJOR=16 scripts/test-all.sh` targets a different Postgres major; the default is 17.
+
+## CI integration
+
+The scripts are the CI entrypoint. A GitHub Actions workflow (not yet added) would:
+
+1. Install Rust + system deps (`libclang-dev`, `flex`, `bison`, `libreadline-dev`, `zlib1g-dev`, `libssl-dev`, `pkg-config`) as root.
+2. Create a non-root `pgweb` user, switch to it (pgrx can't run as root).
+3. Cache `~/.pgrx/` (~2 GiB compiled PG) — first run is 20-60 min, cached runs are ~2 min.
+4. Run `cargo install --locked cargo-pgrx --version ~0.18`.
+5. Run `cargo pgrx init --pg17 download` (no-op if cached).
+6. Append `shared_preload_libraries='pg_web_ext'` to `~/.pgrx/data-17/postgresql.conf`.
+7. Run `scripts/test-all.sh`.
+
+Each step takes ~30 sec on a cached run; ~25 min on a cold cache. For iterative CI it's cheap; for fresh PR builds expect ~10 min once caching is set up properly.
+
+
 ## Tier 1 — Unit tests (inside Postgres)
 
 **Tool:** `pgrx-tests` + the `#[pg_test]` macro.
@@ -57,11 +90,40 @@ Each `#[pg_test]` runs inside a fresh Postgres transaction. Rollback on teardown
 
 ### What NOT to test here
 
-- End-to-end HTTP behavior (use tier 3).
-- CLI behavior (use tier 2).
+- HTTP behavior (use Tier 2 HTTP smoke).
+- CLI behavior (use Tier 2 CLI).
 - Behavior that doesn't touch Postgres internals (plain `#[test]` is fine).
 
-## Tier 2 — CLI tests (outside Postgres)
+## Tier 2a — HTTP smoke (against a running extension)
+
+**Tool:** standard Rust `#[test]` + `reqwest`.
+**Lives at:** `crates/pg_web_ext/tests/http_smoke.rs`.
+**Runs:** `scripts/test-http.sh` (starts PG if needed, polls `:8080`, runs `cargo test --test http_smoke`).
+**Scope:** the HTTP surface of the extension's background worker. Route resolution, template rendering, status codes, response bodies.
+
+Why this tier exists: `#[pg_test]` tests run inside an SPI transaction and can't reach the HTTP server (which lives in a separate BGW process). They also can't issue arbitrary HTTP requests. This tier is the smallest thing that proves "the worker is actually serving traffic correctly."
+
+### Example
+
+```rust
+#[test]
+fn root_returns_hello_from_pg_web() {
+    let resp = reqwest::blocking::get("http://localhost:8080/").unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().unwrap().trim(), "hello from pg-web");
+}
+```
+
+The script handles orchestration. The test itself is pure assertion.
+
+### What to test here
+
+- HTTP status codes for known routes, unknown routes, method mismatches.
+- Response bodies for rendered templates (Tier 2a once step 3 lands).
+- Content-Type / cache headers for assets.
+- Error page format in dev vs production modes.
+
+## Tier 2b — CLI tests (outside Postgres)
 
 **Tool:** standard Rust `#[test]` + `testcontainers` for integration flows.
 **Runs:** `cargo test -p pg_web_cli`.
