@@ -18,8 +18,8 @@ Goal: `pg-web init` a project, `docker compose up -d`, `pg-web push`, `curl loca
 - [x] Request lifecycle (happy path only): SPI route lookup → SPI handler call → Tera render → HTTP response.
 - [x] Tera template engine integrated; auto-escape on by default.
 - [x] CLI `pg-web init` — scaffolds `pages/index.html`, `pages/index.sql`, `docker-compose.yml`, `pgweb.toml`, `Caddyfile`, `.gitignore`.
-- [ ] CLI `pg-web push` — one-shot sync of routes + templates to a local/remote DB.
-- [ ] Docker image `pgweb/postgres:latest` (PG 17 + extension preinstalled).
+- [x] CLI `pg-web push` — one-shot sync of routes + templates to a local/remote DB.
+- [x] Docker image `pgweb/postgres:latest` (PG 17 + extension preinstalled). Local build via `scripts/build-image.sh`; registry publishing deferred to v0.1 tag.
 - [ ] Companion app `examples/demo/` at this stage = minimal hello-world page that proves the loop works. **This is NOT the first "real" demo — see Milestone 1.3.**
 
 ### Milestone 1.2 — Interactive Dev Loop

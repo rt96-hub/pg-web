@@ -1,0 +1,15 @@
+# Keep the Docker build context minimal — `target/` alone is ~1 GB.
+/target
+/.git
+/.github
+/.idea
+/.vscode
+/docs
+/examples
+/scripts
+/LICENSE-*
+Cargo.lock.bak
+*.log
+.DS_Store
+# Scaffolded test apps created by pg-web init (e.g. during local smoke runs)
+/tmp

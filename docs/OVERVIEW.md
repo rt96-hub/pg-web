@@ -2,7 +2,7 @@
 
 Snapshot of what's implemented right now, how the pieces fit, and what's next. Re-generated at every milestone boundary. Read this first; chase into `ARCHITECTURE.md`, `ROADMAP.md`, etc. for depth.
 
-> **Last updated:** 2026-04-18, after M1.1 step 4 completion (commit `0cd5a2b`).
+> **Last updated:** 2026-04-18, after M1.1 step 5 completion (commit `f806269`). Step 6 (Docker image) in progress.
 
 ---
 
@@ -27,8 +27,8 @@ Everything a browser sees comes out of a single OS process tree rooted at the Po
 | M1.1 step 2 | ✅ done | pgrx background worker + Axum HTTP on `:8080` |
 | M1.1 step 3 | ✅ done | SPI lookup → Tera render lifecycle |
 | M1.1 step 4 | ✅ done | CLI `pg-web init` scaffolding |
-| **M1.1 step 5** | 🟡 **next** | **CLI `pg-web push` (sync filesystem → DB)** |
-| M1.1 step 6 | ⏳ | Dockerfile + `pgweb/postgres:latest` image |
+| M1.1 step 5 | ✅ done | CLI `pg-web push` (sync filesystem → DB) |
+| **M1.1 step 6** | 🟡 **in progress** | **Dockerfile + `pgweb/postgres:latest` image** |
 
 Later milestones (M1.2 hot-reload, M1.3 todo-list demo, M1.4 secrets/polish) and phases (2 auth/RLS, 3 async jobs, 4 observability) are tracked in `docs/ROADMAP.md`.
 
@@ -126,15 +126,42 @@ One command:
 scripts/test-all.sh
 ```
 
-- **5 SQL tests** (`cargo pgrx test pg17`) — `schema_exists`, `default_route_seeded`, `default_template_seeded`, `default_handler_returns_expected_json`, `routes_table_accepts_additional_inserts`. Each runs inside an isolated Postgres transaction that rolls back on teardown.
-- **2 HTTP smoke tests** (`cargo test --test http_smoke`) — `root_renders_seeded_template` (asserts body contains `<h1>hello from pg-web</h1>`), `unknown_route_returns_404`. Requires a running PG + worker on `:8080`; script handles orchestration.
-- **0 CLI tests** for now (CLI is empty; populates in step 4-5).
+- **5 SQL tests** (`cargo pgrx test pg17`) — schema + seed data + insert round-trip.
+- **2 HTTP smoke tests** (`cargo test --test http_smoke`) — rendered template + 404. Script handles PG start + extension reset.
+- **18 CLI tests** — 10 path-conversion unit tests, 6 `init` integration tests, 2 `push` hermetic tests (no DB needed). DB-backed push tests deferred until integration-test container lands.
 
-All green today. Cold-compile time ~90 s; incremental run ~2 s.
+**Total: 25 tests, all green via `scripts/test-all.sh`.**
 
 ---
 
-## Dev loop (copy-paste to get started)
+## Try it yourself — the Docker path (simplest)
+
+For running a pg-web app locally with nothing but Docker:
+
+```bash
+# 1. Build the image (one-time, ~5-10 min; cache hit after that)
+cd ~/pg-web
+scripts/build-image.sh
+
+# 2. Scaffold an app and boot it
+cargo build -p pg_web_cli
+cd /tmp
+~/pg-web/target/debug/pg-web init demo-app
+cd demo-app
+docker compose up -d
+
+# 3. Push your app's routes + templates to the running container
+~/pg-web/target/debug/pg-web push \
+    --url postgres://postgres:devpassword@localhost:5432/app
+
+# 4. Hit it
+curl http://localhost:8080/
+# <!doctype html><html lang="en"><head>...<h1>Welcome to demo-app</h1>...
+```
+
+Edit `demo-app/pages/index.html` or `.sql`, re-run the push, hit curl again.
+
+## Dev loop (copy-paste to get started, no Docker)
 
 One-time, on a fresh WSL2 Ubuntu-22.04:
 ```bash
@@ -171,15 +198,16 @@ curl http://localhost:8080/
 
 ## What's NOT wired yet (don't expect these to work)
 
-- **CLI** — `pg_web_cli` crate exists but has no commands implemented. `cargo run -p pg_web_cli` prints "Hello, world!". Populates in M1.1 step 4-5.
-- **Hot reload** — save an `.sql` or `.html` file, nothing happens. M1.2.
+- **Hot reload** — save an `.sql` or `.html` file, nothing happens. Re-run `pg-web push` to see changes. M1.2.
 - **Dynamic routes** — `/posts/[id]` pattern doesn't match `/posts/42`. M1.2.
 - **Dev error page** — fatal SQL errors return a generic 500. M1.2.
 - **Static assets** — `/styles.css` returns 404. M1.3 (BYTEA) + M1.4 (large-object).
+- **Form body parsing / POST handlers** — the request body isn't threaded to SQL handlers. Read-only apps only for now. Needed for M1.3 (todo app).
 - **Secrets via GUC** — `pg-web env set KEY=VAL` doesn't exist. M1.4.
-- **Docker image** — `pgweb/postgres:latest` doesn't exist; you build locally with `cargo pgrx`. M1.1 step 6.
+- **Declarative migrations** — `pg-web migrate create` doesn't exist. Raw SQL migrations in `migrations/` work via `pg-web migrate apply` once it lands (M1.3).
+- **Published Docker image** — you build it locally with `scripts/build-image.sh`. Publishing `pgweb/postgres:latest` to Docker Hub / GHCR is a v0.1 release task.
 - **Graceful shutdown** — `pg_ctl stop` hangs because Axum doesn't handle SIGTERM; we `-m immediate` instead. Fix eventually.
-- **Multi-DB support** — hardcoded to connect to `pg_web_ext` database. Real production needs a `pgweb.database` GUC. M1.4.
+- **Docker-Compose Caddy block** — commented out in the scaffold. For dev you hit `:8080` directly. Enable for prod with a real domain.
 
 ---
 
@@ -199,6 +227,7 @@ Quick reference. Full write-ups in `docs/DEVELOPER-GUIDE.md` § Common pitfalls.
 | rustc 1.95 ICE on `[DatumWithOid; 2]` | rustc + pg_guard macro interaction | Use `format!` + Rust-side escape |
 | `Spi::get_one` returns `Err(InvalidPosition)` not `Ok(None)` on no rows | pgrx quirk | Wrap in a normalizer helper |
 | Extension BGW must be in `shared_preload_libraries` for worker to start | static vs dynamic BGW registration paths | Preload-line in `postgresql.conf` |
+| Docker's `:8080` port map silently no-ops because dev PG already owns the port | host-port conflict | Stop one of them: `pg_ctl -D ~/.pgrx/data-17 stop` or `cargo pgrx stop pg17` |
 
 ---
 

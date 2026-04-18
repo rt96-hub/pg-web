@@ -258,3 +258,23 @@ at the psql prompt. (`cargo pgrx test` does this for you automatically; `cargo p
 ### 7. `.bashrc` changes don't apply to the current shell
 
 Adding `. "$HOME/.cargo/env"` to `~/.bashrc` only affects **new** shells. In the current shell you need `source ~/.bashrc` (or `source ~/.cargo/env` to load just that one file). The next time you open a shell via `wsl -d Ubuntu-22.04 -u pgweb`, it'll auto-source.
+
+### 8. Host `:8080` conflict between pgrx dev PG and the Docker container
+
+Both the pgrx dev Postgres (via `cargo pgrx run` / `pg_ctl start`) and the scaffolded `docker-compose.yml` bind host port `8080`. If dev PG is already running, Docker's port mapping silently does **not** take effect — curl will hit the dev instance, not the container. Symptoms: `pg-web push` updates DB rows but `curl http://localhost:8080/` keeps serving old/unrelated content.
+
+**Fix:** stop one of them before starting the other.
+
+```bash
+# Stop dev PG
+/home/pgweb/.pgrx/17.9/pgrx-install/bin/pg_ctl -D ~/.pgrx/data-17 -m fast stop
+# or:
+cargo pgrx stop pg17
+
+# Check that nothing's still on :8080
+ss -tlnp | grep 8080
+
+# Then: docker compose up -d
+```
+
+Diagnose by running `ss -tlnp | grep 8080` — whichever `users:(...)` it prints tells you who owns the port.
