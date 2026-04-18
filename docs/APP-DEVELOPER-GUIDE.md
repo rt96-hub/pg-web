@@ -2,6 +2,8 @@
 
 For developers *using* pg-web to build apps. You write HTML and SQL. You never write or compile Rust. This guide is your contract.
 
+> **⚠ Work in progress (2026-04-18).** This doc describes the **v0.1 UX as designed**. Not all of it is implemented yet — see `docs/OVERVIEW.md` for the current state. Commands/features that don't exist yet are called out inline with **(not yet — M1.x)** markers.
+
 ## Install
 
 ```
@@ -86,7 +88,7 @@ Inside `pages/posts/[id].html`:
 </article>
 ```
 
-## Hot reload (`pg-web dev`)
+## Hot reload (`pg-web dev`)  — **(not yet — M1.2)**
 
 On save of a `.sql` file, the CLI:
 
@@ -101,7 +103,7 @@ On save of a `.html` file: UPSERTs into `templates`. No restart needed.
 
 On save of a `.css`/`.png`/etc. in `public/`: UPSERTs into `_pg_web_assets_*`.
 
-## Schema migrations
+## Schema migrations  — **(not yet — M1.3 for apply, M1.5+ for create)**
 
 ```
 pg-web migrate create add_posts
@@ -121,7 +123,7 @@ pg-web migrate apply
 2. Runs each in a transaction.
 3. Records success in `pgweb.migrations`.
 
-## Secrets
+## Secrets  — **(not yet — M1.4)**
 
 ```
 pg-web env set STRIPE_API_KEY=sk_test_...
