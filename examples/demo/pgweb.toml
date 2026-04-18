@@ -1,0 +1,11 @@
+# pg-web app config
+
+[server]
+port = 8080
+env  = "development"
+
+[database]
+url_env = "DATABASE_URL"
+
+[dev]
+watch_paths = ["pages", "public"]

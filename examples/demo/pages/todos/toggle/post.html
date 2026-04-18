@@ -1,0 +1,13 @@
+<li class="{% if todo.done %}done{% endif %}">
+  <span class="title">{{ todo.title }}</span>
+  <span class="actions">
+    <button hx-post="/todos/toggle"
+            hx-vals='{"id": {{ todo.id }}}'
+            hx-target="closest li"
+            hx-swap="outerHTML">Toggle</button>
+    <button hx-post="/todos/delete"
+            hx-vals='{"id": {{ todo.id }}}'
+            hx-target="closest li"
+            hx-swap="outerHTML">Delete</button>
+  </span>
+</li>

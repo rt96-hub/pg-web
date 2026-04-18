@@ -1,0 +1,8 @@
+# Replace `example.com` with your domain, then uncomment the `caddy` block
+# in docker-compose.yml. Caddy provisions and renews Let's Encrypt certs
+# automatically. pg-web itself serves plain HTTP on :8080 — TLS
+# termination is always out-of-process.
+
+example.com {
+    reverse_proxy postgres:8080
+}

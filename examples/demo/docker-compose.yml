@@ -1,0 +1,33 @@
+# pg-web demo — single-container stack.
+#
+# Dev: direct access on :8080. For prod, uncomment the `caddy` block below
+# and set your domain in Caddyfile.
+
+services:
+  postgres:
+    image: pgweb/postgres:latest
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"
+      - "8080:8080"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # caddy:
+  #   image: caddy:2
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile
+  #     - caddy_data:/data
+  #   depends_on:
+  #     - postgres
+
+volumes:
+  pgdata:
+  # caddy_data:
