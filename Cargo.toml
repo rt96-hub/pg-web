@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pg_web_cli",
+    "crates/pg_web_ext",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rt96-hub/pg-web"
+
+# pgrx requires `panic = "unwind"` so it can catch Postgres longjmps at the FFI boundary.
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+opt-level = 3
+lto = "fat"
+codegen-units = 1

@@ -1,0 +1,6 @@
+comment = 'pg_web_ext:  Created by pgrx'
+default_version = '@CARGO_VERSION@'
+module_pathname = 'pg_web_ext'
+relocatable = false
+superuser = true
+trusted = false

@@ -1,0 +1,13 @@
+[package]
+name = "pg_web_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pg-web"
+path = "src/main.rs"
+
+[dependencies]
+
