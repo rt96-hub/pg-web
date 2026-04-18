@@ -1,13 +1,13 @@
 # Session 2 — First Interactive Demo (todo app)
 
-**Status:** planned, not started.
+**Status:** spec locked 2026-04-18. Starting implementation.
 **Theme:** turn pg-web from read-only into interactive. By the end of this session, `examples/demo/` is a functional todo list that a developer can add, toggle, and delete items in via HTMX forms, all served by `docker compose up`.
 
 **Exit criteria:**
 - `GET /` renders the current todo list.
-- `POST /add` creates a new todo and returns an HTMX fragment.
-- `POST /toggle` toggles `done` on an existing todo (id from form body).
-- `POST /delete` removes a todo (id from form body).
+- `POST /todos` creates a new todo and returns an HTMX fragment.
+- `POST /todos/toggle` toggles `done` on an existing todo (id from form body).
+- `POST /todos/delete` removes a todo (id from form body).
 - All state lives in a `todos` table in the user's app DB — not in the `pgweb` framework schema.
 - Raw-SQL migration applied via `pg-web migrate apply` on scaffold.
 - End-to-end Docker test verifies the full CRUD loop.
@@ -20,110 +20,171 @@
 - CLI with `init` and `push` ✅
 - Docker image `pgweb/postgres:latest` ✅
 
-## New pieces needed
+---
 
-### 1. Form body parsing in the request handler
+## Decisions locked (no more open design questions)
 
-**Where:** `crates/pg_web_ext/src/http.rs` + `router.rs`.
+Four design questions were on the table at the end of session 1. All four are now resolved. The canonical spec is [`docs/APP-LAYOUT.md`](../APP-LAYOUT.md); this section is a quick summary.
 
-**What:** Axum's `axum::Form<T>` or manual body extraction. For the walking skeleton we want a `HashMap<String, String>` (or `serde_json::Value`) representing the parsed `application/x-www-form-urlencoded` body. HTMX submits urlencoded by default.
+### 1. App directory layout — "directory = route, filename = method"
 
-**Decision to make:**
-- *Parse inline inside the fallback handler?* — simpler.
-- *Use a dedicated extractor and a second route?* — more idiomatic Axum, more code.
+Each directory under `pages/` is a URL route. Files inside are named `<method>.html` (template) and `<method>.sql` (handler). `index` is the GET filename (preserves Apache/Nginx tradition). Either half is optional:
 
-**Rec:** inline inside the fallback. Keeps the "one handler rules them all" pattern.
+- `.html` only → static page, rendered with empty context `{}`. No SPI call.
+- `.html` + `.sql` → M1.1 pipeline (handler returns JSON → Tera renders).
+- `.sql` only → handler returns `text`, sent as-is (HTMX fragments).
 
-### 2. Parameterized SQL handlers
+M1.1's flat `pages/about.html` form goes away. Everything is a directory now.
 
-**Where:** `router.rs::call_handler`.
+### 2. Request JSON shape — single-arg uniform signature
 
-**Today:** handler is called as `SELECT pgweb.pages__foo()::text`. No arguments.
-
-**Need:** handler accepts a JSON object with request inputs. Shape options:
+Every handler takes one `json` argument:
 
 ```sql
-CREATE FUNCTION pgweb.pages__todos__add(req json) RETURNS json AS $$ ... $$
--- called as: SELECT pgweb.pages__todos__add('{"title":"buy milk"}'::json)
+CREATE FUNCTION pgweb.pages__<name>(req json) RETURNS <json|text> AS $$ ... $$
 ```
 
-Request inputs to merge into that JSON:
-- Form body fields (url-decoded)
-- Query string (M1.2)
-- Path captures (M1.2)
-- Request method, user-agent, etc. available as special keys (future)
+`req` always has this shape: `{ body: {...}, query: {...}, method: "POST", path: "/todos" }`. `body` and `query` are always objects (never null) — `req->'body'->>'key'` is always safe.
 
-**Work:**
-- Decide the JSON shape. Draft: `{ "body": {...}, "query": {...}, "method": "POST", "path": "/add" }`.
-- `call_handler(handler_name, request_json)` → build the SQL call.
-- `#[pg_test]` covering the shape.
-- rustc ICE workaround still applies — `format!` + Postgres's `quote_literal()` (SQL function) keeps the JSON string safely escaped.
+### 3. POST handler return contract — dispatch by template existence
 
-### 3. `pg-web migrate apply`
+`pgweb.routes.template_path` is nullable. The CLI populates it based on the filesystem:
 
-**Where:** new `crates/pg_web_cli/src/migrate.rs`.
+- `.html` sibling exists → `template_path` set → router expects `json` return + Tera render.
+- `.sql` alone → `template_path` NULL → router expects `text` return + sends bytes verbatim.
 
-**What:** Walk `migrations/` (sorted by filename — enforce `NNNN_description.sql` convention). For each file not yet in `pgweb.migrations` ledger, execute inside a transaction + insert a ledger row. Print per-file status.
+No new column in `pgweb.routes`. No per-row `skip_template: bool` flag. The filesystem's shape is the source of truth.
 
-**Schema:** add to the extension's install SQL:
-```sql
-CREATE TABLE pgweb.migrations (
-    applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    name       TEXT PRIMARY KEY
-);
-```
-Add `#[pg_test]` for it.
+### 4. Non-GET handler naming — method-in-filename
 
-**CLI:** `pg-web migrate apply [--dir migrations]`. Reads `DATABASE_URL` from env (same as push).
+Handler function name is `pgweb.pages__<path_segments>__<method_filename>`. Examples:
 
-**Tests:** tier 2b hermetic (verifies file walking + ordering); full DB test when we're ready for testcontainers (deferred).
+- `pages/index.sql`                → `pgweb.pages__index`
+- `pages/todos/index.sql`          → `pgweb.pages__todos__index`
+- `pages/todos/post.sql`           → `pgweb.pages__todos__post`
+- `pages/todos/toggle/post.sql`    → `pgweb.pages__todos__toggle__post`
 
-### 4. Todo app (`examples/demo/`)
+`paths.rs::handler_for` updates to walk the directory tree instead of flat files. `route_for` + `template_path_for` adapt similarly.
 
-**Directory layout:**
+---
+
+## Work breakdown (components with stop-and-check boundaries)
+
+Each component below is one or more commits; pause at component boundaries to confirm direction.
+
+### A. Migrations ledger + `pg-web migrate apply`
+
+**Extension (schema.rs):**
+- Add `pgweb.migrations` table: `(name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`.
+- `#[pg_test]` covering table existence + insert sanity.
+
+**CLI (new `migrate.rs`):**
+- `pg-web migrate apply [--dir migrations] [--url <DATABASE_URL>]`.
+- Walks `<dir>/*.sql` sorted by filename. Convention: `NNNN_description.sql`.
+- For each file not in `pgweb.migrations`: wrap in `BEGIN ... COMMIT`, execute the SQL, insert the ledger row.
+- Fail loudly on checksum/ordering violations (future); for Phase 1 just apply-in-order.
+- Output: one line per file (`applied 0001_foo.sql` / `skipped 0002_bar.sql`).
+
+**Tests:**
+- Unit: filename sort + "not in ledger" filtering (pure functions).
+- Integration (tier 2b): in-process `testcontainers` Postgres; apply a fixture directory twice; assert idempotency.
+
+### B. Layout convention refactor
+
+**CLI (`paths.rs` rewrite):**
+- Replace flat-file walker with directory walker that yields `RouteEntry { method, path, handler_name, template_path: Option<String>, sql_path: Option<PathBuf>, html_path: Option<PathBuf> }`.
+- Enforce reserved stems (`index`, `post` allowed in Phase 1; `get`, `put`, `patch`, `delete`, `head`, `options` rejected).
+- Reject flat `.html` under `pages/` with a clear error.
+
+**CLI (`push.rs` rewrite):**
+- Walk the tree via the new iterator.
+- For each RouteEntry:
+  - If `html_path` present: upsert into `pgweb.templates`.
+  - If `sql_path` present: execute the CREATE OR REPLACE FUNCTION inline.
+  - Upsert into `pgweb.routes` (method, path, handler_name, template_path).
+  - For HTML-only routes (no sql_path): synthesize a trivial handler that returns `'{}'::json` and register it.
+- Verify handler return type matches mode before committing (introspect `pg_proc.prorettype`).
+
+**CLI (`init.rs` / `templates.rs`):**
+- Scaffold `pages/index.html` + `pages/index.sql` remains at root (good — that's the new convention too).
+- Update `INDEX_SQL` to new `(req json) RETURNS json` signature.
+- Any other scaffolded pages use the new dir-based layout.
+
+**Tests:**
+- Unit: every `route_for` / `handler_for` / `template_path_for` case in the APP-LAYOUT examples section.
+- Integration: `push` against a fixture app with each of the three modes; assert on rows.
+
+### C. Router — request JSON + return-type dispatch
+
+**Extension (`http.rs`):**
+- Parse `application/x-www-form-urlencoded` bodies into `serde_json::Value` (object shape).
+- Parse query strings into `serde_json::Value`.
+- Build the full `req` JSON before handing off to `router.rs`.
+
+**Extension (`router.rs`):**
+- `call_handler(handler_name, req)` — embed `req` as a `::json` literal via the same quote-literal escape path used today. (Still blocked by the rustc 1.95 `[DatumWithOid; N]` ICE; workaround unchanged.)
+- Dispatch:
+  - `template_path` Some: `Spi::get_one::<String>(...handler(req)::text)` → parse JSON → Tera render.
+  - `template_path` None: `Spi::get_one::<String>(...handler(req)::text)` → send bytes verbatim with `content-type: text/html; charset=utf-8`.
+- The seeded `pgweb.hello_handler` gains the `(req json)` signature; schema.rs updated in the same commit.
+
+**Tests:**
+- `#[pg_test]`: hello_handler returns JSON with seeded request; text-mode handler returns and is pass-through.
+- HTTP smoke: POST form with body → handler sees body keys; text-mode POST returns bytes without Tera touching them.
+
+### D. Companion demo — `examples/demo/todo`
+
 ```
 examples/demo/
-├── README.md                      # how to run this demo
-├── docker-compose.yml             # (or rely on `pg-web init`-generated one)
+├── README.md                          # how to run
 ├── pgweb.toml
+├── docker-compose.yml
 ├── migrations/
-│   └── 0001_create_todos.sql      # CREATE TABLE public.todos ...
+│   └── 0001_create_todos.sql          # CREATE TABLE public.todos ...
 └── pages/
-    ├── index.html                 # list view — HTMX form at top, <ul> below
-    ├── index.sql                  # handler: SELECT todos + render list
-    ├── add.html                   # HTMX fragment for a single new row
-    ├── add.sql                    # handler: INSERT, return the new <li> fragment
-    ├── toggle.html                # updated <li> fragment
-    ├── toggle.sql                 # handler: UPDATE done = NOT done, return <li>
-    └── delete.html                # empty body (HTMX removes the row)
-        delete.sql                 # handler: DELETE, return nothing
+    ├── index.html                     # GET / — list view (HTMX form + <ul>)
+    ├── index.sql                      # GET / — SELECT todos, return JSON
+    ├── todos/
+    │   ├── post.html                  # POST /todos — new <li> fragment
+    │   └── post.sql                   # POST /todos — INSERT, return JSON for fragment
+    ├── todos/toggle/
+    │   └── post.sql                   # POST /todos/toggle — UPDATE, return <li> as text
+    └── todos/delete/
+        └── post.sql                   # POST /todos/delete — DELETE, return ''
 ```
 
-**HTMX patterns to exercise:**
-- `hx-post="/add"` on the form; `hx-target="#todos"` + `hx-swap="beforeend"` to append the new row.
-- Each row has a toggle button with `hx-post="/toggle" hx-vals='{"id":123}' hx-target="closest li"`.
-- Delete button with `hx-post="/delete" hx-target="closest li" hx-swap="outerHTML"`.
+HTMX patterns exercised:
 
-**Validation:**
-- Empty title → `CHECK (length(title) > 0)` → unique_violation style error path. Need to verify our handler-returns-error-fragment flow works in M1.1 (it does — the SQL function just returns a different HTML string).
+- `hx-post="/todos"` on the form, `hx-target="#todos"`, `hx-swap="beforeend"`.
+- Each `<li>` has a toggle button with `hx-post="/todos/toggle" hx-vals='{"id":N}' hx-target="closest li" hx-swap="outerHTML"`.
+- Delete button with `hx-post="/todos/delete" hx-vals='{"id":N}' hx-target="closest li" hx-swap="outerHTML"`.
 
-### 5. Docker E2E integration test
+### E. Docker E2E tier + `scripts/test-all.sh`
 
-**Where:** new `tests/docker_e2e.rs` or `examples/demo/tests/`.
+- New `tests/docker_e2e.rs` (at workspace root or in `pg_web_cli`).
+- Uses `testcontainers` to boot `pgweb/postgres:latest`.
+- Runs `pg-web migrate apply` then `pg-web push` against `examples/demo/`.
+- Hits the CRUD flow via `reqwest`:
+  - `GET /` — assert rendered page contains the form.
+  - `POST /todos` with `title=hello` — assert response contains `<li>` + "hello".
+  - `POST /todos/toggle` — assert `class="done"`.
+  - `POST /todos/delete` — assert empty body.
+- Add tier 3 to `scripts/test-all.sh`. Skip gracefully (exit 0) if Docker unavailable.
 
-**What:** Tier 3 test that boots the full demo stack via testcontainers + `pgweb/postgres:latest`, runs `pg-web init` + `pg-web push` against it, exercises the CRUD flow via `reqwest`, asserts on response bodies.
+---
 
-**Why this needs the Docker image:** we don't want to require pgrx in CI; `pgweb/postgres:latest` + the built CLI is all that's needed.
+## Testing plan (consolidated)
 
-**Deps:** `testcontainers`, `reqwest`.
+| Tier | What runs                                                 | What each new piece gets              |
+|------|-----------------------------------------------------------|---------------------------------------|
+| 1 — `#[pg_test]`    | `cargo pgrx test pg17`                      | Migrations table; handler return-type dispatch; `req` JSON roundtrip |
+| 2a — HTTP smoke     | `scripts/test-http.sh`                      | POST with form body hits handler; text-mode pass-through; template-mode render |
+| 2b — CLI tests      | `cargo test -p pg_web_cli`                  | `paths.rs` new conventions; `migrate.rs` walk/order/ledger; `push.rs` tree walker + mode detection |
+| 3 — E2E (new)       | `scripts/test-all.sh` + Docker             | Full CRUD against real Docker stack |
 
-**Decision needed:** where does the demo app source live for the test? Candidates:
-- Inline in the test (fabricated directory via `tempfile`).
-- Point the test at `examples/demo/` (couples test to demo layout — preferred).
+`scripts/test-all.sh` grows a fourth stage that runs tier 3 conditionally on Docker availability. All existing tiers continue to be mandatory.
 
-### 6. Updated `scripts/test-all.sh`
-
-Add the Docker E2E as a fourth tier. Should skip gracefully if Docker isn't available (for pure unit-test iteration).
+Feature-matrix rows in `docs/TESTING.md` get checked off as each component lands: `pg-web migrate apply`, Tera `{% for %}`, HTMX POST form, HTMX PATCH-style fragment swap, HTMX delete, validation via CHECK, the demo's `public/styles.css`.
 
 ---
 
@@ -134,47 +195,29 @@ Add the Docker E2E as a fourth tier. Should skip gracefully if Docker isn't avai
 - **Dev error page overlay** — session 3.
 - **Secrets / GUC** (`pg-web env set`) — M1.4, later.
 - **Declarative schema diffing** (`pg-web migrate create`) — Phase 2.5, later.
+- **`pg-web check` / lint tool** — M1.4 (added to roadmap in this session).
 - **Publishing `pgweb/postgres:latest` to Docker Hub / GHCR** — v0.1 release task.
+- **HTML-escape SQL helper (`pgweb.html_escape`)** — M1.4 closeout; session 2 demo uses Tera for any dynamic fragment so this isn't blocking.
 
 ---
 
 ## Known gotchas / things to watch
 
-- **HTMX escaping.** Our Tera render has `auto_escape=true`. We saw this bite already: `{"greeting": "hello from /posts"}` rendered as `hello from &#x2F;posts`. For user-content-safe output this is correct; for rendering raw HTML fragments we'll need `{{ value | safe }}` in templates — document this clearly in the demo.
-- **POST body size.** Axum has a default 2 MiB body limit. Fine for form submission; revisit if users upload files (not session 2).
-- **CSRF.** Deferred. Any form-submit-from-browser is technically vulnerable until session 2-or-later wires CSRF tokens. Document the gap; fix in Phase 2 (auth).
-- **Transaction boundaries on POST.** Same invariant as GET — one request one transaction. No new code needed; confirms the pattern holds.
-
----
-
-## Potential design questions to resolve at the start of session 2
-
-1. **Request JSON shape.** Lock in the keys: `body`, `query`, `method`, `path`, future `path_params`, future `session`. What's the default if the body is empty? `null` or `{}`?
-2. **Handler return type on POST.** Same as GET — returns HTML string (NOT a JSON context this time; it's already-rendered HTML for HTMX swap). Does this change the request pipeline?
-   - Option A: handler returns JSON, template renders it. For POST this means having a fragment template per route (lots of tiny files).
-   - Option B: handler returns HTML string directly, skipping Tera. Simpler for fragments.
-   - Option C: handler returns `{ "html": "...", "headers": { ... } }` — a richer contract. More work but more flexible.
-   - **Lean:** B for POST handlers with explicit opt-out from Tera. Need to decide how the worker distinguishes A vs B routes — maybe a `skip_template: bool` column in `pgweb.routes`, or a naming convention, or set it in the handler's `returns` signature.
-3. **Handler function naming for non-GET.** `pages/add.sql` → should the function be `pgweb.pages__add`? Collides if you also have a `GET /add`. Options:
-   - Include method: `pgweb.pages__post__add`.
-   - Separate tables per method (ugly).
-   - **Lean:** embed method in handler name. `pgweb.pages__<method>__<path>` is unambiguous. Breaks M1.1's naive convention — update `paths.rs::handler_for`.
-4. **Migrations ledger UX.** What does `pg-web migrate apply` print when there's nothing new? What about when an old migration is renamed/removed? (Probably bail loudly.)
-
----
-
-## Rough time estimate
-
-~3-5 hours of focused work, assuming no major rustc/pgrx surprises. The hardest piece is probably the request-JSON shape + handler-return contract (design work up front). Actual code is straightforward.
+- **HTMX escaping.** Tera auto-escapes by default. For the todo demo this is what we want — fragment templates render title values through `{{ todo.title }}` and get safe output for free.
+- **POST body size.** Axum defaults to 2 MiB. Fine for form submission; revisit if users upload files (not session 2).
+- **CSRF.** Deferred. Any browser form-submit is technically vulnerable until Phase 2 wires tokens. Document the gap.
+- **Transaction boundaries on POST.** Same invariant as GET — one request = one transaction. No new code needed.
+- **rustc 1.95 ICE on `[DatumWithOid; N]`.** Session 1 workaround (escape-via-format + `quote_literal`) still applies for the `req` JSON. No change.
+- **Migration ordering semantics.** We sort by filename ascending. If a user renames `0002_foo.sql` to `0001b_foo.sql` after applying, we don't detect it — Phase 2+ migration hardening task.
 
 ---
 
 ## Suggested order
 
-1. Session start: lock answers to the four design questions above (~20 min, could be pre-session async).
-2. Form-body + parameterized-handler plumbing in the extension — one commit.
-3. Route-handler naming update in `paths.rs` + `push.rs` — one commit.
-4. `pg-web migrate apply` — one commit.
-5. Draft `examples/demo/` layout — one commit (mostly SQL + HTML).
-6. Wire into test-all.sh with the tier-3 E2E — one commit.
-7. Smoke the full demo manually from Windows (like we did in session 1), record anything new to `DEVELOPER-GUIDE.md § Common pitfalls`.
+Components land in the order above (A → E), each followed by a stop-and-check:
+
+1. **A** — Migrations: smallest diff, unblocks the demo app's schema. Commit.
+2. **B** — Layout refactor: touches `paths.rs`, `push.rs`, `init`. All unit-testable without the extension. Commit.
+3. **C** — Router + request JSON: extension-side work, unblocks interactive handlers. Commit.
+4. **D** — Demo app: exercises everything above. Commit.
+5. **E** — E2E tier: proves the full stack works under the Docker image. Commit.

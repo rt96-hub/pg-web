@@ -2,7 +2,7 @@
 
 Three tiers of tests. Each tier has a distinct scope, a distinct failure mode, and distinct tooling. Tests at tier N don't substitute for tests at tier N+1.
 
-## TL;DR — what actually runs today (M1.1)
+## TL;DR — what actually runs today (post-M1.1)
 
 One command runs everything:
 
@@ -15,8 +15,9 @@ It exits non-zero on any failure and prints `All tests passed.` on success. Unde
 | Tier | Command | Tests (today) |
 |---|---|---|
 | 1. SQL / pgrx | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | 5 `#[pg_test]` — schema creation, seeded route + template, default handler JSON, table accepts additional rows |
-| 2. HTTP smoke | `scripts/test-http.sh` (starts PG if needed, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — `GET /` renders seeded template, unknown route returns 404 |
-| 3. CLI | `cargo test -p pg_web_cli` | 0 tests (populates in M1.1 steps 4-5) |
+| 2a. HTTP smoke | `scripts/test-http.sh` (starts PG if needed, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — `GET /` renders seeded template, unknown route returns 404 |
+| 2b. CLI | `cargo test -p pg_web_cli` | 18 tests — 10 path-mapping unit tests (route / handler / template-path derivation including nested + Windows backslashes), 6 `init` integration, 2 `push` hermetic |
+| 3. Docker E2E | *(lands in session 2 — `scripts/test-all.sh` stage 4, Docker-gated, exercises the full CRUD flow)* | 0 today |
 
 Env knobs: `PG_MAJOR=16 scripts/test-all.sh` targets a different Postgres major; the default is 17.
 
@@ -195,12 +196,14 @@ Checked items are covered; unchecked are next. Grouped by milestone. This matrix
 
 | Framework feature | Demo coverage | Milestone | Status |
 |---|---|---|---|
-| Static route (`GET /`) | `pages/index.html` + `pages/index.sql` | M1.1 | ☐ |
-| SQL handler returning JSON | Hardcoded handler returns `{"name":"World"}` | M1.1 | ☐ |
-| Tera `{{ }}` basic substitution | `<h1>Hello {{ name }}</h1>` | M1.1 | ☐ |
-| `pg-web init` scaffold | Demo app produced by `pg-web init my-app` | M1.1 | ☐ |
-| `pg-web push` | CI invokes it against the demo app | M1.1 | ☐ |
-| Docker image boots ext | `docker compose up` → `GET /` returns 200 | M1.1 | ☐ |
+| Static route (`GET /`) | `pages/index.html` + `pages/index.sql` | M1.1 | ☑ |
+| SQL handler returning JSON | `pgweb.hello_handler` returns `{"name":"pg-web"}` | M1.1 | ☑ |
+| Tera `{{ }}` basic substitution | `<h1>hello from {{ name }}</h1>` | M1.1 | ☑ |
+| `pg-web init` scaffold | Demo app produced by `pg-web init my-app` | M1.1 | ☑ |
+| `pg-web push` | `scripts/test-http.sh` invokes it against the dev PG | M1.1 | ☑ |
+| Docker image boots ext | `docker compose up` → `GET /` returns 200 | M1.1 | ☑ |
+| Handler accepts `req json` arg | `pgweb.pages__*(req json)` uniform signature | M1.3 | ☐ |
+| Raw-text handler mode | POST handler `RETURNS text`, router bypasses Tera | M1.3 | ☐ |
 | Dynamic route (`[id]` param) | Todo detail: `pages/todos/[id].html` | M1.2 | ☐ |
 | Hot reload: `.sql` save | Edit a todo handler, see change <500ms | M1.2 | ☐ |
 | Hot reload: `.html` save | Same | M1.2 | ☐ |
