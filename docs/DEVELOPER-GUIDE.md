@@ -199,6 +199,8 @@ Before tagging a release:
 
 These are real issues we hit during bringup. Re-read before debugging similar symptoms.
 
+> The numbered write-ups below cover the earliest environment bring-up bugs. For the running list of every gotcha hit so far (BGW transaction wrappers, `#[pg_test]` error-propagation, synthesized-handler arity, rustc 1.95 `[DatumWithOid; N]` ICE, `cargo pgrx test` running integration tests it can't serve, etc.), see the **Gotchas** table in `docs/OVERVIEW.md` and per-session recaps under `docs/sessions/`.
+
 ### 1. `initdb: error: cannot be run as root`
 
 Postgres refuses to let `initdb` run as the root user — a long-standing safety check. This breaks every `cargo pgrx test` and `cargo pgrx run` invocation because both call `initdb` to create a per-test / per-dev Postgres data directory.

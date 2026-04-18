@@ -6,7 +6,9 @@ Phased delivery. Each phase must be stable, shippable, and usable on its own —
 
 **Goal:** a working framework that can serve a real HTMX app end-to-end. Broken into four milestones so we can validate each piece before layering the next.
 
-### Milestone 1.1 — Walking Skeleton (the "hello world" moment)
+**Session mapping:** Session 1 → M1.1. Session 2 → M1.3 (contract locks + demo). Session 3 → M1.2 (interactive dev loop; the contracts settled in Session 2 give the watcher a stable spec to re-sync against). Session 4 → M1.4 (closeout + v0.1 release).
+
+### Milestone 1.1 — Walking Skeleton (shipped Session 1)
 
 Goal: `pg-web init` a project, `docker compose up -d`, `pg-web push`, `curl localhost:8080/` returns HTML rendered by Tera from a template stored in Postgres.
 
@@ -19,10 +21,25 @@ Goal: `pg-web init` a project, `docker compose up -d`, `pg-web push`, `curl loca
 - [x] Tera template engine integrated; auto-escape on by default.
 - [x] CLI `pg-web init` — scaffolds `pages/index.html`, `pages/index.sql`, `docker-compose.yml`, `pgweb.toml`, `Caddyfile`, `.gitignore`.
 - [x] CLI `pg-web push` — one-shot sync of routes + templates to a local/remote DB.
-- [x] Docker image `pgweb/postgres:latest` (PG 17 + extension preinstalled). Local build via `scripts/build-image.sh`; registry publishing deferred to v0.1 tag.
-- [ ] Companion app `examples/demo/` at this stage = minimal hello-world page that proves the loop works. **This is NOT the first "real" demo — see Milestone 1.3.**
+- [x] Docker image `pgweb/postgres:latest` (PG 17 + extension preinstalled). Local build via `scripts/build-image.sh`; registry publishing deferred to M1.4.
+- [x] Hello-world proof-of-life via the image's seeded route. The "real" companion app lands in M1.3.
 
-### Milestone 1.2 — Interactive Dev Loop
+### Milestone 1.3 — Interactive Contracts + First Real Demo (shipped Session 2)
+
+Goal: `examples/demo/` is a fully functional todo list with real DB interactions, not a toy. Lock the interactive-handler contracts (request JSON, return-type dispatch, 404 fallback) that M1.2's watcher will re-sync against.
+
+- [x] Directory-as-route, filename-as-method app layout. Full spec in `docs/APP-LAYOUT.md`.
+- [x] Uniform handler contract: `(req json) RETURNS <json|text>` with `req = { body, query, method, path }`.
+- [x] Router dispatches on `pgweb.routes.template_path` nullability — non-NULL → Tera render, NULL → raw text.
+- [x] Custom 404 fallback via `pages/_404.html` (+ optional `_404.sql`). Default body served when no user template.
+- [x] Extension installs `pgweb.migrations` ledger; CLI `pg-web migrate apply` runs raw-SQL migrations in filename order. (No `migrate create` / diffing — Phase 2.5.)
+- [x] Companion app at `examples/demo/` — full todo CRUD with HTMX form (create / append), toggle (outerHTML swap), delete (empty-body swap), custom 404 page.
+- [x] `README.md` in `examples/demo/` + `docs/TUTORIAL.md` walking through building the same app from `pg-web init`.
+- [x] Tier 3 Docker E2E test — `testcontainers` boots `pgweb/postgres:latest`, runs `migrate apply` + `push` against the demo, exercises CRUD over HTTP.
+- [ ] **Deferred to M1.4:** user-facing validation UX (`check_violation` rendered inline via `hx-swap-oob` and/or a dev error page), `pgweb.html_escape()` helper. Currently empty submissions surface as a 500. Acceptable gap for Session 2's contracts-first focus.
+- [ ] **Deferred to M1.2:** `public/` static asset serving (the demo ships with inline CSS for now; `public/` exists empty).
+
+### Milestone 1.2 — Interactive Dev Loop (Session 3 next)
 
 Goal: a developer can run `pg-web dev`, save a `.sql` file, and see the change reflected at `localhost:8080` without restarting anything. The CLI also owns stack lifecycle — users shouldn't need to think about `docker compose` directly for day-to-day work.
 
@@ -30,32 +47,24 @@ Goal: a developer can run `pg-web dev`, save a `.sql` file, and see the change r
 - [ ] CLI `pg-web down` — stops the stack. `--volumes` flag drops the data volume.
 - [ ] CLI `pg-web dev` — file watcher on `pages/` and `public/`. Auto-invokes `up` if stack isn't running. Auto-re-pushes on `.sql`/`.html` save. Streams container logs.
 - [ ] Shift-left SQL pre-flight: parse and run in `BEGIN; ... ROLLBACK;` before applying live.
-- [ ] Dynamic route patterns — `pages/posts/[id].html` matches `/posts/:id` with `id` threaded into `req.path_params`.
+- [ ] Dynamic route patterns — `pages/posts/[id]/index.html` matches `/posts/:id` with `id` threaded into `req.path_params`.
 - [ ] Dev-mode error page (SQLSTATE, MESSAGE, DETAIL, HINT, file, line, transaction state).
 - [ ] Production-mode generic 500 page.
 - [ ] Structured JSON logging: NOTICE/LOG capture → stdout.
 - [ ] Static asset serving (BYTEA for < 1 MiB, `pg_largeobject` with streaming for ≥ 1 MiB).
+- [ ] Demo enhancement: swap the inline `<style>` in `examples/demo/pages/index.html` for `public/styles.css` once static asset serving ships.
 
-### Milestone 1.3 — First Real Demo App (todo list)
-
-Goal: `examples/demo/` is a fully functional todo list with real DB interactions, not a toy. Exercises the framework surface from the user's POV.
-
-- [ ] Todo list schema (raw `.sql` migration files — no declarative diffing yet).
-- [ ] CLI `pg-web migrate apply` — runs raw SQL migrations in order, records in `migrations` ledger. (No `migrate create` / diffing in Phase 1 — punted to later phase. Users hand-write migration SQL.)
-- [ ] CRUD routes (index, create, update, delete, toggle complete).
-- [ ] HTMX patterns: form submit with `hx-swap-oob`, out-of-band swap on validation errors.
-- [ ] Unique/check constraint validation exercised in the todo "add" flow.
-- [ ] At least one `public/` static asset (CSS file) styling the app.
-- [ ] `README.md` in `examples/demo/` documenting the app, its migrations, and every framework feature it touches.
-
-### Milestone 1.4 — Remaining Phase 1 Feature Surface
+### Milestone 1.4 — Remaining Phase 1 Feature Surface (closeout)
 
 Goal: close out Phase 1 for a releasable v0.1.
 
 - [ ] CLI `pg-web env set KEY=VAL` / `env list` / `env unset KEY` — GUC injection for secrets.
+- [ ] SQL helper `pgweb.html_escape(text) → text` shipped in the extension's install SQL for raw-text-return handlers that interpolate user content.
+- [ ] User-facing validation UX: `check_violation` / `unique_violation` exceptions in handlers render inline via `hx-swap-oob` (or a framework-provided error fragment). Currently surfaces as plain 500.
 - [ ] Asset serving in the demo app with a large asset (image via `pg_largeobject`).
 - [ ] `pg-web push` polished for prod deploy (transaction-wrapped, migration-runner integrated).
 - [ ] CLI `pg-web init --template <name>` — fetches a named example (initially `todo-demo`) from this repo's `examples/` tree and drops it into the user's directory. Mirrors Next.js's `create-next-app --example <name>` pattern. Opt-in; plain `init` stays the minimal hello-world scaffold.
+- [ ] Init scaffold gets a `README.md` — small DX follow-up noted in Session 2.
 - [ ] CLI `pg-web check` — offline project validator (no IDE/LSP). Walks `pages/`, `migrations/`, `pgweb.toml`; reports:
   - Layout violations (flat `.html` under `pages/`, reserved stems, missing sibling files when required).
   - Tera template parse errors (compile templates, don't render).
@@ -63,9 +72,8 @@ Goal: close out Phase 1 for a releasable v0.1.
   - Return-type mismatches (handler declared `text` but template exists, or vice versa).
   - Migration filename ordering + ledger drift against a configured DB.
   Output: grouped diagnostics with file + line, exit non-zero if any found. Intended as a pre-push safety net and CI gate.
-- [ ] SQL helper `pgweb.html_escape(text) → text` shipped in the extension's install SQL for raw-text-return handlers that interpolate user content.
-- [ ] Release pipeline: CI builds Docker image, runs full test matrix (PG 15/16/17), publishes on tag.
-- [ ] Docs pass: APP-DEVELOPER-GUIDE revised against the actual demo app.
+- [ ] Release pipeline: CI builds Docker image, runs full test matrix (PG 15/16/17), publishes `pgweb/postgres:latest` + `pgweb/postgres:0.1` to Docker Hub / GHCR on tag.
+- [ ] Docs pass: APP-DEVELOPER-GUIDE revised against the actual demo app; TUTORIAL.md gains a chapter covering `pg-web up` / `dev` / hot reload once M1.2 ships.
 
 ### Known Phase 1 limitations (deliberately deferred)
 
@@ -173,3 +181,5 @@ Track architectural decisions here as they solidify. Each entry: date, decision,
 - *2026-04-18* — **Handler signature: single `json` arg, shape `{ body, query, method, path }`.** Every `.sql` handler is `pgweb.pages__<name>(req json) RETURNS <json|text>`. `body` and `query` always objects (never null) — `req->'body'->>'key'` always safe. Uniform signature keeps the router code path singular and leaves room to grow (`path_params`, `session`, `headers`) without re-signing every handler.
 - *2026-04-18* — **POST return contract: dispatch via `template_path` nullability.** If `.html` sibling exists → CLI writes `template_path` → router expects JSON return + Tera render. If only `.sql` → `template_path` NULL → router expects text return + bytes-as-is. No new schema column, no per-route flag; filesystem is source of truth. Alternatives (per-route `skip_template` bool, `pg_proc.prorettype` lookup each request) rejected as either redundant with filesystem state or a per-request performance cost.
 - *2026-04-18* — **CLI owns the full dev loop; Docker should be invisible day-to-day.** The target UX is `cargo install pg-web-cli` → `pg-web init` → `pg-web up` → `pg-web dev`, with the CLI managing compose, pulling the published image on first run, and auto-resolving `DATABASE_URL`. Scoped to M1.2 (`up`/`down`/`dev`) + M1.4 (published image + `init --template`). Rationale: lowering the install surface matters as much as the runtime model; if users have to think about `docker compose up -d` and connection strings every session, the "Postgres is your whole stack" pitch gets tax-heavy. Mirrors `next dev` / `rails server` — one command, stack handled.
+- *2026-04-18* — **`_404` fallback via reserved stem at route-directory root.** `pages/_404.html` (+ optional `_404.sql`) registers a fallback route with `method='404'`; router looks it up on any unmatched `(method, path)` pair. Phase 1 supports root-only (`path_pattern='/'`). Phase 2+ will extend to longest-prefix-match so per-subtree 404 pages work (`pages/admin/_404.html` → only matches `/admin/*`). Handler name: `pgweb.pages___404` — triple underscore is cosmetic but identifier-valid. Alternative designs considered: dedicated `pgweb.fallbacks` table (rejected — redundant with `routes`), `pgweb.html_escape` baked into `_404` synthesis (rejected — irrelevant for static mode). The reserved-stem approach makes fallbacks first-class routes that reuse every other piece of the dispatch pipeline.
+- *2026-04-18* — **Tier 3 Docker E2E is mandatory, not opt-skip.** `scripts/test-all.sh` fails loudly when Docker or `pgweb/postgres:latest` is missing. Rationale: the image is the shipped artifact, so "silently skip" would give false-green confidence in whatever CI or contributor environment was running tests. Same philosophy as tier 2a, which requires `pg_ctl` + pgrx dev install.

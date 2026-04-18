@@ -19,12 +19,16 @@ pg-web/
 │   ├── VISION.md
 │   ├── ARCHITECTURE.md
 │   ├── ROADMAP.md
+│   ├── OVERVIEW.md               # Current-state snapshot (read first)
+│   ├── APP-LAYOUT.md             # Canonical: directory/file/handler conventions
+│   ├── APP-DEVELOPER-GUIDE.md    # Narrative reference for app developers
+│   ├── TUTORIAL.md               # Step-by-step walkthrough building a todo app
 │   ├── DEVELOPER-GUIDE.md        # For framework maintainers (us)
-│   ├── APP-DEVELOPER-GUIDE.md    # For framework users (future)
-│   ├── TESTING.md                # Three-tier test strategy + companion app
-│   └── DEPLOYMENT.md             # Caddy + Docker + VPS
+│   ├── TESTING.md                # Four-tier test strategy + feature matrix
+│   ├── DEPLOYMENT.md             # Caddy + Docker + VPS
+│   └── sessions/                 # Per-session plans + recaps
 └── examples/
-    └── demo/                     # Companion app — end-to-end acceptance test (TBD)
+    └── demo/                     # Companion todo app — tier 3 E2E target
 ```
 
 ## Architectural invariants — DO NOT VIOLATE
@@ -60,26 +64,38 @@ pg-web/
 
 ## Current phase & milestones
 
-**Phase 1 — Synchronous Core.** Broken into four milestones (see `docs/ROADMAP.md`):
+**Phase 1 — Synchronous Core.** Four milestones (see `docs/ROADMAP.md`):
 
-1. **M1.1 Walking Skeleton** — extension + CLI + Docker Compose + `pg-web push` produces a working `GET /` → Tera-from-DB render.
-2. **M1.2 Interactive Dev Loop** — `pg-web dev` with hot reload; dynamic routes; dev error page.
-3. **M1.3 First Real Demo (todo list)** — `examples/demo/` as a CRUD todo app. Raw-SQL migrations via `pg-web migrate apply`. Exercises HTMX forms, validation, static assets.
-4. **M1.4 Closeout** — secrets, prod polish, release pipeline.
+1. **M1.1 Walking Skeleton** ✅ shipped Session 1 — extension + CLI + Docker Compose + `pg-web push` produces a working `GET /` → Tera-from-DB render.
+2. **M1.3 Interactive Contracts + Real Demo** ✅ shipped Session 2 — `(req json)` handler contract, directory-as-route layout, `_404` fallback, `examples/demo/` todo app, tier 3 Docker E2E.
+3. **M1.2 Interactive Dev Loop** ⬜ Session 3 next — `pg-web up`/`down`/`dev` (file watcher + hot reload), dynamic routes (`[id]` captures), dev error page, static asset serving.
+4. **M1.4 Closeout** ⬜ — secrets, `pg-web check` lint, `pg-web init --template`, release pipeline, html_escape helper, validation UX.
 
-**Confirmed decisions (2026-04-17):**
-- Schema migrations: **raw SQL only in Phase 1**. Declarative diffing (`migrate create`) deferred to later phase.
-- Walking-skeleton milestone **includes CLI + Docker Compose** — not extension-only.
-- First real demo app = **todo list** (not hello-world). Hello-world is only the proof-of-life at M1.1.
-- HTTP library: **Axum** (thin-shell pattern; see `docs/ARCHITECTURE.md` § "Inside the extension" for rationale). We use a fallback handler + Tower middleware; our own modules own the framework logic so dropping to raw Hyper later stays a one-day job.
+(Session 2 did M1.3 before M1.2 because the interactive contracts had to settle before the watcher would know what to re-sync.)
+
+**Confirmed decisions (see `docs/ROADMAP.md` § Decision log for full rationale):**
+
+*2026-04-17:*
+- Raw-SQL migrations only in Phase 1; declarative diffing → Phase 2.5.
+- M1.1 ships CLI + Docker Compose together.
+- Axum as thin-shell HTTP layer over our own router.
+- Framework schema is `pgweb` (no underscore — `pg_` prefix is reserved).
+- Dedicated `pgweb` WSL user for dev (not root — `initdb` refuses root).
+
+*2026-04-18:*
+- Directory-as-route, filename-as-method app layout. Spec in `docs/APP-LAYOUT.md`.
+- Uniform handler contract: `(req json) RETURNS <json|text>` with `req = { body, query, method, path }`.
+- Dispatch via `pgweb.routes.template_path` nullability — non-NULL = Tera render, NULL = raw text.
+- `_404` reserved filename stem for fallback routes; router does longest-prefix-match on lookup miss.
+- CLI owns full dev loop; `pg-web up/down/dev` in M1.2, published image + `init --template` in M1.4.
+- Tier 3 Docker E2E is mandatory (hard fail if Docker/image missing) — no silent skips.
 
 ## Open architectural decisions
 
 See `docs/ARCHITECTURE.md` and `docs/ROADMAP.md` for current defaults.
 
 - Asset size cutoff (BYTEA vs pg_largeobject): 1 MiB default — not benchmarked.
-
-Resolved 2026-04-17:
-- Framework schema name: **`pgweb`** (Postgres reserves names starting with `pg_` for system schemas — SQLSTATE 42939 blocks `CREATE SCHEMA pg_web`).
+- Dynamic-route pattern matching algorithm (naïve scan vs trie): TBD in Session 3 when `[id]` captures land.
+- Hash-based vs ETag-only asset caching: TBD in Session 3.
 
 When one of these is resolved, update this file and the corresponding doc in the same commit.

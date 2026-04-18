@@ -2,7 +2,7 @@
 
 Snapshot of what's implemented right now and what's next. Re-generated at milestone boundaries. Read this first; chase into `APP-DEVELOPER-GUIDE.md`, `APP-LAYOUT.md`, `ARCHITECTURE.md`, `ROADMAP.md` for depth.
 
-> **Last updated:** 2026-04-18, mid-Session 2. M1.1 walking-skeleton shipped in Session 1 (`5a64daa`). Session 2 components A (migrations) and B (layout refactor) shipped (`c3960a3`, `21cc831`); C/D/E still to come.
+> **Last updated:** 2026-04-18, end of Session 2. M1.1 walking-skeleton shipped in Session 1 (`5a64daa`). Session 2 completes M1.3 (interactive todo demo) — five components A–E shipped (`c3960a3`, `21cc831`, `af50911`, `7fed892`, `c2c4985`). Next session targets M1.2 (interactive dev loop). See `docs/sessions/session_3.md`.
 
 ---
 
@@ -25,19 +25,21 @@ Everything a browser sees comes out of a single OS process tree rooted at the Po
 
 | Milestone | Status | Deliverable |
 |---|---|---|
-| M1.1 Walking Skeleton     | ✅ shipped Session 1 | Framework schema + BGW + Axum + SPI→Tera + CLI `init`/`push` + Docker image |
-| M1.2 Interactive Dev Loop | ⬜ planned | `pg-web dev` file-watcher + hot reload, dynamic routes, dev error page |
-| M1.3 Todo demo (Session 2) | 🟡 **in progress** | Migrations, layout refactor, request-JSON, demo todo app, Docker E2E |
-| M1.4 Closeout             | ⬜ planned | Secrets (GUC), `pg-web check` lint, release pipeline |
+| M1.1 Walking Skeleton       | ✅ shipped Session 1 | Framework schema + BGW + Axum + SPI→Tera + CLI `init`/`push` + Docker image |
+| M1.3 Interactive demo + spec | ✅ shipped Session 2 | Migrations, directory-as-route layout, `(req json)` contract, `_404` fallback, demo todo app, Docker E2E |
+| M1.2 Interactive Dev Loop   | ⬜ Session 3 next    | `pg-web up`/`down`/`dev`, hot reload, dynamic routes, dev error page, static assets |
+| M1.4 Closeout               | ⬜ planned           | Secrets (GUC), `pg-web check` lint, `pg-web init --template`, release pipeline |
+
+(Session 2 did M1.3 before M1.2 because the interactive-contract decisions — request-JSON shape, POST return dispatch, 404 fallback — had to be locked before the file-watcher would know what to re-sync. M1.2 inherits the stable spec.)
 
 Later phases (2 auth/RLS, 3 async jobs, 4 observability) are tracked in `docs/ROADMAP.md`.
 
-**Session 2 progress (components):**
+**Session 2 — M1.3 components:**
 - **A** ✅ `pgweb.migrations` ledger + `pg-web migrate apply` CLI (`c3960a3`)
 - **B** ✅ Directory-as-route layout: `paths::scan()` + `push.rs` walker (`21cc831`)
-- **C** ⬜ Router request-JSON `(req json)` + text-return dispatch
-- **D** ⬜ `examples/demo/` todo app exercising the full CRUD loop
-- **E** ⬜ Docker E2E test tier
+- **C** ✅ Router `(req json)` + text-return dispatch + `_404` fallback (`af50911`)
+- **D** ✅ `examples/demo/` todo app + `docs/TUTORIAL.md` (`7fed892`)
+- **E** ✅ Docker E2E tier against `pgweb/postgres:latest` (`c2c4985`)
 
 ---
 
@@ -119,12 +121,12 @@ scripts/test-all.sh
 
 | Tier | Command | Tests (today) |
 |---|---|---|
-| 1. SQL / pgrx  | `cargo pgrx test pg17`          | 7 `#[pg_test]` — schema + seeded route/template/handler, migrations ledger |
-| 2a. HTTP smoke | `scripts/test-http.sh`          | 2 `#[test]` — `GET /` renders, unknown path 404s |
-| 2b. CLI        | `cargo test -p pg_web_cli`      | 30 — path derivation, scanner, init, migrate, push hermetic |
-| 3. Docker E2E  | *(lands Session 2 component E)* | 0 today |
+| 1. SQL / pgrx  | `cargo pgrx test pg17`                              | 8 `#[pg_test]` — schema + seed + migrations ledger + `(req json)` handler contract |
+| 2a. HTTP smoke | `scripts/test-http.sh`                              | 2 `#[test]` — `GET /` renders seeded template, unknown path returns default 404 body |
+| 2b. CLI        | `cargo test -p pg_web_cli`                          | 47 — path scanner (layout, reserved stems, `_404`), migrate apply, push, init, demo-layout regression |
+| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` | 1 — boots `pgweb/postgres:latest`, drives full todo CRUD + 404 via HTTP |
 
-**39 tests all green via `scripts/test-all.sh`.**
+**58 tests all green via `scripts/test-all.sh`.**
 
 Feature matrix in `docs/TESTING.md` tracks which deliverables are demo-covered.
 
@@ -181,14 +183,16 @@ Daily iteration is `scripts/test-all.sh` and editing code.
 
 ## What's NOT wired yet
 
-- **Request-body parsing / interactive handlers** — POSTs land but the body isn't threaded to SQL handlers. **Session 2 component C** (next).
-- **Hot reload** — save `.sql`/`.html`, nothing happens. Re-run push. **M1.2.**
+- **Hot reload** — save `.sql`/`.html`, nothing happens. Re-run push. **M1.2 (Session 3).**
+- **CLI stack management** — users still type `docker compose up -d` and pass `--url` manually. `pg-web up`/`down`/`dev` wraps it. **M1.2.**
 - **Dynamic routes** — `[id]` patterns don't match yet. **M1.2.**
 - **Dev error page** — fatal SQL exceptions return generic 500 today. **M1.2.**
-- **Static assets** — `public/*` → 404 still. **M1.2–1.3.**
+- **Static assets** — `public/*` → 404 still. **M1.2.**
 - **Secrets** — `pg-web env set KEY=VAL` doesn't exist. **M1.4.**
 - **Project validator** — `pg-web check` for offline lint. **M1.4.**
-- **Published Docker image** — build locally with `scripts/build-image.sh`. Publishing to Docker Hub / GHCR is a v0.1 release task.
+- **`pg-web init --template <name>`** — scaffold a prebuilt example. **M1.4.**
+- **HTML-escape SQL helper** (`pgweb.html_escape()`) — recommended for raw-text handlers that interpolate user content. Until then, prefer the `.html` + `.sql` mode whenever dynamic values are involved. **M1.4.**
+- **Published Docker image** — build locally with `scripts/build-image.sh`. Publishing to Docker Hub / GHCR is a v0.1 release task (M1.4).
 - **Declarative migrations** — `pg-web migrate create` doesn't exist; raw SQL migrations via `migrate apply` (which does exist, Session 2 A). **Phase 2.5.**
 
 ---

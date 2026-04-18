@@ -2,7 +2,7 @@
 
 Three tiers of tests. Each tier has a distinct scope, a distinct failure mode, and distinct tooling. Tests at tier N don't substitute for tests at tier N+1.
 
-## TL;DR — what actually runs today (post-M1.1)
+## TL;DR — what actually runs today (post-M1.3)
 
 One command runs everything:
 
@@ -10,16 +10,18 @@ One command runs everything:
 scripts/test-all.sh
 ```
 
-It exits non-zero on any failure and prints `All tests passed.` on success. Under the hood it runs three things in order:
+It exits non-zero on any failure and prints `All tests passed.` on success. Four tiers in order:
 
 | Tier | Command | Tests (today) |
 |---|---|---|
-| 1. SQL / pgrx | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | 5 `#[pg_test]` — schema creation, seeded route + template, default handler JSON, table accepts additional rows |
-| 2a. HTTP smoke | `scripts/test-http.sh` (starts PG if needed, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — `GET /` renders seeded template, unknown route returns 404 |
-| 2b. CLI | `cargo test -p pg_web_cli` | 18 tests — 10 path-mapping unit tests (route / handler / template-path derivation including nested + Windows backslashes), 6 `init` integration, 2 `push` hermetic |
-| 3. Docker E2E | *(lands in session 2 — `scripts/test-all.sh` stage 4, Docker-gated, exercises the full CRUD flow)* | 0 today |
+| 1. SQL / pgrx  | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | 8 `#[pg_test]` — schema existence, seed row round-trips, migrations ledger, `(req json)` handler contract |
+| 2a. HTTP smoke | `scripts/test-http.sh` (starts PG, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — seeded `GET /` renders, unknown path returns default 404 body |
+| 2b. CLI        | `cargo test -p pg_web_cli` | 47 — 23 path scanner + reserved-stem tests, 6 migrate unit + 3 hermetic, 6 init integration + 2 push hermetic, 3 `examples/demo/` regression tests, 4 other |
+| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` (requires Docker + `pgweb/postgres:latest`) | 1 — boots the image via testcontainers, migrates + pushes `examples/demo/`, drives full todo CRUD + toggle + delete + custom 404 via HTTP |
 
-Env knobs: `PG_MAJOR=16 scripts/test-all.sh` targets a different Postgres major; the default is 17.
+**58 tests all green via `scripts/test-all.sh`.**
+
+Env knobs: `PG_MAJOR=16 scripts/test-all.sh` targets a different Postgres major; the default is 17. Tier 3 panics with a remediation message if Docker or the image is missing — no silent-skip (the image is a shipped artifact; false green would undermine the tier).
 
 ## CI integration
 
@@ -202,23 +204,28 @@ Checked items are covered; unchecked are next. Grouped by milestone. This matrix
 | `pg-web init` scaffold | Demo app produced by `pg-web init my-app` | M1.1 | ☑ |
 | `pg-web push` | `scripts/test-http.sh` invokes it against the dev PG | M1.1 | ☑ |
 | Docker image boots ext | `docker compose up` → `GET /` returns 200 | M1.1 | ☑ |
-| Handler accepts `req json` arg | `pgweb.pages__*(req json)` uniform signature | M1.3 | ☐ |
-| Raw-text handler mode | POST handler `RETURNS text`, router bypasses Tera | M1.3 | ☐ |
-| Dynamic route (`[id]` param) | Todo detail: `pages/todos/[id].html` | M1.2 | ☐ |
+| Handler accepts `req json` arg | `pgweb.pages__*(req json)` uniform signature | M1.3 | ☑ |
+| Raw-text handler mode | `POST /todos/delete` returns `text`, bypasses Tera | M1.3 | ☑ |
+| Custom 404 template | `pages/_404.html` served on route miss | M1.3 | ☑ |
+| Static handler mode (HTML only, no SQL) | `pages/_404.html` with synthesized `{}` handler | M1.3 | ☑ |
+| `pg-web migrate apply` ledger | `migrations/0001_create_todos.sql` + `pgweb.migrations` | M1.3 | ☑ |
+| Tera `{% for %}` + `{{ }}` | Todo list rendered | M1.3 | ☑ |
+| HTMX POST form (create) | "Add todo" form appends fragment via `hx-swap="beforeend"` | M1.3 | ☑ |
+| HTMX fragment swap (toggle) | `POST /todos/toggle` with `hx-swap="outerHTML"` replaces the `<li>` | M1.3 | ☑ |
+| HTMX empty-body swap (delete) | `POST /todos/delete` text-mode returns `''`, HTMX removes the `<li>` | M1.3 | ☑ |
+| `pg-web up`/`down` stack mgmt | Tutorial uses raw `docker compose` until `up` ships | M1.2 | ☐ |
 | Hot reload: `.sql` save | Edit a todo handler, see change <500ms | M1.2 | ☐ |
 | Hot reload: `.html` save | Same | M1.2 | ☐ |
+| Dynamic route (`[id]` param) | Todo detail: `pages/todos/[id]/index.html` | M1.2 | ☐ |
 | Dev error page | One route intentionally throws | M1.2 | ☐ |
-| `pg-web migrate apply` | Runs `migrations/0001_create_todos.sql` | M1.3 | ☐ |
-| Tera `{% for %}` + `{{ }}` | Todo list rendered | M1.3 | ☐ |
-| HTMX POST form | "Add todo" form | M1.3 | ☐ |
-| HTMX PATCH fragment swap | Toggle complete | M1.3 | ☐ |
-| HTMX DELETE | Delete a todo | M1.3 | ☐ |
-| Validation via `check_violation` | Empty-title CHECK constraint | M1.3 | ☐ |
-| Validation via `unique_violation` | Duplicate-title UNIQUE per user (placeholder until Phase 2 auth) | M1.3 | ☐ |
-| Static asset (small, BYTEA) | `public/styles.css` | M1.3 | ☐ |
+| Static asset (small, BYTEA) | `public/styles.css` linked from the demo | M1.2 | ☐ |
+| Validation via `check_violation` | Empty-title CHECK surfaced to the user | M1.4 | ☐ |
 | Static asset (large, pg_largeobject) | `public/hero.jpg` banner image | M1.4 | ☐ |
 | Secrets via GUC | Dummy API key read in a handler | M1.4 | ☐ |
 | Production 500 page | Dev error path flipped to prod mode | M1.4 | ☐ |
+| `pg-web check` lint | Offline project validator | M1.4 | ☐ |
+| `pg-web init --template todo-demo` | Scaffold the todo app straight from `examples/` | M1.4 | ☐ |
+| `pgweb.html_escape()` SQL helper | Raw-text handler with user content | M1.4 | ☐ |
 | **Phase 2** — auth | Login, logout, RLS-filtered todo list | P2 | ☐ |
 | **Phase 3** — async job | Email confirmation on signup | P3 | ☐ |
 | **Phase 4** — dashboard | Screenshot in README | P4 | ☐ |

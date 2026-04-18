@@ -1,6 +1,7 @@
 # Session 2 — First Interactive Demo (todo app)
 
-**Status:** spec locked 2026-04-18. Starting implementation.
+**Status:** ✅ complete. All five components (A–E) shipped 2026-04-18. M1.3 milestone done.
+**Final commit:** `c2c4985` (feat(test): tier 3 Docker E2E against pgweb/postgres:latest).
 **Theme:** turn pg-web from read-only into interactive. By the end of this session, `examples/demo/` is a functional todo list that a developer can add, toggle, and delete items in via HTMX forms, all served by `docker compose up`.
 
 **Exit criteria:**
@@ -222,3 +223,44 @@ Components land in the order above (A → E), each followed by a stop-and-check:
 3. **C** — Router + request JSON: extension-side work, unblocks interactive handlers. Commit.
 4. **D** — Demo app: exercises everything above. Commit.
 5. **E** — E2E tier: proves the full stack works under the Docker image. Commit.
+
+---
+
+## Recap — what shipped
+
+All five components landed in the order above. Final test state: 58 green via `scripts/test-all.sh` (up from 25 at session start).
+
+| # | Commit    | Component                                             | Headline                                                                                  |
+|---|-----------|-------------------------------------------------------|-------------------------------------------------------------------------------------------|
+| — | `cbdb022` | docs: session 2 spec lock                             | APP-LAYOUT convention + `(req json)` contract + lint tool roadmap item                    |
+| — | `5509495` | fix(test): gate `http_smoke` behind `!pg_test`        | Pre-existing pipeline bug; `scripts/test-all.sh` now passes cold                          |
+| A | `c3960a3` | `pgweb.migrations` ledger + `pg-web migrate apply`    | Forward-only SQL migrations, filename-ordered, atomic per file                            |
+| — | `e8f5d8a` | docs: migrations-vs-push + parking-lot backup idea    | APP-LAYOUT clarification + post-v1 project-in-DB backup concept                           |
+| B | `21cc831` | Directory-as-route layout + `paths::scan()` walker    | `pages/<path>/<method>.{html,sql}`; reserved stems; flat `.html` rejected                 |
+| C | `af50911` | Router `(req json)` + text dispatch + `_404` fallback | Uniform handler contract; dispatch on `template_path` nullability; `_404` reserved stem   |
+| — | `738075c` | docs: sync APP-DEVELOPER-GUIDE/OVERVIEW/ARCHITECTURE  | Replaced aspirational pre-session-1 guide with real spec + current-state snapshot         |
+| — | `a9999fc` | docs(roadmap): M1.2 stack-management + M1.4 template  | `pg-web up/down/dev` scoped at M1.2; `init --template` at M1.4                            |
+| D | `7fed892` | `examples/demo/` todo app + `docs/TUTORIAL.md`        | Full HTMX todo CRUD + step-by-step walkthrough from `pg-web init`                         |
+| E | `c2c4985` | Tier 3 Docker E2E                                     | testcontainers boots `pgweb/postgres:latest`; `migrate apply` + `push` + full CRUD flow. Caught + fixed a static-route synth-handler signature bug introduced by C. |
+
+## Key architectural decisions locked this session
+
+Logged in `docs/ROADMAP.md` § Decision log:
+
+- **Directory-as-route, filename-as-method layout** — `pages/<path>/<method>.{html,sql}`.
+- **Uniform handler contract** — `(req json) RETURNS <json|text>`.
+- **Dispatch via `template_path` nullability** — filesystem shape drives router behavior.
+- **`_404` reserved stem** — fallback routes use the same dispatch pipeline as regular ones.
+- **CLI owns the dev loop (future)** — `pg-web up/down/dev` in M1.2, published image + `init --template` in M1.4.
+- **Tier 3 is mandatory, not opt-skip** — silent-skip defeats the purpose.
+
+## Gotchas hit this session
+
+- **`http_smoke.rs` failed cold.** `cargo pgrx test` runs all tests including integration tests; http_smoke needs an externally-running PG + BGW. Session 1 happened to pass because a dev PG was already running. Fix: `#![cfg(not(feature = "pg_test"))]` at top of the file.
+- **pg_test uniqueness-violation assertion.** Trying to verify `pgweb.migrations` PK with a duplicate INSERT via `Spi::run` propagated the error as a pgrx panic rather than an `Err` we could assert on. Dropped that specific test — PK enforcement is DDL-obvious; two other pg_tests already cover the table.
+- **rustc 1.95 ICE on `[DatumWithOid; N]`.** Session-1 workaround (`format!` + `quote_literal`) extends to the new `req::json` argument injection unchanged.
+- **Synthesized handler arity bug.** Component B's `push.rs` synthesized a zero-arg handler for static routes, but Component C changed the router to call handlers with `(req json)`. Session 2's tier 3 caught the mismatch on the first real `_404` request. Fix: synthesize with `(req json)` too.
+
+## Handoff to Session 3
+
+See `docs/sessions/session_3.md` for the next session's target (M1.2 — interactive dev loop) and work items.
