@@ -20,6 +20,15 @@ enum Command {
         /// Directory name for the new app (also used inside generated templates).
         name: String,
     },
+    /// Sync the current pg-web app directory into a running Postgres.
+    Push {
+        /// Postgres connection URL, e.g. postgres://user:pw@host:5432/db
+        #[arg(long, env = "DATABASE_URL")]
+        url: String,
+        /// App directory to push (defaults to cwd).
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -43,7 +52,17 @@ fn run() -> Result<()> {
             println!("Next steps:");
             println!("  cd {name}");
             println!("  docker compose up -d");
-            println!("  # then hit http://localhost:8080 after the container is healthy");
+            println!("  pg-web push --url postgres://postgres:devpassword@localhost:5432/app");
+            println!("  # then hit http://localhost:8080");
+        }
+        Command::Push { url, dir } => {
+            let summary = pg_web_cli::push::push(&dir, &url)?;
+            println!(
+                "✓ pushed — {} routes, {} templates, {} SQL files",
+                summary.routes_upserted,
+                summary.templates_upserted,
+                summary.sql_files_executed
+            );
         }
     }
     Ok(())

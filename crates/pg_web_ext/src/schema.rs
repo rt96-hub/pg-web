@@ -53,7 +53,12 @@ COMMENT ON SCHEMA pgweb IS 'pg-web framework tables. Managed by the extension an
     bootstrap,
 );
 
-#[cfg(any(test, feature = "pg_test"))]
+// Only compiled under `cargo pgrx test` (which activates the pg_test feature).
+// Plain `cfg(test)` is avoided here because pgrx's schema generator turns
+// that cfg on during introspection, which would embed these `#[pg_test]`
+// wrapper symbols into every install SQL — wrappers that the non-test .so
+// doesn't export, so CREATE EXTENSION would fail.
+#[cfg(feature = "pg_test")]
 #[pgrx::pg_schema]
 mod tests {
     use pgrx::prelude::*;

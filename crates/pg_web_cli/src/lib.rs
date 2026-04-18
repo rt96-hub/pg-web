@@ -4,4 +4,6 @@
 //! them directly without going through `main.rs` (which handles arg parsing).
 
 pub mod init;
+pub mod paths;
+pub mod push;
 mod templates;

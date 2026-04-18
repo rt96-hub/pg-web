@@ -14,8 +14,13 @@ name = "pg-web"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
+
+# push: blocking PG client (no async runtime needed for a one-shot CLI) +
+# recursive walk of pages/.
+postgres = "0.19"
+walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3"

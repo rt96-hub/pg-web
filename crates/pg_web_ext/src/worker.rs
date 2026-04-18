@@ -17,12 +17,21 @@ use crate::{http, logging};
 /// Port the HTTP server binds. Hardcoded for M1.1; will become a GUC later.
 const HTTP_PORT: u16 = 8080;
 
-/// Database the worker connects to for SPI.
-///
-/// TODO(M1.4): read from a `pgweb.database` GUC so production deployments
-/// can point the worker at the user's application database. Hardcoded for
-/// M1.1 because `pg_web_ext` is pgrx's default dev DB name.
-const TARGET_DATABASE: &str = "pg_web_ext";
+/// Env var that selects the database the worker connects to for SPI.
+/// Docker deployments set this to match `POSTGRES_DB`. Dev via
+/// `cargo pgrx run` falls through to the default below.
+const TARGET_DATABASE_ENV: &str = "PGWEB_DATABASE";
+
+/// Fallback database name when neither `PGWEB_DATABASE` nor `POSTGRES_DB`
+/// are set. Matches pgrx's dev default so `cargo pgrx run pg17` works
+/// without any extra configuration.
+const FALLBACK_DATABASE: &str = "pg_web_ext";
+
+fn resolve_target_database() -> String {
+    std::env::var(TARGET_DATABASE_ENV)
+        .or_else(|_| std::env::var("POSTGRES_DB"))
+        .unwrap_or_else(|_| FALLBACK_DATABASE.to_string())
+}
 
 /// Entry point for the background worker process.
 ///
@@ -37,10 +46,11 @@ pub extern "C-unwind" fn pg_web_worker_main(_arg: pg_sys::Datum) {
         SignalWakeFlags::SIGHUP | SignalWakeFlags::SIGTERM,
     );
 
-    // Attach this OS thread to a Postgres backend connection on TARGET_DATABASE.
+    // Attach this OS thread to a Postgres backend connection on the target DB.
     // Required before any `Spi::*` call. Only this thread will have SPI access —
     // hence the single-threaded Tokio runtime below.
-    BackgroundWorker::connect_worker_to_spi(Some(TARGET_DATABASE), None);
+    let target_db = resolve_target_database();
+    BackgroundWorker::connect_worker_to_spi(Some(&target_db), None);
 
     logging::init();
 
@@ -69,7 +79,7 @@ pub extern "C-unwind" fn pg_web_worker_main(_arg: pg_sys::Datum) {
             }
         };
 
-        info!(addr = %addr, db = TARGET_DATABASE, "listening");
+        info!(addr = %addr, db = %target_db, "listening");
 
         if let Err(e) = axum::serve(listener, http::app()).await {
             error!(error = %e, "server exited with error");
