@@ -14,8 +14,8 @@ It exits non-zero on any failure and prints `All tests passed.` on success. Unde
 
 | Tier | Command | Tests (today) |
 |---|---|---|
-| 1. SQL / pgrx | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | 4 `#[pg_test]` — schema creation, table emptiness, insert/select round-trip |
-| 2. HTTP smoke | `scripts/test-http.sh` (starts PG if needed, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — `GET /` returns hello, arbitrary paths hit the fallback |
+| 1. SQL / pgrx | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | 5 `#[pg_test]` — schema creation, seeded route + template, default handler JSON, table accepts additional rows |
+| 2. HTTP smoke | `scripts/test-http.sh` (starts PG if needed, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — `GET /` renders seeded template, unknown route returns 404 |
 | 3. CLI | `cargo test -p pg_web_cli` | 0 tests (populates in M1.1 steps 4-5) |
 
 Env knobs: `PG_MAJOR=16 scripts/test-all.sh` targets a different Postgres major; the default is 17.

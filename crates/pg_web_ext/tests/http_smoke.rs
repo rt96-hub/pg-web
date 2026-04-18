@@ -34,7 +34,11 @@ fn get(path: &str) -> reqwest::blocking::Response {
 }
 
 #[test]
-fn root_returns_hello_from_pg_web() {
+fn root_renders_seeded_template() {
+    // The install SQL seeds a route `GET /` → handler `pgweb.hello_handler` →
+    // template `pages/index.html` with body `<h1>hello from {{ name }}</h1>`.
+    // The handler returns `{"name": "pg-web"}`. So rendering produces HTML
+    // containing `<h1>hello from pg-web</h1>`.
     let resp = get("/");
     assert_eq!(resp.status(), 200);
     let ctype = resp
@@ -42,16 +46,16 @@ fn root_returns_hello_from_pg_web() {
         .get("content-type")
         .map(|v| v.to_str().unwrap_or("").to_string())
         .unwrap_or_default();
-    assert!(ctype.starts_with("text/plain"), "unexpected content-type: {ctype}");
+    assert!(ctype.starts_with("text/html"), "unexpected content-type: {ctype}");
     let body = resp.text().unwrap();
-    assert_eq!(body.trim(), "hello from pg-web");
+    assert!(
+        body.contains("<h1>hello from pg-web</h1>"),
+        "expected rendered template in body, got: {body}"
+    );
 }
 
 #[test]
-fn arbitrary_path_returns_hello() {
-    // Fallback handler: every path returns the same greeting in M1.1.
-    // Will be replaced in M1.1 step 3 when the SPI → Tera pipeline lands.
-    let resp = get("/any/unknown/route?with=query");
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().unwrap().trim(), "hello from pg-web");
+fn unknown_route_returns_404() {
+    let resp = get("/definitely/not/a/real/path");
+    assert_eq!(resp.status(), 404);
 }

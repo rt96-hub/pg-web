@@ -3,6 +3,10 @@
 //! Tables live under the `pgweb` schema (cannot use `pg_web` — Postgres
 //! reserves schema names starting with `pg_`). The CLI writes rows; the
 //! request handler reads them per-request via SPI.
+//!
+//! We also seed a single hello-world route so a fresh `CREATE EXTENSION
+//! pg_web_ext;` produces an immediately-curlable `GET /`. When the CLI's
+//! `pg-web push` lands (M1.1 step 5), it will overwrite these defaults.
 
 use pgrx::extension_sql;
 
@@ -21,6 +25,26 @@ CREATE TABLE pgweb.routes (
 CREATE TABLE pgweb.templates (
     template_path TEXT PRIMARY KEY,
     content       TEXT NOT NULL
+);
+
+-- Default handler for the seeded GET / route. Returns a JSON object that the
+-- seeded template below consumes.
+CREATE FUNCTION pgweb.hello_handler() RETURNS json AS $$
+    SELECT json_build_object('name', 'pg-web')
+$$ LANGUAGE sql STABLE;
+
+INSERT INTO pgweb.routes (path_pattern, method, handler_name, template_path)
+VALUES ('/', 'GET', 'pgweb.hello_handler', 'pages/index.html');
+
+INSERT INTO pgweb.templates (template_path, content) VALUES (
+    'pages/index.html',
+    '<!doctype html>
+<html>
+<body>
+  <h1>hello from {{ name }}</h1>
+</body>
+</html>
+'
 );
 
 COMMENT ON SCHEMA pgweb IS 'pg-web framework tables. Managed by the extension and CLI; do not modify directly.';
@@ -45,34 +69,56 @@ mod tests {
     }
 
     #[pg_test]
-    fn routes_table_is_empty() {
-        let count = Spi::get_one::<i64>("SELECT COUNT(*) FROM pgweb.routes")
-            .expect("count should not error")
-            .expect("count should return a row");
-        assert_eq!(count, 0);
+    fn default_route_seeded() {
+        let handler = Spi::get_one::<String>(
+            "SELECT handler_name FROM pgweb.routes \
+             WHERE method = 'GET' AND path_pattern = '/'",
+        )
+        .expect("route lookup should not error")
+        .expect("default GET / route should be seeded");
+        assert_eq!(handler, "pgweb.hello_handler");
     }
 
     #[pg_test]
-    fn templates_table_is_empty() {
-        let count = Spi::get_one::<i64>("SELECT COUNT(*) FROM pgweb.templates")
-            .expect("count should not error")
-            .expect("count should return a row");
-        assert_eq!(count, 0);
+    fn default_template_seeded() {
+        let content = Spi::get_one::<String>(
+            "SELECT content FROM pgweb.templates WHERE template_path = 'pages/index.html'",
+        )
+        .expect("template lookup should not error")
+        .expect("default template should be seeded");
+        assert!(
+            content.contains("{{ name }}"),
+            "template should contain Tera interpolation placeholder"
+        );
     }
 
     #[pg_test]
-    fn routes_table_accepts_insert_and_upsert() {
+    fn default_handler_returns_expected_json() {
+        let json = Spi::get_one::<pgrx::JsonB>("SELECT pgweb.hello_handler()::jsonb")
+            .expect("handler call should not error")
+            .expect("handler should return a row");
+        // pgrx::JsonB wraps a serde_json::Value
+        let name = json
+            .0
+            .get("name")
+            .and_then(|v| v.as_str())
+            .expect("handler output should contain 'name' field");
+        assert_eq!(name, "pg-web");
+    }
+
+    #[pg_test]
+    fn routes_table_accepts_additional_inserts() {
         Spi::run(
-            "INSERT INTO pgweb.routes (path_pattern, handler_name, template_path) \
-             VALUES ('/', 'home', 'pages/index.html')",
+            "INSERT INTO pgweb.routes (path_pattern, method, handler_name, template_path) \
+             VALUES ('/about', 'GET', 'pgweb.hello_handler', 'pages/index.html')",
         )
         .expect("insert should succeed");
 
-        let handler = Spi::get_one::<String>(
-            "SELECT handler_name FROM pgweb.routes WHERE path_pattern = '/'",
+        let count = Spi::get_one::<i64>(
+            "SELECT COUNT(*) FROM pgweb.routes WHERE path_pattern = '/about'",
         )
-        .expect("select should not error")
-        .expect("select should return a row");
-        assert_eq!(handler, "home");
+        .expect("count should not error")
+        .expect("count should return a row");
+        assert_eq!(count, 1);
     }
 }

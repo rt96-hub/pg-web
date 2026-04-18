@@ -17,6 +17,13 @@ use crate::{http, logging};
 /// Port the HTTP server binds. Hardcoded for M1.1; will become a GUC later.
 const HTTP_PORT: u16 = 8080;
 
+/// Database the worker connects to for SPI.
+///
+/// TODO(M1.4): read from a `pgweb.database` GUC so production deployments
+/// can point the worker at the user's application database. Hardcoded for
+/// M1.1 because `pg_web_ext` is pgrx's default dev DB name.
+const TARGET_DATABASE: &str = "pg_web_ext";
+
 /// Entry point for the background worker process.
 ///
 /// `extern "C-unwind"` (not `extern "C"`) — pgrx 0.18's `#[pg_guard]` expects
@@ -30,14 +37,18 @@ pub extern "C-unwind" fn pg_web_worker_main(_arg: pg_sys::Datum) {
         SignalWakeFlags::SIGHUP | SignalWakeFlags::SIGTERM,
     );
 
+    // Attach this OS thread to a Postgres backend connection on TARGET_DATABASE.
+    // Required before any `Spi::*` call. Only this thread will have SPI access —
+    // hence the single-threaded Tokio runtime below.
+    BackgroundWorker::connect_worker_to_spi(Some(TARGET_DATABASE), None);
+
     logging::init();
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], HTTP_PORT));
-
-    let rt = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+    // Single-threaded current-thread runtime: all async tasks run on this thread,
+    // the one with SPI attached. A multi-threaded runtime would let tasks migrate
+    // to worker threads that lack SPI access, causing panics on any SQL call.
+    let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .thread_name("pg-web-rt")
         .build()
     {
         Ok(rt) => rt,
@@ -46,6 +57,8 @@ pub extern "C-unwind" fn pg_web_worker_main(_arg: pg_sys::Datum) {
             return;
         }
     };
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], HTTP_PORT));
 
     rt.block_on(async move {
         let listener = match tokio::net::TcpListener::bind(addr).await {
@@ -56,11 +69,9 @@ pub extern "C-unwind" fn pg_web_worker_main(_arg: pg_sys::Datum) {
             }
         };
 
-        info!(addr = %addr, "listening");
+        info!(addr = %addr, db = TARGET_DATABASE, "listening");
 
-        let app = http::app();
-
-        if let Err(e) = axum::serve(listener, app).await {
+        if let Err(e) = axum::serve(listener, http::app()).await {
             error!(error = %e, "server exited with error");
         }
     });

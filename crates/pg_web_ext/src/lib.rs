@@ -2,7 +2,9 @@
 
 mod http;
 mod logging;
+mod router;
 mod schema;
+mod templating;
 mod worker;
 
 /// Called by Postgres when our shared library is first loaded.
