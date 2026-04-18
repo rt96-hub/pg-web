@@ -138,6 +138,12 @@ Decision can wait until we have the Phase 1 demo running and can see which pain 
 - [ ] Metrics export in Prometheus format.
 - [ ] Companion app: dashboard walkthrough in its README.
 
+## Parking lot — post-v1 ideas
+
+Speculative. Not yet scoped into a phase; parked here so the thinking isn't lost.
+
+- **Project-in-database backup.** Store the full app source tree (and optionally its `.git/` history) inside framework-owned tables so that `pg_dump` produces a self-contained snapshot of *schema + data + app code*, and `pg_restore` reconstitutes a runnable app from just the dump. Extends the "Postgres is the substrate" thesis end-to-end: you can hand someone a `.dump` file and they have the whole system. Open questions before scoping: where source rows live (framework schema vs a dedicated `pgweb.sources` schema), how big a real `.git/` objects directory gets (CRINGE if multi-GB per commit), whether to store the working tree only (smallest) or objects+refs (restorable repo), and how `pg-web push` + `migrate apply` interact with this (push-on-commit hook that mirrors the working tree into DB rows?). Likely Phase 5+ once the core framework has settled.
+
 ## Out of scope (for v1.x; revisit post-1.0)
 
 - Managed-DB compatibility (RDS, Cloud SQL, Supabase). Fundamentally requires upstream vendor cooperation to allow custom extensions.

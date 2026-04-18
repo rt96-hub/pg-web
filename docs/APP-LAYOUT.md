@@ -191,6 +191,28 @@ Routes for static-only pages (HTML with no SQL) are synthesized by `push`: it in
 - **Reserved stems.** See the filename table. Don't name a file `get.sql`, `head.html`, etc.
 - **Casing.** All filename stems must be lowercase. `Index.html` is not recognized.
 
+## Migrations vs push — two different things
+
+`pg-web migrate apply` and `pg-web push` are separate commands with separate state models. Don't confuse them.
+
+| Command        | Manages                                      | Storage                                              | State model               |
+|----------------|----------------------------------------------|------------------------------------------------------|---------------------------|
+| `migrate apply` | App DDL/DML (your tables, columns, seed data) | `migrations/*.sql` + `pgweb.migrations` ledger        | Append-only history       |
+| `push`          | Routes + templates + handler functions        | `pages/**/*.{html,sql}` + `pgweb.routes`/`.templates` | Fully replaced each time  |
+
+Routes and HTML are **not migrations.** Push idempotently overwrites them to match the current filesystem. Migrations are forward-only — once a `.sql` file's name is in `pgweb.migrations`, that file is never re-run (even if its contents changed — Phase 1 has no checksum).
+
+Framework schema (`pgweb.routes`, `pgweb.templates`, `pgweb.migrations` themselves) is installed by `CREATE EXTENSION pg_web_ext` — neither command creates it. That DDL lives frozen inside the extension's `.so`.
+
+Normal deploy loop:
+
+```bash
+pg-web migrate apply --url "$DATABASE_URL"   # advance app schema (forward-only)
+pg-web push          --url "$DATABASE_URL"   # replace routes/templates/handlers
+```
+
+Run in that order — push assumes the tables the handlers touch exist.
+
 ## Migration from M1.1 flat layout
 
 M1.1 allowed flat files: `pages/about.html` → `/about`. Phase 1 (this spec) requires a directory: `pages/about/index.html`. The scaffold produced by `pg-web init` and the demo app migrate accordingly in the same PR that lands this spec.
