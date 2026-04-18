@@ -46,6 +46,17 @@ cargo pgrx init --pg15 download --pg16 download --pg17 download
 
 Then clone the repo under `/home/pgweb/pg-web`.
 
+### One-time `postgresql.conf` tweak for dev
+
+For the HTTP background worker to actually start, the extension must be loaded at postmaster startup via `shared_preload_libraries` — not just via `CREATE EXTENSION` (which runs install SQL but doesn't force the `.so` to load). Add this line to your pgrx data dir's `postgresql.conf`:
+
+```bash
+echo "shared_preload_libraries = 'pg_web_ext'" >> ~/.pgrx/data-17/postgresql.conf
+# repeat for data-15, data-16 if you're testing those PG versions
+```
+
+After editing, restart PG: `cargo pgrx stop pg17 && cargo pgrx run pg17`. The `_PG_init` callback now runs in shared-preload context, registers the BGW statically, and the postmaster forks the worker before accepting connections. You still run `CREATE EXTENSION pg_web_ext;` once to materialise the framework schema (`pgweb.routes`, `pgweb.templates`) — but the HTTP server comes up independently of that.
+
 ## Dev loop
 
 ### Extension
