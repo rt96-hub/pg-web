@@ -51,9 +51,13 @@ The worker never opens a TCP connection back to Postgres. Every SQL operation us
 Spi::connect(|client| -> Result<_, pgrx::spi::Error> {
     let row = client
         .select(
-            "SELECT handler_sql, template_path FROM pgweb.routes WHERE path = $1",
+            "SELECT handler_name, template_path FROM pgweb.routes \
+             WHERE method = $1 AND path_pattern = $2",
             Some(1),
-            Some(vec![(PgBuiltInOids::TEXTOID.oid(), path.into_datum())]),
+            Some(vec![
+                (PgBuiltInOids::TEXTOID.oid(), method.into_datum()),
+                (PgBuiltInOids::TEXTOID.oid(), path.into_datum()),
+            ]),
         )?
         .first();
     // ...
@@ -76,34 +80,39 @@ Tera chosen for Jinja2-familiar syntax, mature HTML-auto-escape, and runtime tem
 ## The request lifecycle
 
 ```
-Browser GET /posts/42
+Browser GET /todos
        │
        ▼
-┌────────────────────────────────────────────────────────────────┐
-│ Rust HTTP worker (port 8080)                                   │
-│                                                                │
-│  1. Match URL against compiled route table → pattern = /posts/[id], id=42 │
-│                                                                │
-│  2. Open SPI transaction.                                      │
-│                                                                │
-│  3. SPI:  SELECT handler_sql, template_path                    │
-│           FROM pgweb.routes                           │
-│           WHERE path_pattern = '/posts/[id]';                  │
-│                                                                │
-│  4. SPI:  SELECT content FROM pgweb.templates         │
-│           WHERE path = 'pages/posts/[id].html';                │
-│                                                                │
-│  5. SPI:  SELECT get_post_by_id($1);  -- from step 3, id=42    │
-│           → returns json {"post": {"title": "...", ...}}       │
-│                                                                │
-│  6. Tera::render(html_template, json_context)                  │
-│           → rendered HTML string                               │
-│                                                                │
-│  7. Commit SPI transaction. (Rollback if step 5 threw.)        │
-│                                                                │
-│  8. HTTP 200 OK, Content-Type: text/html; charset=utf-8,       │
-│     Body: rendered HTML                                        │
-└────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│ Rust HTTP worker (port 8080)                                       │
+│                                                                    │
+│  1. Parse request: method, URL path, query string, body (if any)   │
+│     Build req = { "body": {...}, "query": {...},                   │
+│                   "method": "GET", "path": "/todos" }              │
+│                                                                    │
+│  2. Open SPI transaction.                                          │
+│                                                                    │
+│  3. SPI:  SELECT handler_name, template_path                       │
+│           FROM pgweb.routes                                        │
+│           WHERE method='GET' AND path_pattern='/todos' LIMIT 1     │
+│                                                                    │
+│  4. If template_path IS NULL → raw-text mode. Skip step 5.         │
+│     Else → fetch template row:                                     │
+│     SPI:  SELECT content FROM pgweb.templates                      │
+│           WHERE template_path='pages/todos/index.html' LIMIT 1     │
+│                                                                    │
+│  5. SPI:  SELECT (pgweb.pages__todos__index($1::json))::text       │
+│           with $1 = req. Returns either a json string (Tera ctx)   │
+│           or a text string (raw HTML/body).                        │
+│                                                                    │
+│  6. If template_path non-NULL: Tera::one_off(template,             │
+│       json_context, auto_escape=true) → rendered HTML string.      │
+│     Else: use handler's text output directly.                      │
+│                                                                    │
+│  7. Commit SPI transaction (rollback if anything in 3-6 threw).    │
+│                                                                    │
+│  8. HTTP 200, Content-Type: text/html; charset=utf-8, body set.    │
+└────────────────────────────────────────────────────────────────────┘
        │
        ▼
 Browser renders response
@@ -111,19 +120,23 @@ Browser renders response
 
 **Invariant:** the SPI transaction covers steps 2-7 atomically. Any exception in 3-6 rolls back. No partial state ever commits.
 
+**Note on status:** the `(req json)` handler signature and template-path-driven dispatch land in Session 2 component C. Through M1.1 the handler signature is zero-arg (`pgweb.hello_handler()`) and `template_path` is always non-NULL.
+
 ## Framework-owned tables
 
-All live in the `pgweb` schema. Table names are prefixed `_pg_web_` to mark them as internal. Creation happens in the extension's `sql/pg_web_ext--0.1.0.sql` install script.
+All live in the `pgweb` schema. Table names are unprefixed inside the schema — the schema name already scopes them. Creation happens in the extension's auto-generated install SQL (`$PGRX_HOME/<ver>/pgrx-install/share/postgresql/extension/pg_web_ext--<ver>.sql`), assembled from `extension_sql!(...)` macros in `crates/pg_web_ext/src/schema.rs`.
 
 | Table | Purpose | Written by | Read by |
 |---|---|---|---|
-| `pgweb.routes` | URL pattern → SQL handler name + template path | CLI | Extension per-request |
-| `pgweb.templates` | Template path → raw HTML string | CLI | Extension per-request |
-| `pgweb.assets_small` | Asset path → `BYTEA` content + content_type | CLI | Extension per-request |
-| `pgweb.assets_large` | Asset path → `pg_largeobject` OID + content_type | CLI | Extension (streamed) |
-| `pgweb.migrations` | Applied migration ledger | CLI | CLI |
+| `pgweb.routes` | `(method, path_pattern)` PK → `handler_name`, nullable `template_path` | CLI `push` | Extension per-request |
+| `pgweb.templates` | `template_path` PK → `content` (raw HTML) | CLI `push` | Extension per-request |
+| `pgweb.migrations` | `name` PK → `applied_at` — ledger of applied migration files | CLI `migrate apply` | CLI `migrate apply` |
+| `pgweb.assets_small` (M1.3) | Asset path → `BYTEA` content + content_type | CLI `push` | Extension per-request |
+| `pgweb.assets_large` (M1.3) | Asset path → `pg_largeobject` OID + content_type | CLI `push` | Extension (streamed) |
 | `pgweb.jobs` (Phase 3) | Async job queue | SQL handlers | Async worker |
 | `pgweb.sessions` (Phase 2) | Session cookies → user IDs | Ext + SQL | Extension |
+
+**`routes.template_path` is nullable.** Non-NULL means the extension fetches the named template and renders the handler's JSON output through Tera. NULL means the handler's text output is sent as-is (raw HTML fragment / no-content response).
 
 User application tables live in `public` (or wherever the developer declares them). pg-web never touches user tables without explicit developer action.
 
@@ -159,20 +172,30 @@ GUCs live in Postgres's configuration memory. Cleared on server restart unless s
 
 ### HTMX form validation
 
-Delegate to Postgres constraints. SQL handlers catch specific exceptions and return targeted HTML fragments:
+Delegate to Postgres constraints. Handlers follow the standard `(req json) RETURNS json|text` contract and catch specific exceptions:
 
 ```sql
-CREATE OR REPLACE FUNCTION sign_up(p_email text, p_password text) RETURNS text AS $$
+-- pages/signup/post.sql
+CREATE OR REPLACE FUNCTION pgweb.pages__signup__post(req json) RETURNS json AS $$
+DECLARE
+  v_email text := req->'body'->>'email';
+  v_pw    text := req->'body'->>'password';
 BEGIN
-  INSERT INTO users(email, password_hash) VALUES (p_email, crypt(p_password, gen_salt('bf')));
-  RETURN '<div hx-swap-oob="true" id="signup-form">Signed up!</div>';
-EXCEPTION WHEN unique_violation THEN
-  RETURN '<div hx-swap-oob="true" id="email-error">Email already taken</div>';
+  INSERT INTO users(email, password_hash)
+  VALUES (v_email, crypt(v_pw, gen_salt('bf', 12)));
+  RETURN json_build_object('ok', true);
+EXCEPTION
+  WHEN unique_violation THEN
+    RETURN json_build_object('ok', false, 'error', 'Email already taken');
+  WHEN check_violation THEN
+    RETURN json_build_object('ok', false, 'error', 'Invalid input');
 END;
 $$ LANGUAGE plpgsql;
 ```
 
-The extension returns whatever string the handler returns. `hx-swap-oob="true"` lets HTMX update arbitrary page regions inline without a full reload.
+`pages/signup/post.html` branches on `{% if ok %}` vs `{% else %}`. `hx-swap-oob="true"` inside the template lets HTMX update multiple page regions from one response.
+
+For responses that are a single HTML fragment with no user-interpolated content, skip the `.html` entirely and return `text` directly — router sends bytes as-is.
 
 ### Logging
 
