@@ -31,7 +31,7 @@ pg-web/
 
 1. **No raw C bindings.** Everything that touches Postgres internals goes through `pgrx`. If pgrx doesn't expose a thing, file an upstream issue or propose a wrapper crate — don't reach for raw FFI.
 2. **HTTPS is out-of-process.** The extension binds plain HTTP on :8080. Caddy terminates TLS in front. Never introduce `rustls` / `openssl` into the extension for termination.
-3. **Extension ↔ CLI are strictly decoupled.** The extension has zero filesystem code. The CLI has zero HTTP-handler logic. They synchronize state *only* by upserting rows into framework-owned tables (`pg_web._pg_web_routes`, `pg_web._pg_web_templates`, `pg_web._pg_web_assets_*`). No shared library crate between them beyond dumb types.
+3. **Extension ↔ CLI are strictly decoupled.** The extension has zero filesystem code. The CLI has zero HTTP-handler logic. They synchronize state *only* by upserting rows into framework-owned tables (`pgweb.routes`, `pgweb.templates`, `pgweb.assets_*`). No shared library crate between them beyond dumb types.
 4. **One HTTP request = one SPI transaction.** Every request opens an SPI transaction on entry. It commits on a clean 2xx response or rolls back on any error. Never leak transactions; never handle a request across multiple transactions.
 5. **Zero network hop inside the extension.** The worker never opens a TCP `postgres://` connection back to Postgres — always SPI. Using `libpq` from the extension is a correctness bug.
 6. **Target Postgres versions are 15, 16, 17 only.** Features must work on all three. No pg18-only dependencies (the feature flag is intentionally absent from `Cargo.toml`).
@@ -42,7 +42,7 @@ pg-web/
 - **pgrx-first patterns.** Use `Spi::run`, `Spi::get_one`, `BackgroundWorkerBuilder`, `#[pg_extern]`, `#[pg_test]`. Read pgrx docs before inventing patterns.
 - **Tests next to code.** Extension tests use `#[pg_test]` and run via `cargo pgrx test pg17`. Don't mock Postgres — run against the real compiled instances under `~/.pgrx/`.
 - **No premature abstraction.** Three duplicated lines beats the wrong trait. The extension is small; keep modules flat until patterns genuinely emerge.
-- **Error handling on the request path.** No `unwrap()` / `expect()` in the HTTP handler. Fatal SQL exceptions → generic 500 in prod, rich debug page in dev (mode from the `pg_web.env` GUC).
+- **Error handling on the request path.** No `unwrap()` / `expect()` in the HTTP handler. Fatal SQL exceptions → generic 500 in prod, rich debug page in dev (mode from the `pgweb.env` GUC).
 - **Every feature ships with a companion-app flow.** If a feature isn't exercised in `examples/demo/`, it isn't done. See `docs/TESTING.md`.
 - **Phase discipline.** We are in **Phase 1** (Synchronous Core). Do not add Phase 2+ features (auth/RLS, job queues, dashboard) into Phase 1 code paths. Stage them properly.
 
@@ -78,6 +78,8 @@ pg-web/
 See `docs/ARCHITECTURE.md` and `docs/ROADMAP.md` for current defaults.
 
 - Asset size cutoff (BYTEA vs pg_largeobject): 1 MiB default — not benchmarked.
-- Framework schema name: `pg_web` vs `_pg_web` — tentatively `pg_web`.
+
+Resolved 2026-04-17:
+- Framework schema name: **`pgweb`** (Postgres reserves names starting with `pg_` for system schemas — SQLSTATE 42939 blocks `CREATE SCHEMA pg_web`).
 
 When one of these is resolved, update this file and the corresponding doc in the same commit.

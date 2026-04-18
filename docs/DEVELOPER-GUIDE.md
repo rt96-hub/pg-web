@@ -37,7 +37,7 @@ cargo pgrx test pg17      # Run #[pg_test] suite inside live PG17
 cargo pgrx install        # Install into a system-wide PG (rare — use Docker instead)
 ```
 
-`cargo pgrx run` opens a psql session with the extension pre-loaded via `CREATE EXTENSION pg_web;`. When you exit psql (`\q`), the temporary Postgres instance shuts down cleanly.
+`cargo pgrx run` opens a psql session with the extension pre-loaded via `CREATE EXTENSION pg_web_ext;`. When you exit psql (`\q`), the temporary Postgres instance shuts down cleanly.
 
 Standard cargo commands also work but require `--features pgXX` because the ext crate uses pgrx's feature-flag-gated bindgen:
 
@@ -127,12 +127,12 @@ Publishing:
 
 SemVer. Breaking SQL schema changes bump minor or major.
 
-Each bump ships a migration script `crates/pg_web_ext/sql/pg_web--A.B--C.D.sql`. Users upgrade:
+Each bump ships a migration script `crates/pg_web_ext/sql/pg_web_ext--A.B--C.D.sql`. Users upgrade:
 
 ```
 docker compose pull   # pulls new pgweb/postgres:latest
 docker compose up -d  # reloads with new .so
-psql> ALTER EXTENSION pg_web UPDATE TO '1.1';
+psql> ALTER EXTENSION pg_web_ext UPDATE TO '1.1';
 ```
 
 Postgres runs the migration script natively. User data untouched.

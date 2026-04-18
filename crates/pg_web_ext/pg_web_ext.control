@@ -1,4 +1,4 @@
-comment = 'pg_web_ext:  Created by pgrx'
+comment = 'pg-web — Zero-Proxy PostgreSQL web framework'
 default_version = '@CARGO_VERSION@'
 module_pathname = 'pg_web_ext'
 relocatable = false

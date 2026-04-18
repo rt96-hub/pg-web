@@ -101,7 +101,7 @@ What `pg-web push` does:
 
 1. Opens a single transaction to the remote DB.
 2. Runs any unapplied migrations from `migrations/`.
-3. Upserts rows into `_pg_web_routes`, `_pg_web_templates`, `_pg_web_assets_*`.
+3. Upserts rows into `routes`, `templates`, `_pg_web_assets_*`.
 4. Commits — or rolls back the entire deploy if anything fails.
 
 Zero downtime. No container rebuild. No rolling restart. New traffic picks up the new routing table on the next SPI lookup.
@@ -113,9 +113,9 @@ When a new pg-web extension version ships:
 1. SSH to the VPS.
 2. `docker compose pull` — fetches the new `pgweb/postgres:latest`.
 3. `docker compose up -d` — restarts with the new `.so` loaded.
-4. Connect via `psql` or from the app and run `ALTER EXTENSION pg_web UPDATE;`.
+4. Connect via `psql` or from the app and run `ALTER EXTENSION pg_web_ext UPDATE;`.
 
-Postgres natively executes the included migration script (`pg_web--A.B--C.D.sql`). User data is untouched; framework schema migrates.
+Postgres natively executes the included migration script (`pg_web_ext--A.B--C.D.sql`). User data is untouched; framework schema migrates.
 
 ## Backup
 
@@ -146,7 +146,7 @@ Two patterns, both deferred to post-1.0:
 
 - **Container logs:** `docker compose logs -f postgres`. pg-web's Rust worker emits structured JSON lines to stdout.
 - **Datadog / CloudWatch / Loki:** point your log driver at them — no extra pg-web config.
-- **Prometheus (Phase 4):** the extension exposes `/_pg_web/metrics` in Prometheus format.
+- **Prometheus (Phase 4):** the extension exposes `/_pgweb/metrics` in Prometheus format.
 - **Native Postgres stats:** `pg_stat_statements`, `pg_stat_activity` work as usual.
 
 ## Security checklist
@@ -155,6 +155,6 @@ Two patterns, both deferred to post-1.0:
 - [ ] DB port 5432 not exposed publicly (use SSH tunnel or Tailscale).
 - [ ] Caddy on latest patch version.
 - [ ] Postgres on latest patch version (patch releases don't break the ABI; the `pgweb/postgres:pg17-X.Y` tag tracks upstream).
-- [ ] `pg_web.env = 'production'` set before deploy — disables the debug error page.
+- [ ] `pgweb.env = 'production'` set before deploy — disables the debug error page.
 - [ ] Secrets via `pg-web env set`, never in committed files.
 - [ ] Postgres `pg_hba.conf` configured to restrict connection sources.

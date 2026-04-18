@@ -30,7 +30,7 @@ my-app/
   public/
     styles.css
   schema.prisma
-  pg_web.toml
+  pgweb.toml
 ```
 
 1. Write `pages/posts/[id].sql` returning a JSON object.

@@ -20,10 +20,10 @@ mod tests {
     #[pg_test]
     fn test_route_lookup_returns_handler() {
         Spi::run("
-            CREATE SCHEMA IF NOT EXISTS pg_web;
-            CREATE TABLE IF NOT EXISTS pg_web._pg_web_routes
+            CREATE SCHEMA IF NOT EXISTS pgweb;
+            CREATE TABLE IF NOT EXISTS pgweb.routes
               (path_pattern text PRIMARY KEY, handler text, template_path text);
-            INSERT INTO pg_web._pg_web_routes
+            INSERT INTO pgweb.routes
               VALUES ('/', 'home_handler', 'pages/index.html');
         ").unwrap();
 
@@ -85,7 +85,7 @@ fn hot_reload_uploads_template_on_save() {
 
     let conn = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let row = conn.query_one(
-        "SELECT content FROM pg_web._pg_web_templates WHERE path = 'pages/index.html'",
+        "SELECT content FROM pgweb.templates WHERE path = 'pages/index.html'",
         &[],
     ).unwrap();
     assert_eq!(row.get::<_, String>(0), "<h1>Hi</h1>");

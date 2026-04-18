@@ -14,10 +14,10 @@ Goal: `pg-web init` a project, `docker compose up -d`, `pg-web push`, `curl loca
 - [x] Local pgrx dev environment (`cargo pgrx init` → PG 15.17/16.13/17.9 in `~/.pgrx/`).
 - [ ] Background worker registered via `BackgroundWorkerBuilder`; boots with extension.
 - [ ] HTTP server (**Axum leaning** — see ARCHITECTURE.md) binds `:8080` inside the worker.
-- [ ] Framework schema (`pg_web`) + minimal tables: `_pg_web_routes`, `_pg_web_templates`.
+- [ ] Framework schema (`pgweb`) + minimal tables: `routes`, `templates`.
 - [ ] Request lifecycle (happy path only): SPI route lookup → SPI handler call → Tera render → HTTP response.
 - [ ] Tera template engine integrated; auto-escape on by default.
-- [ ] CLI `pg-web init` — scaffolds `pages/index.html`, `pages/index.sql`, `docker-compose.yml`, `pg_web.toml`, `Caddyfile`.
+- [ ] CLI `pg-web init` — scaffolds `pages/index.html`, `pages/index.sql`, `docker-compose.yml`, `pgweb.toml`, `Caddyfile`.
 - [ ] CLI `pg-web push` — one-shot sync of routes + templates to a local/remote DB.
 - [ ] Docker image `pgweb/postgres:latest` (PG 17 + extension preinstalled).
 - [ ] Companion app `examples/demo/` at this stage = minimal hello-world page that proves the loop works. **This is NOT the first "real" demo — see Milestone 1.3.**
@@ -39,7 +39,7 @@ Goal: a developer can run `pg-web dev`, save a `.sql` file, and see the change r
 Goal: `examples/demo/` is a fully functional todo list with real DB interactions, not a toy. Exercises the framework surface from the user's POV.
 
 - [ ] Todo list schema (raw `.sql` migration files — no declarative diffing yet).
-- [ ] CLI `pg-web migrate apply` — runs raw SQL migrations in order, records in `_pg_web_migrations` ledger. (No `migrate create` / diffing in Phase 1 — punted to later phase. Users hand-write migration SQL.)
+- [ ] CLI `pg-web migrate apply` — runs raw SQL migrations in order, records in `migrations` ledger. (No `migrate create` / diffing in Phase 1 — punted to later phase. Users hand-write migration SQL.)
 - [ ] CRUD routes (index, create, update, delete, toggle complete).
 - [ ] HTMX patterns: form submit with `hx-swap-oob`, out-of-band swap on validation errors.
 - [ ] Unique/check constraint validation exercised in the todo "add" flow.
@@ -70,13 +70,13 @@ Goal: close out Phase 1 for a releasable v0.1.
 ### Deliverables
 
 - [ ] Native cookie-based session management. Framework-provided SQL helpers:
-  - `pg_web.session_create(user_id)` → returns signed cookie value
-  - `pg_web.session_validate(cookie)` → returns user_id or null
-- [ ] Rust worker: on each request, read `Cookie` header, call `session_validate` via SPI, set `pg_web.user_id` for the transaction via `SET LOCAL`.
+  - `pgweb.session_create(user_id)` → returns signed cookie value
+  - `pgweb.session_validate(cookie)` → returns user_id or null
+- [ ] Rust worker: on each request, read `Cookie` header, call `session_validate` via SPI, set `pgweb.user_id` for the transaction via `SET LOCAL`.
 - [ ] **RLS Bridge:** documented pattern for user tables:
   ```sql
   CREATE POLICY tenant_isolation ON posts
-    USING (author_id = current_setting('pg_web.user_id')::bigint);
+    USING (author_id = current_setting('pgweb.user_id')::bigint);
   ```
 - [ ] CSRF protection (double-submit cookie pattern, automatic on HTMX non-GET requests).
 - [ ] Password hashing helpers using `pgcrypto` (`crypt` + `gen_salt('bf', 12)`).
@@ -108,12 +108,12 @@ Decision can wait until we have the Phase 1 demo running and can see which pain 
 ### Deliverables
 
 - [ ] Second pgrx background worker dedicated to job queues.
-- [ ] `pg_web._pg_web_jobs` table + state machine (pending / running / succeeded / failed / retrying).
-- [ ] SQL API: `pg_web.enqueue(job_type, payload, run_at?)`.
+- [ ] `pgweb.jobs` table + state machine (pending / running / succeeded / failed / retrying).
+- [ ] SQL API: `pgweb.enqueue(job_type, payload, run_at?)`.
 - [ ] Async job runner: polls queue, dispatches to registered handlers (HTTP, email, generic).
 - [ ] Built-in handlers: HTTP request (via `reqwest`), email (SMTP via `lettre`).
 - [ ] **Internal concurrency management:** HTTP-level queue inside the web worker's Tokio runtime. Traffic spikes absorbed at the web tier before opening SPI transactions — prevents Postgres connection exhaustion.
-- [ ] Health endpoints (`/_pg_web/health`, `/_pg_web/metrics`) for load balancer probes.
+- [ ] Health endpoints (`/_pgweb/health`, `/_pgweb/metrics`) for load balancer probes.
 - [ ] Companion app: webhook handler, email confirmation on signup (via job queue).
 
 ## Phase 4 — Observability & Tooling
@@ -122,7 +122,7 @@ Decision can wait until we have the Phase 1 demo running and can see which pain 
 
 ### Deliverables
 
-- [ ] `/_pg_web/dashboard` — token-protected in-browser admin UI served by the extension.
+- [ ] `/_pgweb/dashboard` — token-protected in-browser admin UI served by the extension.
 - [ ] Live request trace viewer: per-request SPI query list, timing, memory allocation.
 - [ ] Slow-query ring buffer with EXPLAIN ANALYZE output.
 - [ ] PL/pgSQL breakpoint support via `pldbgapi` integration.
@@ -150,3 +150,5 @@ Track architectural decisions here as they solidify. Each entry: date, decision,
 - *2026-04-17* — **Milestone 1.1 walking skeleton includes CLI + Docker Compose,** not just the extension. Rationale: user experience loop must work end-to-end from day one; an extension without the CLI scaffolding is not a validated framework.
 - *2026-04-17* — **First "real" companion app = todo list** (Milestone 1.3). The walking-skeleton hello-world at 1.1 is not the demo app — it's just proof-of-life. The todo list exercises migrations, HTMX forms, validation, and static assets honestly.
 - *2026-04-17* — **Axum chosen as HTTP library**, used as a thin shell. Rationale: pg-web's "routing lives in the DB" model maps cleanly to Axum's fallback-handler pattern; Tower middleware simplifies per-request SPI transaction wrapping + request-ID tracing; Axum doesn't hide Hyper, so dropping to raw Hyper later stays cheap. Hyper-raw was considered (for tighter control / fewer abstractions) but rejected for the cost of rebuilding URL/header/query parsing for a small HTTP surface. Actix-web was considered and rejected over governance concerns and weaker Tower composability.
+- *2026-04-17* — **Framework schema named `pgweb`** (no underscore), tables `pgweb.routes` / `pgweb.templates` / `pgweb.assets_*` etc. Rationale: Postgres reserves schema names starting with `pg_` for system schemas (`CREATE SCHEMA pg_web` returns `SQLSTATE 42939 reserved_name`). Underscore-prefixed alternatives like `_pg_web` still trip up convention. `pgweb` reads cleanly, matches the Docker Hub namespace (`pgweb/postgres`), and avoids all reserved-name collisions. Table names inside the schema don't need a double prefix — schema name already scopes them.
+- *2026-04-17* — **Dedicated WSL user `pgweb` (uid 1001) for development,** not root. Rationale: Postgres's `initdb` refuses to run as root, breaking `cargo pgrx test` / `cargo pgrx run`. `/home/pgweb/pg-web` is the project path; `/home/pgweb/.pgrx/` holds local PG installs.

@@ -24,14 +24,14 @@ Three top-level components:
 
 When Postgres's `postmaster` boots, it reads the extension's `_PG_init()` and registers a background worker via `BackgroundWorkerBuilder`. The postmaster forks a dedicated OS process for this worker — detached from any client connection, with its own SPI context and shared memory attachment.
 
-Inside that process, the extension boots a Rust async HTTP server bound to `:8080` (configurable via the `pg_web.port` GUC). The server owns its own Tokio runtime, which is started explicitly inside the worker's `pg_main` function — **not** via the `#[tokio::main]` attribute, because the worker entry point is called by Postgres's background-worker machinery, not by a Rust `main()`.
+Inside that process, the extension boots a Rust async HTTP server bound to `:8080` (configurable via the `pgweb.port` GUC). The server owns its own Tokio runtime, which is started explicitly inside the worker's `pg_main` function — **not** via the `#[tokio::main]` attribute, because the worker entry point is called by Postgres's background-worker machinery, not by a Rust `main()`.
 
 **HTTP library: Axum** (locked 2026-04-17).
 
 Rationale: our routing is not compile-time `Router::new().route(...)` — our routes live in the database and are resolved per-request via SPI. So we use Axum as a **thin shell**:
 
 - A single `fallback` handler catches every request.
-- That handler opens the SPI transaction, looks up the route in `pg_web._pg_web_routes`, runs the handler SQL, renders via Tera, and returns.
+- That handler opens the SPI transaction, looks up the route in `pgweb.routes`, runs the handler SQL, renders via Tera, and returns.
 - Tower middleware wraps each request with (a) a tracing span + request ID, (b) the SPI transaction boundary, (c) graceful shutdown.
 - Axum's extractors are used lightly: `Method`, `Path` (raw string), `Query`, `HeaderMap`. We do not use route-parameter extractors because routes aren't known at compile time.
 
@@ -51,7 +51,7 @@ The worker never opens a TCP connection back to Postgres. Every SQL operation us
 Spi::connect(|client| -> Result<_, pgrx::spi::Error> {
     let row = client
         .select(
-            "SELECT handler_sql, template_path FROM pg_web._pg_web_routes WHERE path = $1",
+            "SELECT handler_sql, template_path FROM pgweb.routes WHERE path = $1",
             Some(1),
             Some(vec![(PgBuiltInOids::TEXTOID.oid(), path.into_datum())]),
         )?
@@ -66,7 +66,7 @@ SPI runs against Postgres's in-memory shared buffers. No network. No pooling. No
 
 Tera is compiled directly into the extension. On each request, the worker:
 
-1. Fetches the raw HTML template string from `pg_web._pg_web_templates` via SPI.
+1. Fetches the raw HTML template string from `pgweb.templates` via SPI.
 2. Fetches the JSON payload from the developer's SQL handler via SPI.
 3. Calls `Tera::one_off(template, &context, auto_escape=true)`.
 4. Ships the rendered string.
@@ -87,10 +87,10 @@ Browser GET /posts/42
 │  2. Open SPI transaction.                                      │
 │                                                                │
 │  3. SPI:  SELECT handler_sql, template_path                    │
-│           FROM pg_web._pg_web_routes                           │
+│           FROM pgweb.routes                           │
 │           WHERE path_pattern = '/posts/[id]';                  │
 │                                                                │
-│  4. SPI:  SELECT content FROM pg_web._pg_web_templates         │
+│  4. SPI:  SELECT content FROM pgweb.templates         │
 │           WHERE path = 'pages/posts/[id].html';                │
 │                                                                │
 │  5. SPI:  SELECT get_post_by_id($1);  -- from step 3, id=42    │
@@ -113,17 +113,17 @@ Browser renders response
 
 ## Framework-owned tables
 
-All live in the `pg_web` schema. Table names are prefixed `_pg_web_` to mark them as internal. Creation happens in the extension's `sql/pg_web--0.1.0.sql` install script.
+All live in the `pgweb` schema. Table names are prefixed `_pg_web_` to mark them as internal. Creation happens in the extension's `sql/pg_web_ext--0.1.0.sql` install script.
 
 | Table | Purpose | Written by | Read by |
 |---|---|---|---|
-| `pg_web._pg_web_routes` | URL pattern → SQL handler name + template path | CLI | Extension per-request |
-| `pg_web._pg_web_templates` | Template path → raw HTML string | CLI | Extension per-request |
-| `pg_web._pg_web_assets_small` | Asset path → `BYTEA` content + content_type | CLI | Extension per-request |
-| `pg_web._pg_web_assets_large` | Asset path → `pg_largeobject` OID + content_type | CLI | Extension (streamed) |
-| `pg_web._pg_web_migrations` | Applied migration ledger | CLI | CLI |
-| `pg_web._pg_web_jobs` (Phase 3) | Async job queue | SQL handlers | Async worker |
-| `pg_web._pg_web_sessions` (Phase 2) | Session cookies → user IDs | Ext + SQL | Extension |
+| `pgweb.routes` | URL pattern → SQL handler name + template path | CLI | Extension per-request |
+| `pgweb.templates` | Template path → raw HTML string | CLI | Extension per-request |
+| `pgweb.assets_small` | Asset path → `BYTEA` content + content_type | CLI | Extension per-request |
+| `pgweb.assets_large` | Asset path → `pg_largeobject` OID + content_type | CLI | Extension (streamed) |
+| `pgweb.migrations` | Applied migration ledger | CLI | CLI |
+| `pgweb.jobs` (Phase 3) | Async job queue | SQL handlers | Async worker |
+| `pgweb.sessions` (Phase 2) | Session cookies → user IDs | Ext + SQL | Extension |
 
 User application tables live in `public` (or wherever the developer declares them). pg-web never touches user tables without explicit developer action.
 
@@ -131,9 +131,9 @@ User application tables live in `public` (or wherever the developer declares the
 
 ### Static assets
 
-- **Files < 1 MiB** (CSS, JS, small SVG): stored in `BYTEA` column in `_pg_web_assets_small`. Served with aggressive caching: `Cache-Control: public, max-age=31536000, immutable` once content-hashed.
+- **Files < 1 MiB** (CSS, JS, small SVG): stored in `BYTEA` column in `assets_small`. Served with aggressive caching: `Cache-Control: public, max-age=31536000, immutable` once content-hashed.
 - **Files ≥ 1 MiB** (images, fonts, video): stored in Postgres's native `pg_largeobject` system. Streamed out via SPI `lo_open` / `lo_read` so memory usage stays bounded regardless of file size.
-- Cutoff configurable in `pg_web.toml` under `[assets] large_cutoff_bytes`. Default 1048576.
+- Cutoff configurable in `pgweb.toml` under `[assets] large_cutoff_bytes`. Default 1048576.
 
 ### Secrets management
 
@@ -146,13 +146,13 @@ pg-web env set STRIPE_SECRET_KEY=sk_live_...
 Which invokes:
 
 ```sql
-ALTER DATABASE myapp SET pg_web.STRIPE_SECRET_KEY = 'sk_live_...';
+ALTER DATABASE myapp SET pgweb.STRIPE_SECRET_KEY = 'sk_live_...';
 ```
 
 SQL handlers read them via:
 
 ```sql
-SELECT current_setting('pg_web.STRIPE_SECRET_KEY');
+SELECT current_setting('pgweb.STRIPE_SECRET_KEY');
 ```
 
 GUCs live in Postgres's configuration memory. Cleared on server restart unless set at ALTER DATABASE / ALTER ROLE level. Not encrypted at rest (acknowledged trade-off — they're accessible to anyone with `pg_read_all_settings`, which in practice means anyone with DB access).
@@ -183,7 +183,7 @@ The extension returns whatever string the handler returns. `hx-swap-oob="true"` 
 
 ### Error handling
 
-Two modes, selected by the `pg_web.env` GUC (`development` or `production`):
+Two modes, selected by the `pgweb.env` GUC (`development` or `production`):
 
 - **Production:** fatal SQL exception → HTTP 500 with a generic opaque error page. Stack traces suppressed.
 - **Development:** fatal SQL exception → HTTP 500 with a styled debug page inspired by Laravel Ignition and Rails's error pages. Includes:
@@ -195,7 +195,7 @@ Two modes, selected by the `pg_web.env` GUC (`development` or `production`):
 
 The dev error page is served by the extension directly — not dependent on any user-defined template.
 
-## Configuration (`pg_web.toml`)
+## Configuration (`pgweb.toml`)
 
 Lives at the app root. Loaded by the CLI, pushed into the database as GUCs on `pg-web dev` / `push`.
 
