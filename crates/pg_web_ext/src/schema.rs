@@ -27,6 +27,14 @@ CREATE TABLE pgweb.templates (
     content       TEXT NOT NULL
 );
 
+-- Ledger of raw-SQL migrations applied via `pg-web migrate apply`. Phase 1
+-- tracks file identity only (by name). Phase 2+ may add checksum for drift
+-- detection; for now the assumption is that migration files are append-only.
+CREATE TABLE pgweb.migrations (
+    name       TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Default handler for the seeded GET / route. Returns a JSON object that the
 -- seeded template below consumes.
 CREATE FUNCTION pgweb.hello_handler() RETURNS json AS $$
@@ -125,5 +133,27 @@ mod tests {
         .expect("count should not error")
         .expect("count should return a row");
         assert_eq!(count, 1);
+    }
+
+    #[pg_test]
+    fn migrations_table_exists_and_is_empty() {
+        let count = Spi::get_one::<i64>("SELECT COUNT(*) FROM pgweb.migrations")
+            .expect("query should not error")
+            .expect("count should return a row");
+        assert_eq!(count, 0, "migrations ledger should be empty on fresh install");
+    }
+
+    #[pg_test]
+    fn migrations_applied_at_defaults_to_now() {
+        Spi::run("INSERT INTO pgweb.migrations (name) VALUES ('0002_users.sql')")
+            .expect("insert should succeed");
+
+        let within = Spi::get_one::<bool>(
+            "SELECT applied_at >= now() - interval '5 seconds' \
+             FROM pgweb.migrations WHERE name = '0002_users.sql'",
+        )
+        .expect("query should not error")
+        .expect("row should exist");
+        assert!(within, "applied_at should default to current transaction time");
     }
 }

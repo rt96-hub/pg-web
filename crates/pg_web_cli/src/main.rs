@@ -29,6 +29,24 @@ enum Command {
         #[arg(long, default_value = ".")]
         dir: PathBuf,
     },
+    /// Manage raw-SQL migrations.
+    Migrate {
+        #[command(subcommand)]
+        action: MigrateAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum MigrateAction {
+    /// Apply pending migrations from `<dir>/migrations/` in filename order.
+    Apply {
+        /// Postgres connection URL.
+        #[arg(long, env = "DATABASE_URL")]
+        url: String,
+        /// App directory containing `migrations/` (defaults to cwd).
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -64,6 +82,22 @@ fn run() -> Result<()> {
                 summary.sql_files_executed
             );
         }
+        Command::Migrate { action } => match action {
+            MigrateAction::Apply { url, dir } => {
+                let summary = pg_web_cli::migrate::apply(&dir, &url)?;
+                for name in &summary.applied {
+                    println!("✓ applied {name}");
+                }
+                for name in &summary.skipped {
+                    println!("— skipped {name} (already in ledger)");
+                }
+                println!(
+                    "{} applied, {} skipped",
+                    summary.applied.len(),
+                    summary.skipped.len()
+                );
+            }
+        },
     }
     Ok(())
 }
