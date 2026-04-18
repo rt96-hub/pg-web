@@ -24,11 +24,13 @@ Goal: `pg-web init` a project, `docker compose up -d`, `pg-web push`, `curl loca
 
 ### Milestone 1.2 — Interactive Dev Loop
 
-Goal: a developer can run `pg-web dev`, save a `.sql` file, and see the change reflected at `localhost:8080` without restarting anything.
+Goal: a developer can run `pg-web dev`, save a `.sql` file, and see the change reflected at `localhost:8080` without restarting anything. The CLI also owns stack lifecycle — users shouldn't need to think about `docker compose` directly for day-to-day work.
 
-- [ ] CLI `pg-web dev` — file watcher on `pages/` and `public/`.
+- [ ] CLI `pg-web up` — starts the Docker Compose stack, waits for PG + `:8080` readiness, resolves `DATABASE_URL` from `pgweb.toml`, prints the URL. Shortcut that replaces manual `docker compose up -d` + remembering the connection string.
+- [ ] CLI `pg-web down` — stops the stack. `--volumes` flag drops the data volume.
+- [ ] CLI `pg-web dev` — file watcher on `pages/` and `public/`. Auto-invokes `up` if stack isn't running. Auto-re-pushes on `.sql`/`.html` save. Streams container logs.
 - [ ] Shift-left SQL pre-flight: parse and run in `BEGIN; ... ROLLBACK;` before applying live.
-- [ ] Dynamic route patterns — `pages/posts/[id].html` matches `/posts/:id` with `id` as a SQL parameter.
+- [ ] Dynamic route patterns — `pages/posts/[id].html` matches `/posts/:id` with `id` threaded into `req.path_params`.
 - [ ] Dev-mode error page (SQLSTATE, MESSAGE, DETAIL, HINT, file, line, transaction state).
 - [ ] Production-mode generic 500 page.
 - [ ] Structured JSON logging: NOTICE/LOG capture → stdout.
@@ -53,6 +55,7 @@ Goal: close out Phase 1 for a releasable v0.1.
 - [ ] CLI `pg-web env set KEY=VAL` / `env list` / `env unset KEY` — GUC injection for secrets.
 - [ ] Asset serving in the demo app with a large asset (image via `pg_largeobject`).
 - [ ] `pg-web push` polished for prod deploy (transaction-wrapped, migration-runner integrated).
+- [ ] CLI `pg-web init --template <name>` — fetches a named example (initially `todo-demo`) from this repo's `examples/` tree and drops it into the user's directory. Mirrors Next.js's `create-next-app --example <name>` pattern. Opt-in; plain `init` stays the minimal hello-world scaffold.
 - [ ] CLI `pg-web check` — offline project validator (no IDE/LSP). Walks `pages/`, `migrations/`, `pgweb.toml`; reports:
   - Layout violations (flat `.html` under `pages/`, reserved stems, missing sibling files when required).
   - Tera template parse errors (compile templates, don't render).
@@ -169,3 +172,4 @@ Track architectural decisions here as they solidify. Each entry: date, decision,
 - *2026-04-18* — **App layout: directory = route, filename = method.** Each directory under `pages/` is a URL route; `index.html`/`index.sql` = GET, `post.html`/`post.sql` = POST. Either file is optional — `.html` alone = static, `.sql` alone = raw-text handler, both = JSON→Tera pipeline. Flat `pages/about.html` no longer valid. Full spec in `docs/APP-LAYOUT.md`. Rationale: one mental model for pages, API endpoints, and HTMX fragments — simpler than Next.js (which splits page.tsx vs route.ts) and SvelteKit (which uses `+page.server.ts` actions). Canonical DX for our HTMX-first target.
 - *2026-04-18* — **Handler signature: single `json` arg, shape `{ body, query, method, path }`.** Every `.sql` handler is `pgweb.pages__<name>(req json) RETURNS <json|text>`. `body` and `query` always objects (never null) — `req->'body'->>'key'` always safe. Uniform signature keeps the router code path singular and leaves room to grow (`path_params`, `session`, `headers`) without re-signing every handler.
 - *2026-04-18* — **POST return contract: dispatch via `template_path` nullability.** If `.html` sibling exists → CLI writes `template_path` → router expects JSON return + Tera render. If only `.sql` → `template_path` NULL → router expects text return + bytes-as-is. No new schema column, no per-route flag; filesystem is source of truth. Alternatives (per-route `skip_template` bool, `pg_proc.prorettype` lookup each request) rejected as either redundant with filesystem state or a per-request performance cost.
+- *2026-04-18* — **CLI owns the full dev loop; Docker should be invisible day-to-day.** The target UX is `cargo install pg-web-cli` → `pg-web init` → `pg-web up` → `pg-web dev`, with the CLI managing compose, pulling the published image on first run, and auto-resolving `DATABASE_URL`. Scoped to M1.2 (`up`/`down`/`dev`) + M1.4 (published image + `init --template`). Rationale: lowering the install surface matters as much as the runtime model; if users have to think about `docker compose up -d` and connection strings every session, the "Postgres is your whole stack" pitch gets tax-heavy. Mirrors `next dev` / `rails server` — one command, stack handled.
