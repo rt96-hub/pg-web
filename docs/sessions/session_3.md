@@ -12,6 +12,66 @@ pg-web dev          # watches pages/ and public/; auto-pushes on save; streams l
 pg-web down         # stops the stack (or leave it; `up` is idempotent)
 ```
 
+---
+
+## State of the project at Session 3 start
+
+### What's working today
+
+- Extension installs via `CREATE EXTENSION pg_web_ext`. Framework schema has three tables: `pgweb.routes`, `pgweb.templates`, `pgweb.migrations`.
+- HTTP server binds `:8080` from a background worker. Axum thin-shell over our own router.
+- Every request = one SPI transaction. Handler contract: `pgweb.pages__<name>(req json) RETURNS <json|text>` with `req = { body, query, method, path }`.
+- Dispatch: `template_path` non-NULL → Tera render, NULL → raw-text passthrough. Decided by whether the `.sql` has a sibling `.html`.
+- Fallback `_404` route supported (root scope only in Phase 1). Served at HTTP 404 status with custom body, or a hardcoded minimal 404 when no user template.
+- CLI: `init <name>` / `migrate apply --url` / `push --url`.
+- Docker image `pgweb/postgres:latest` builds from `scripts/build-image.sh`.
+- Companion app `examples/demo/` — full HTMX todo CRUD with create / toggle / delete + custom 404.
+- Four test tiers, 58 tests, all green via `scripts/test-all.sh`.
+
+### What a developer has to type right now
+
+```bash
+pg-web init my-app
+cd my-app
+docker compose up -d                                                       # manual
+export DATABASE_URL="postgres://postgres:devpassword@localhost:5432/app"   # manual
+pg-web migrate apply --url "$DATABASE_URL"                                 # after every migration edit
+pg-web push --url "$DATABASE_URL"                                          # after every pages/ edit
+# edit file
+pg-web push --url "$DATABASE_URL"                                          # again
+```
+
+Every edit to `pages/` requires a push. Every new migration requires `migrate apply`. The developer holds the `docker compose` lifecycle and the connection string in their head. That's the friction this session removes.
+
+### Invariants that stay put
+
+Session 2 locked these; Session 3 MUST NOT revisit them:
+
+1. Directory-as-route, filename-as-method layout (`docs/APP-LAYOUT.md`).
+2. Handler contract `(req json) RETURNS <json|text>`.
+3. Dispatch via `template_path` nullability.
+4. Extension ↔ CLI talk only via framework-table upserts — no shared crate, no RPC.
+5. One HTTP request = one SPI transaction.
+6. Target PG 15/16/17; async only inside the BGW; HTTPS out-of-process.
+
+If any of these look load-bearing for M1.2 work, raise a flag before proceeding.
+
+### Known limitations entering this session
+
+- No hot reload — every change is a manual push.
+- No dynamic routes — `[id]` captures don't exist.
+- Fatal SQL errors return a plain 500; no detail surfaced.
+- `public/` exists but isn't served — static assets 404.
+- Empty form submissions surface as HTTP 500 (CHECK constraint violation, no user-facing validation UX yet).
+- Docker image not published to any registry; users build locally.
+- Handler names don't support `req.path_params` (no dynamic routes to populate it from).
+
+### Entry point for this session
+
+Suggested first task: read this file, then read `docs/ROADMAP.md` § Milestone 1.2. If the design questions section below has open items after that, resolve them with the user. Then begin Component A (`pg-web up` / `pg-web down`) — smallest piece, no dependency on later ones.
+
+---
+
 ## Prerequisites (shipped in Session 1 + 2)
 
 - Extension serves HTTP with `(req json)` handler contract + template-path dispatch ✅
