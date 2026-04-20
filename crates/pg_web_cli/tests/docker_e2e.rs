@@ -327,3 +327,191 @@ fn dev_watcher_repushes_on_save() {
     stop.store(true, Ordering::SeqCst);
     handle.join().expect("watcher thread panic").expect("watcher returned Err");
 }
+
+/// Tier 3 reconciliation test. Pushes an app with an extra route, then
+/// deletes that route's files on disk and pushes again. The second push
+/// must: (a) report non-zero routes_deleted / templates_deleted /
+/// handlers_dropped, (b) return 404 on the deleted path, (c) remove the
+/// handler function from `pg_proc`. The handler-function drop is what
+/// proves the reserved `pgweb.pages__*(json)` namespace is owned by push.
+#[test]
+#[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            --test docker_e2e -- --ignored`."]
+fn push_reconciles_deleted_files() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start pgweb/postgres container");
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+
+    // Copy the demo and add an extra route we can later delete.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    copy_tree(&demo_dir(), tmp.path());
+
+    let extra_dir = tmp.path().join("pages/extra");
+    fs::create_dir_all(&extra_dir).unwrap();
+    fs::write(
+        extra_dir.join("index.html"),
+        "<p>extra: {{ value }}</p>\n",
+    )
+    .unwrap();
+    fs::write(
+        extra_dir.join("index.sql"),
+        "CREATE OR REPLACE FUNCTION pgweb.pages__extra__index(req json) RETURNS json \
+         LANGUAGE sql IMMUTABLE AS $$ SELECT json_build_object('value', 'hello') $$;\n",
+    )
+    .unwrap();
+
+    // First push: migrate + push from the modified copy. Extra route now live.
+    pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
+    let first = pg_web_cli::push::push(tmp.path(), &db_url).expect("initial push");
+    assert!(first.routes_upserted >= 1);
+    assert_eq!(first.routes_deleted, 0, "nothing to delete on first push");
+
+    // Confirm the extra route renders.
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let body = get(&client, &base_url, "/extra");
+    assert!(
+        body.contains("extra: hello"),
+        "extra route should render its template, got: {body}"
+    );
+
+    // Delete the extra route from disk, then push again.
+    fs::remove_dir_all(&extra_dir).unwrap();
+    let second = pg_web_cli::push::push(tmp.path(), &db_url).expect("reconcile push");
+    assert_eq!(
+        second.routes_deleted, 1,
+        "reconcile should delete 1 stale route, got summary {second:?}"
+    );
+    assert_eq!(
+        second.templates_deleted, 1,
+        "reconcile should delete 1 stale template, got summary {second:?}"
+    );
+    assert_eq!(
+        second.handlers_dropped, 1,
+        "reconcile should drop 1 stale handler, got summary {second:?}"
+    );
+
+    // /extra now returns the custom 404.
+    let resp = client.get(format!("{base_url}/extra")).send().unwrap();
+    assert_eq!(resp.status(), 404, "deleted route should 404");
+
+    // The handler function is gone from pg_proc too.
+    let mut pg = postgres::Client::connect(&db_url, postgres::NoTls).unwrap();
+    let row = pg
+        .query_opt(
+            "SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+             WHERE n.nspname = 'pgweb' AND p.proname = 'pages__extra__index'",
+            &[],
+        )
+        .unwrap();
+    assert!(
+        row.is_none(),
+        "pgweb.pages__extra__index should be dropped after reconcile"
+    );
+
+    // The demo's other routes still serve — reconciliation didn't over-delete.
+    let body = get(&client, &base_url, "/");
+    assert!(
+        body.contains("No todos yet"),
+        "surviving GET / should still render, got: {body}"
+    );
+}
+
+/// Tier 3 validation-failure test. A handler `.sql` file whose SQL
+/// doesn't actually define the expected function should fail push with
+/// a clear error and leave the DB unchanged — the live extension keeps
+/// serving whatever was there before.
+#[test]
+#[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            --test docker_e2e -- --ignored`."]
+fn push_rejects_missing_handler_function() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start pgweb/postgres container");
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    copy_tree(&demo_dir(), tmp.path());
+
+    // Apply migrations + push the good demo so there's live state to protect.
+    pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
+    pg_web_cli::push::push(tmp.path(), &db_url).expect("initial good push");
+
+    // Add a broken route — the .sql file creates a wrongly-named function
+    // instead of the one the router will expect.
+    let broken_dir = tmp.path().join("pages/broken");
+    fs::create_dir_all(&broken_dir).unwrap();
+    fs::write(
+        broken_dir.join("index.html"),
+        "<p>broken: {{ value }}</p>\n",
+    )
+    .unwrap();
+    fs::write(
+        broken_dir.join("index.sql"),
+        "CREATE OR REPLACE FUNCTION pgweb.pages__broken__typo(req json) RETURNS json \
+         LANGUAGE sql IMMUTABLE AS $$ SELECT '{}'::json $$;\n",
+    )
+    .unwrap();
+
+    let err = pg_web_cli::push::push(tmp.path(), &db_url)
+        .expect_err("push should reject missing-handler route");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("pages__broken__index") && msg.contains("not found after push"),
+        "error should point at the missing handler, got: {msg}"
+    );
+
+    // The live site still renders — rollback worked.
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let body = get(&client, &base_url, "/");
+    assert!(
+        body.contains("No todos yet"),
+        "rolled-back push should leave the prior state intact, got: {body}"
+    );
+    let resp = client.get(format!("{base_url}/broken")).send().unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "broken route should never have been committed"
+    );
+}

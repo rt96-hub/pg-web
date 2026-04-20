@@ -123,10 +123,10 @@ scripts/test-all.sh
 |---|---|---|
 | 1. SQL / pgrx  | `cargo pgrx test pg17`                              | 8 `#[pg_test]` — schema + seed + migrations ledger + `(req json)` handler contract |
 | 2a. HTTP smoke | `scripts/test-http.sh`                              | 2 `#[test]` — `GET /` renders seeded template, unknown path returns default 404 body |
-| 2b. CLI        | `cargo test -p pg_web_cli`                          | 47 — path scanner (layout, reserved stems, `_404`), migrate apply, push, init, demo-layout regression |
-| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` | 1 — boots `pgweb/postgres:latest`, drives full todo CRUD + 404 via HTTP |
+| 2b. CLI        | `cargo test -p pg_web_cli`                          | 71 — path scanner, migrate apply, push + reconcile, init, demo-layout, **stack (port poll / url resolve)**, **dev (event classify / is_pages_sql / Blake3 sanity)**, **push safe-proname guard** |
+| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` | 4 — todo CRUD + 404; watcher saves re-push; push reconciles deleted files (route + template + handler function); push rejects missing handler function (rolls back, live state preserved) |
 
-**58 tests all green via `scripts/test-all.sh`.**
+**85 tests all green via `scripts/test-all.sh`.**
 
 Feature matrix in `docs/TESTING.md` tracks which deliverables are demo-covered.
 

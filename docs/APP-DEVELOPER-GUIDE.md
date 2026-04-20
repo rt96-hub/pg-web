@@ -241,16 +241,22 @@ Routes + templates + handlers live in `pages/`. Migrations live in `migrations/`
 
 ```bash
 pg-web migrate apply    # advance the schema (forward-only). --url optional.
-pg-web push             # replace routes/templates/handlers from pages/
+pg-web push             # reconcile routes/templates/handlers with pages/
 ```
 
-`push` is idempotent — it runs every handler's `CREATE OR REPLACE FUNCTION`, upserts templates, upserts route rows. Running it twice in a row with no filesystem changes is a no-op.
+`push` is idempotent and **reconciling**: it runs every handler's `CREATE OR REPLACE FUNCTION`, upserts templates, upserts route rows, then deletes any `pgweb.routes` / `pgweb.templates` rows and drops any `pgweb.pages__*(json) RETURNS json|text` functions that no longer have a matching file on disk. Delete a file from `pages/`, run `push`, the corresponding route is gone. Running `push` twice in a row with no filesystem changes is a no-op.
+
+Push also **validates** every handler after executing your `.sql`. If your file runs cleanly but doesn't actually define the function the router expects (typo, wrong argument list, wrong return type), push rolls the whole transaction back with a clear error pointing at the file and the expected signature — the live extension keeps serving the previous good push.
 
 Order matters: `push` assumes the tables your handlers touch already exist (run `migrate apply` first).
 
 ### Running `pg-web dev` doesn't apply migrations
 
 `pg-web dev` watches `pages/` and `public/` — **not `migrations/`.** Adding a new `migrations/NNNN_x.sql` file doesn't trigger anything; run `pg-web migrate apply` explicitly whenever the schema needs to advance. This is deliberate: migrations are permanent history, not reloadable code.
+
+### The `pgweb.pages__*(json)` namespace is reserved
+
+Push owns every Postgres function matching `pgweb.pages__<name>(req json) RETURNS <json|text>` — it creates them from your `.sql` files and drops any that no longer have a matching file. **Don't put your own helper functions in that namespace with that signature** or the next push will drop them. Safe patterns for helpers: `pgweb.helper_<name>(args)`, `pgweb.util_<name>(args)`, or `public.<name>(args)` — any name or signature that isn't `pages__*(json) RETURNS json|text` is left untouched.
 
 ## Configuration (`pgweb.toml`)
 

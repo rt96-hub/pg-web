@@ -297,3 +297,7 @@ use notify_debouncer_full::notify::{EventKind, RecursiveMode, Watcher};
 
 `dev.rs::spawn_logs_tail` shells out to `docker compose logs -f --no-log-prefix postgres`. The scaffolded `docker-compose.yml` names the service `postgres`; if a user renames it, `--logs` goes silently quiet (no lines) instead of erroring. The scaffold template is the contract — don't rename without updating `dev.rs`. A future enhancement could parse `docker-compose.yml` to discover the service at runtime.
 
+### 11. `pgweb.pages__*(json) RETURNS json|text` is the reserved push-managed namespace
+
+`push::push` owns every Postgres function matching `pgweb.pages__<name>(req json) RETURNS <json|text>` — both the ones it creates from user `.sql` files and the ones it synthesizes for static routes. Phase 3 of push (reconcile) **drops any such function not in the expected set** computed from the current filesystem walk. Framework maintainers and app authors alike must avoid that namespace for helpers. Safe helper patterns: `pgweb.helper_<name>(...)`, `pgweb.util_<name>(...)`, or any function whose argument list isn't exactly `(req json)`. The safety gate in `reconcile_handlers` also filters to functions returning `json` or `text`, so a function like `pgweb.pages_util(json) RETURNS int` would survive even inside the prefix — but that's not a guarantee to rely on.
+

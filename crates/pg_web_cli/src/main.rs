@@ -108,6 +108,17 @@ fn run() -> Result<()> {
                 summary.templates_upserted,
                 summary.sql_files_executed
             );
+            if summary.routes_deleted > 0
+                || summary.templates_deleted > 0
+                || summary.handlers_dropped > 0
+            {
+                println!(
+                    "  reconciled — dropped {} route(s), {} template(s), {} handler(s) no longer on disk",
+                    summary.routes_deleted,
+                    summary.templates_deleted,
+                    summary.handlers_dropped,
+                );
+            }
         }
         Command::Migrate { action } => match action {
             MigrateAction::Apply { url, dir } => {
