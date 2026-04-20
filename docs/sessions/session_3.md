@@ -184,15 +184,19 @@ Target: 80+ tests green (from 58 today). Not a hard requirement; additive is fin
 - **`pg-web check`** (lint) — M1.4.
 - **`pgweb.html_escape()` helper** — M1.4.
 - **User-facing form-validation UX** — M1.4 (depends on dev error page from this session + html_escape from M1.4).
+- **Browser live-reload push (WebSocket or SSE)** — **deferred to M1.4 as an explicit near-term priority.** M1.2 ships save → DB sync → manual F5. The browser-push follow-up is gated on dogfooding M1.2 first so the transport choice (WS vs SSE) and UX triggers are evidence-driven. See `ROADMAP.md` M1.4 and decision log (2026-04-20).
+- **Content-hash asset filenames** — deferred to M1.4 with browser live-reload. M1.2 ships ETag-only caching; the Vite/webpack-style `styles.abc123.css` + HTML-rewrite model is the long-term upgrade. See `ROADMAP.md` M1.4.
 - **Declarative schema diffing** — Phase 2.5.
 - **Auth / sessions / RLS** — Phase 2.
 
-## Open design questions to resolve at session start
+## Design questions — resolved 2026-04-20
 
-1. **Dynamic route storage.** Add a `path_captures` column to `pgweb.routes`, or derive from the pattern string at match time? Leaning: derive on the fly — fewer moving parts, router is fast either way for Phase 1 route counts.
-2. **Router match order.** Naïve scan through all routes vs. trie / compiled regex? Phase 1 apps have < 100 routes; naïve scan with length-sorted patterns is fine. Revisit if it ever matters.
-3. **File-watcher debounce.** Editors write staged files (`.filename.swp`, `filename.new`); notify fires multiple events per "save." Need a small debounce window (100-250 ms?). Resolve at implementation time.
-4. **Asset caching.** Hash-based filenames (`styles.abc123.css`) for content-based caching, or just ETag headers + If-None-Match? Simpler for Phase 1: ETag-only, dev mode disables caching, prod returns immutable.
+All four are locked before coding. Full rationale in `ROADMAP.md` decision log (2026-04-20 entries). Each decision MUST be documented inline in the code when implemented.
+
+1. **Dynamic route storage — DERIVE from pattern.** `pgweb.routes.path_pattern` is the single source of truth; router parses `:name` tokens at match time to populate `req.path_params`. No `path_captures` column. Rationale: denormalization introduces drift risk for zero measurable gain at <100 routes. **Inline doc required in `router.rs`.**
+2. **Router match — NAÏVE specificity-sorted scan.** Load all routes → sort by (static-segment count desc, capture-count asc, path-length desc) → first segment-by-segment match wins. No trie, no `RegexSet`. **Reevaluation trigger: >1000 routes/app OR measured hot path.** **Inline doc + reevaluation TODO required in `router.rs`.**
+3. **File watcher — `notify-debouncer-full` + 200ms debounce + Blake3 content-hash dedupe + extension/dotfile filter.** Replicates the Vite/Next/chokidar architecture (native watcher → write-finish debounce → content-hash skip → include/exclude). 200ms chosen between Vite (100ms) and Next (300ms). **Module-level doc in `dev.rs` citing the Vite model.**
+4. **Asset caching — ETag + `If-None-Match` (Phase 1).** Stable URLs, ETag = Blake3 of content, dev uses `Cache-Control: no-cache`, prod uses `max-age=0, must-revalidate`. **Inline doc flagging the upgrade path to content-hash filenames + HTML rewrite** (the Vite/webpack model; deferred to M1.4).
 
 ## Suggested order
 

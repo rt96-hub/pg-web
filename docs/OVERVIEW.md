@@ -143,11 +143,11 @@ cargo build -p pg_web_cli
 cd /tmp
 ~/pg-web/target/debug/pg-web init demo-app
 cd demo-app
-docker compose up -d
+~/pg-web/target/debug/pg-web up          # Session 3 M1.2 A — wraps `docker compose up -d`
 
 # 3. Advance schema (only needed once you've written migrations/*.sql) and push app code
-~/pg-web/target/debug/pg-web migrate apply --url postgres://postgres:devpassword@localhost:5432/app
-~/pg-web/target/debug/pg-web push          --url postgres://postgres:devpassword@localhost:5432/app
+~/pg-web/target/debug/pg-web migrate apply        # URL auto-resolved from pgweb.toml + env
+~/pg-web/target/debug/pg-web push
 
 # 4. Hit it
 curl http://localhost:8080/
@@ -184,7 +184,7 @@ Daily iteration is `scripts/test-all.sh` and editing code.
 ## What's NOT wired yet
 
 - **Hot reload** — save `.sql`/`.html`, nothing happens. Re-run push. **M1.2 (Session 3).**
-- **CLI stack management** — users still type `docker compose up -d` and pass `--url` manually. `pg-web up`/`down`/`dev` wraps it. **M1.2.**
+- ~~**CLI stack management**~~ — `pg-web up` / `pg-web down` land **Session 3 Component A**. `pg-web dev` (file watcher) is still pending in Component B. `migrate apply` / `push` now auto-resolve `DATABASE_URL` from `pgweb.toml` + env, so `--url` is optional.
 - **Dynamic routes** — `[id]` patterns don't match yet. **M1.2.**
 - **Dev error page** — fatal SQL exceptions return generic 500 today. **M1.2.**
 - **Static assets** — `public/*` → 404 still. **M1.2.**

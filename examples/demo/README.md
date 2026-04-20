@@ -18,19 +18,22 @@ Prereqs:
 - The `pg-web` CLI is built: `cargo build -p pg_web_cli` from the repo
   root, which puts the binary at `target/debug/pg-web`.
 
-Then, from this directory:
+Then, from this directory (adjust the path to the `pg-web` binary as
+needed):
 
 ```bash
-docker compose up -d
-
-# Adjust path to the pg-web binary as needed:
-../../target/debug/pg-web migrate apply \
-    --url postgres://postgres:devpassword@localhost:5432/app
-../../target/debug/pg-web push \
-    --url postgres://postgres:devpassword@localhost:5432/app
+../../target/debug/pg-web up
+../../target/debug/pg-web migrate apply
+../../target/debug/pg-web push
 
 open http://localhost:8080    # or `curl http://localhost:8080/`
 ```
+
+`pg-web up` starts the Docker Compose stack, waits for Postgres + the
+HTTP server to accept connections, and prints the resolved
+`DATABASE_URL`. `migrate apply` / `push` then auto-resolve that URL
+from `pgweb.toml` + environment, so you don't need to pass `--url`
+unless you want to override.
 
 Add a todo via the form; toggle and delete the resulting rows via the
 `<li>` buttons. Every click is an HTMX request, round-tripped through
@@ -39,8 +42,8 @@ Postgres, rendered server-side.
 To tear down:
 
 ```bash
-docker compose down           # stops the container
-docker compose down --volumes # also drops the pgdata volume
+../../target/debug/pg-web down             # stops the container
+../../target/debug/pg-web down --volumes   # also drops the pgdata volume
 ```
 
 ## What's in here

@@ -7,4 +7,5 @@ pub mod init;
 pub mod migrate;
 pub mod paths;
 pub mod push;
+pub mod stack;
 mod templates;

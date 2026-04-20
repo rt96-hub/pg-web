@@ -27,12 +27,14 @@ Plus Docker (for running Postgres + the extension locally).
 ```bash
 pg-web init my-blog
 cd my-blog
-docker compose up -d
-pg-web push --url postgres://postgres:devpassword@localhost:5432/app
+pg-web up          # boots the Docker Compose stack, prints DATABASE_URL
+pg-web push        # auto-resolves the URL from pgweb.toml + env
 open http://localhost:8080     # or `curl localhost:8080/`
 ```
 
-Five commands and you're serving. Edit `pages/index.html`, rerun `pg-web push`, refresh — live. (Hot reload via `pg-web dev` lands in **M1.2**.)
+Four commands and you're serving. Edit `pages/index.html`, rerun `pg-web push`, refresh — live. (Hot reload via `pg-web dev` lands in **M1.2**.)
+
+`pg-web up` / `pg-web down` are thin wrappers over `docker compose up -d` / `down`. `up` polls Postgres + the HTTP server until both accept connections, and resolves `DATABASE_URL` from `pgweb.toml`'s `[database].url_env` (default `DATABASE_URL`), falling back to the dev-scaffold default baked into `docker-compose.yml`. `pg-web down --volumes` also drops the `pgdata` volume (destructive).
 
 ## Project anatomy
 
