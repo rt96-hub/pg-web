@@ -156,6 +156,12 @@ Decision can wait until we have the Phase 1 demo running and can see which pain 
 Speculative. Not yet scoped into a phase; parked here so the thinking isn't lost.
 
 - **Project-in-database backup.** Store the full app source tree (and optionally its `.git/` history) inside framework-owned tables so that `pg_dump` produces a self-contained snapshot of *schema + data + app code*, and `pg_restore` reconstitutes a runnable app from just the dump. Extends the "Postgres is the substrate" thesis end-to-end: you can hand someone a `.dump` file and they have the whole system. Open questions before scoping: where source rows live (framework schema vs a dedicated `pgweb.sources` schema), how big a real `.git/` objects directory gets (CRINGE if multi-GB per commit), whether to store the working tree only (smallest) or objects+refs (restorable repo), and how `pg-web push` + `migrate apply` interact with this (push-on-commit hook that mirrors the working tree into DB rows?). Likely Phase 5+ once the core framework has settled.
+- **App testing framework (`pg-web test`).** A command for users of pg-web to author and run tests against their own app. Three candidate layers to evaluate:
+  - **Handler unit tests.** `tests/pages/**/*.test.sql` files call `pgweb.pages__<name>('{"body":{...},"query":{...},"method":"POST","path":"/x"}'::json)` and use framework-provided `pgweb.assert_*` helpers to check the return value. Per-test isolation via savepoint-and-rollback so fixtures aren't rebuilt every time.
+  - **HTTP integration tests.** YAML / TOML fixtures describe a request plus expected response (status + body regex / template). `pg-web test` spins up a throwaway stack (or reuses `dev`'s), fires requests, diffs.
+  - **Snapshot tests.** Capture rendered HTML on first run, compare on subsequent runs; update with `--update-snapshots`. Works for both handler-level and HTTP-level rendering.
+  - **Fixture loading.** `tests/fixtures/*.sql` applied before a test (or per-describe-block) and rolled back after.
+  Open questions before scoping: run-in-container vs run-in-host (latter needs a pg-web CLI that owns a test DB), per-test isolation model (SAVEPOINT vs fresh DB), snapshot policy (where to store, how to diff HTML robustly). **Likely Phase 5+ once the core framework has stabilized and real apps have shaped the mental model of what's worth asserting.** Parked here so the thinking isn't lost — user-flagged as a meaningfully-later feature.
 
 ## Out of scope (for v1.x; revisit post-1.0)
 

@@ -120,6 +120,9 @@ See `TESTING.md` for full strategy. Maintainer tl;dr:
 - Use `workspace.package` inheritance for `version`, `edition`, `license`, `repository`.
 - Target-specific rustflags go in per-crate `.cargo/config.toml` (e.g., the ext's `-Wl,-undefined,dynamic_lookup` on macOS).
 - Avoid `rustflags` at the workspace level — it applies to all crates including proc-macros and breaks things.
+- **Ambient-environment dependency injection for testability.** When a CLI function reads from `std::env`, system clock, or other global state, take a closure (or trait object) rather than calling the global directly. Tests pass a mock; production passes the real reader. Example: `stack::resolve_database_url(app_dir, env_lookup)` takes `impl Fn(&str) -> Option<String>`; the CLI's main.rs passes `|k| std::env::var(k).ok()`. Keeps tests hermetic without having to mutate process state.
+- **Prefer focused crate features over kitchen-sink deps.** Pin default-off + opt-in features when adding deps (e.g., `toml = { version = "0.8", default-features = false, features = ["parse"] }` — parse-only, no `toml_edit`). Saves compile time and closes attack surface.
+- **Shell out with `std::process::Command` inheriting stdout/stderr for user-facing work, piping for log-tailing.** Pattern: `stack::up` / `stack::down` inherit so the user sees compose output live; `dev::spawn_logs_tail` pipes stdout so the watcher thread can prefix `[pg]`.
 
 ## Packaging
 
@@ -280,3 +283,17 @@ ss -tlnp | grep 8080
 ```
 
 Diagnose by running `ss -tlnp | grep 8080` — whichever `users:(...)` it prints tells you who owns the port.
+
+### 9. `notify-debouncer-full` re-exports `notify` but the `Watcher` trait is NOT in scope by default
+
+`new_debouncer(...)` returns a `Debouncer<T, C>` whose `.watcher()` method returns `&mut T`. To actually call `.watch(path, recursive_mode)` on that watcher you need the `notify::Watcher` trait in scope — the method isn't inherent. The trait is re-exported via `notify_debouncer_full::notify::Watcher`, but rustc's error message (E0599 "no method named `watch`") doesn't mention it. Hit in Session 3 Component B.
+
+**Fix:**
+```rust
+use notify_debouncer_full::notify::{EventKind, RecursiveMode, Watcher};
+```
+
+### 10. `pg-web dev` log tailing hardcodes the compose service name `postgres`
+
+`dev.rs::spawn_logs_tail` shells out to `docker compose logs -f --no-log-prefix postgres`. The scaffolded `docker-compose.yml` names the service `postgres`; if a user renames it, `--logs` goes silently quiet (no lines) instead of erroring. The scaffold template is the contract — don't rename without updating `dev.rs`. A future enhancement could parse `docker-compose.yml` to discover the service at runtime.
+

@@ -240,13 +240,17 @@ Idempotent — re-running after a clean apply is a no-op. Each file runs in its 
 Routes + templates + handlers live in `pages/`. Migrations live in `migrations/`. Two commands, always in this order:
 
 ```bash
-pg-web migrate apply --url "$DATABASE_URL"    # advance the schema (forward-only)
-pg-web push          --url "$DATABASE_URL"    # replace routes/templates/handlers
+pg-web migrate apply    # advance the schema (forward-only). --url optional.
+pg-web push             # replace routes/templates/handlers from pages/
 ```
 
 `push` is idempotent — it runs every handler's `CREATE OR REPLACE FUNCTION`, upserts templates, upserts route rows. Running it twice in a row with no filesystem changes is a no-op.
 
-Order matters: `push` assumes the tables your handlers touch already exist.
+Order matters: `push` assumes the tables your handlers touch already exist (run `migrate apply` first).
+
+### Running `pg-web dev` doesn't apply migrations
+
+`pg-web dev` watches `pages/` and `public/` — **not `migrations/`.** Adding a new `migrations/NNNN_x.sql` file doesn't trigger anything; run `pg-web migrate apply` explicitly whenever the schema needs to advance. This is deliberate: migrations are permanent history, not reloadable code.
 
 ## Configuration (`pgweb.toml`)
 
