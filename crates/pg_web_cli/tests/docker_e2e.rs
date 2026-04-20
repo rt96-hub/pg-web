@@ -150,6 +150,41 @@ fn full_todo_crud_flow() {
         "index should now include the new todo, got: {body}"
     );
 
+    // --- Dynamic route: /todos/:id detail view ---
+    // Numeric id → actual row. Exercises path_params populated by the
+    // router and the capture-named SQL handler pgweb.pages__todos__$id__index.
+    let body = get(&client, &base_url, "/todos/1");
+    assert!(
+        body.contains("todo #1"),
+        "detail view should show the numeric id, got: {body}"
+    );
+    assert!(
+        body.contains("buy milk"),
+        "detail view should show the title, got: {body}"
+    );
+    assert!(
+        body.contains("pending"),
+        "detail view should show pre-toggle status, got: {body}"
+    );
+
+    // Non-numeric id → matches the capture but no DB row; falls through
+    // to the "not found" branch in the template. Proves captures accept
+    // any URL segment; the handler decides what's valid. Tera auto-escapes
+    // the captured id inside {{ id }}, so the quoted id in the template
+    // shows up as &quot;all&quot; in the HTML body.
+    let body = get(&client, &base_url, "/todos/all");
+    assert!(
+        body.contains("not found") && body.contains("&quot;all&quot;"),
+        "detail view for non-numeric id should render not-found with the echoed id, got: {body}"
+    );
+
+    // Non-existent numeric id → also not-found.
+    let body = get(&client, &base_url, "/todos/999");
+    assert!(
+        body.contains("not found"),
+        "detail view for missing id should render not-found, got: {body}"
+    );
+
     // --- Toggle ---
     let body = post_form(&client, &base_url, "/todos/toggle", "id=1");
     assert!(

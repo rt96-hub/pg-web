@@ -301,11 +301,14 @@ fn reconcile_handlers(tx: &mut Transaction<'_>, expected: &HashSet<String>) -> R
     Ok(dropped)
 }
 
-/// Accept only identifier chars (letters, digits, underscore). pg_proc.proname
-/// can't legally be anything else, so this is belt-and-suspenders validation
-/// before string-interpolating into `DROP FUNCTION`.
+/// Accept Postgres identifier body chars: ASCII letters, digits,
+/// underscore, and `$` (used as the capture marker in dynamic-route
+/// handler names, e.g., `pages__posts__$id__index`). Belt-and-suspenders
+/// validation before string-interpolating a name into `DROP FUNCTION`.
 fn is_safe_proname(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 #[cfg(test)]
@@ -317,6 +320,14 @@ mod tests {
         assert!(is_safe_proname("pages__index"));
         assert!(is_safe_proname("pages__todos__toggle__post"));
         assert!(is_safe_proname("pages__a1_b2"));
+    }
+
+    #[test]
+    fn safe_proname_accepts_dollar_for_capture_markers() {
+        // Capture segments in dynamic routes emit `$name` in the handler
+        // proname: `pages/posts/[id]/index.sql` → `pages__posts__$id__index`.
+        assert!(is_safe_proname("pages__posts__$id__index"));
+        assert!(is_safe_proname("pages__users__$user__posts__$post__index"));
     }
 
     #[test]

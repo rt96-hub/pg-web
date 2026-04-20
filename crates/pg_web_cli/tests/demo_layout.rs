@@ -29,6 +29,8 @@ fn demo_pages_scans_cleanly() {
             // _404 stem becomes method='404' with path_pattern='/'.
             ("404".to_string(), "/".to_string()),
             ("GET".to_string(), "/".to_string()),
+            // Dynamic route: [id] in the filesystem → :id in the pattern.
+            ("GET".to_string(), "/todos/:id".to_string()),
             ("POST".to_string(), "/todos".to_string()),
             ("POST".to_string(), "/todos/delete".to_string()),
             ("POST".to_string(), "/todos/toggle".to_string()),
@@ -49,6 +51,8 @@ fn demo_pages_modes_are_as_documented() {
 
     // Index: dynamic mode (both files).
     assert!(by_key("GET", "/").is_full());
+    // GET /todos/:id: dynamic mode (detail-view template + handler using capture).
+    assert!(by_key("GET", "/todos/:id").is_full());
     // POST /todos: dynamic mode (fragment template + handler).
     assert!(by_key("POST", "/todos").is_full());
     // POST /todos/toggle: dynamic mode (shared <li> template + handler).
@@ -65,6 +69,9 @@ fn demo_handler_names_match_spec() {
     for e in &entries {
         let expected = match (e.method.as_str(), e.route.as_str()) {
             ("GET", "/") => "pgweb.pages__index",
+            // [id] on disk → $id in the PG handler name to keep it visually
+            // distinct from a literal directory named `id`.
+            ("GET", "/todos/:id") => "pgweb.pages__todos__$id__index",
             ("POST", "/todos") => "pgweb.pages__todos__post",
             ("POST", "/todos/toggle") => "pgweb.pages__todos__toggle__post",
             ("POST", "/todos/delete") => "pgweb.pages__todos__delete__post",

@@ -92,19 +92,21 @@ CREATE OR REPLACE FUNCTION pgweb.pages__<name>(req json) RETURNS <json|text> AS 
 
 ```json
 {
-  "body":   { "title": "buy milk" },   // parsed form body; {} if empty — never null
-  "query":  { "page": "2" },           // parsed query string; {} if empty — never null
-  "method": "POST",                    // HTTP method, uppercase
-  "path":   "/todos"                   // URL path
+  "body":        { "title": "buy milk" },   // parsed form body; {} if empty — never null
+  "query":       { "page": "2" },           // parsed query string; {} if empty — never null
+  "method":      "POST",                    // HTTP method, uppercase
+  "path":        "/todos/42",               // URL path after matching (not the pattern)
+  "path_params": { "id": "42" }             // captures from dynamic segments; {} for static routes
 }
 ```
 
 You read it like any JSON column:
 
 ```sql
-req->'body'->>'title'        -- string or NULL if missing
-(req->'body'->>'id')::bigint -- cast when you need an int
-req->>'method'               -- "GET", "POST", etc.
+req->'body'->>'title'                          -- string or NULL if missing
+(req->'body'->>'id')::bigint                   -- cast when you need an int
+req->>'method'                                 -- "GET", "POST", etc.
+req->'path_params'->>'id'                      -- a capture from pages/posts/[id]/
 ```
 
 ### Return type decides the pipeline
@@ -318,10 +320,11 @@ Your `pages/signup/post.html` template branches on `{% if ok %}` vs `{% else %}`
 
 | Feature                                                         | Lands in |
 |-----------------------------------------------------------------|----------|
-| Hot reload (`pg-web dev`)                                       | M1.2     |
-| Dynamic route patterns (`[id]` capture → `req.path_params`)     | M1.2     |
+| ~~Hot reload (`pg-web dev`)~~                                   | M1.2 ✓   |
+| ~~Dynamic route patterns (`[id]` capture → `req.path_params`)~~ | M1.2 ✓   |
 | Dev error page (rich SQL exception overlay)                     | M1.2     |
 | Static asset serving (`public/*` → HTTP)                        | M1.2–1.3 |
+| Browser live-reload push (WS/SSE; auto-F5 on save)              | M1.4     |
 | CLI `pg-web env set/unset/list` (secrets via GUC)               | M1.4     |
 | CLI `pg-web check` (project validator)                          | M1.4     |
 | `pgweb.html_escape()` SQL helper                                | M1.4     |

@@ -96,26 +96,34 @@ pub fn scan(pages_dir: &Path) -> Result<Vec<RouteEntry>> {
         }
     }
 
-    let mut out: Vec<RouteEntry> = by_key
-        .into_iter()
-        .map(|((parent_rel, stem), (html_path, sql_path))| {
-            let segments = path_segments(&parent_rel);
-            let method = method_for_stem(&stem).to_string();
-            let route = build_route(&segments);
-            let handler_name = build_handler_name(&segments, &stem);
-            let template_path = html_path
-                .as_ref()
-                .map(|_| build_template_path(&segments, &stem));
-            RouteEntry {
-                method,
-                route,
-                handler_name,
-                template_path,
-                html_path,
-                sql_path,
-            }
-        })
-        .collect();
+    let mut out: Vec<RouteEntry> = Vec::with_capacity(by_key.len());
+    for ((parent_rel, stem), (html_path, sql_path)) in by_key {
+        let path_for_err = html_path
+            .as_ref()
+            .or(sql_path.as_ref())
+            .expect("entry has at least one of html/sql path");
+        // Two views of the directory components: `raw_segments` is the
+        // verbatim filesystem form (with `[id]` brackets intact, used for
+        // the template storage key), `segments` is validated + typed
+        // (Static / Capture, used for the URL pattern and SQL handler name).
+        let raw_segments = path_segments(&parent_rel);
+        let segments = parse_segments(&parent_rel)
+            .with_context(|| format!("{}: invalid path segment", path_for_err.display()))?;
+        let method = method_for_stem(&stem).to_string();
+        let route = build_route(&segments);
+        let handler_name = build_handler_name(&segments, &stem);
+        let template_path = html_path
+            .as_ref()
+            .map(|_| build_template_path(&raw_segments, &stem));
+        out.push(RouteEntry {
+            method,
+            route,
+            handler_name,
+            template_path,
+            html_path,
+            sql_path,
+        });
+    }
 
     // Sort by (method, route) so push order is deterministic and readable.
     out.sort_by(|a, b| (a.method.as_str(), a.route.as_str())
@@ -183,26 +191,125 @@ fn path_segments(rel: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Build the URL path from directory segments. Empty segments → `/`.
-/// The method stem never appears in the URL — `index` is the GET default;
-/// other stems are just method markers, not path pieces.
-fn build_route(segments: &[String]) -> String {
+/// A parsed directory segment in a `pages/` path.
+///
+/// - `Static(name)` is a literal URL segment.
+/// - `Capture(name)` comes from a filesystem directory name wrapped in
+///   brackets — `[id]` → `Capture("id")`. The router matches any URL
+///   segment against it and threads the string value into
+///   `req.path_params`.
+///
+/// `[` and `]` are reserved: a segment is either a valid capture
+/// (`^\[ident\]$`) or must contain no brackets at all. Anything else
+/// (unbalanced, nested, or inline brackets) is rejected by
+/// `parse_segments`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Segment {
+    Static(String),
+    Capture(String),
+}
+
+/// Parse the directory components of `rel` (a path relative to `pages/`)
+/// into typed segments. Errors on any malformed capture syntax so the
+/// user gets immediate feedback instead of a runtime routing surprise.
+pub fn parse_segments(rel: &Path) -> Result<Vec<Segment>> {
+    let raw = path_segments(rel);
+    raw.iter().map(|r| parse_segment(r)).collect()
+}
+
+fn parse_segment(raw: &str) -> Result<Segment> {
+    let has_open = raw.contains('[');
+    let has_close = raw.contains(']');
+
+    if !has_open && !has_close {
+        return Ok(Segment::Static(raw.to_string()));
+    }
+
+    // Any bracket at all forces the whole segment to be a single capture.
+    // Inline, nested, or unbalanced brackets are rejected.
+    if !(raw.starts_with('[') && raw.ends_with(']')) {
+        bail!(
+            "segment '{raw}' has inline or unbalanced brackets. \
+             Use '[name]' as the whole segment to capture a URL piece, \
+             or remove brackets from a literal directory name."
+        );
+    }
+    // starts_with('[') && ends_with(']') with exactly one of each
+    let inner = &raw[1..raw.len() - 1];
+    if inner.contains('[') || inner.contains(']') {
+        bail!(
+            "segment '{raw}' has nested brackets. Only one capture per directory: '[name]'."
+        );
+    }
+    validate_capture_name(inner).with_context(|| format!("invalid capture segment '{raw}'"))?;
+    Ok(Segment::Capture(inner.to_string()))
+}
+
+/// A capture name goes into both the URL pattern (`:name`) and the SQL
+/// handler function name (`$name`). Constrain to ASCII identifier
+/// syntax so both stay clean: start with a letter or underscore; rest
+/// letters / digits / underscore. Bound at 63 chars (Postgres identifier
+/// limit minus some slack for the `pages__` prefix and stem suffix).
+fn validate_capture_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("capture name is empty");
+    }
+    if name.len() > 63 {
+        bail!("capture name '{name}' is {} chars; max 63", name.len());
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        bail!(
+            "capture name '{name}' must start with an ASCII letter or underscore; got '{first}'"
+        );
+    }
+    for c in chars {
+        if !(c.is_ascii_alphanumeric() || c == '_') {
+            bail!(
+                "capture name '{name}' may only contain ASCII letters, digits, or underscore; \
+                 found '{c}'"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Build the URL pattern from parsed segments. Captures emit `:name`
+/// (router's match form); statics emit verbatim. Empty segments → `/`.
+fn build_route(segments: &[Segment]) -> String {
     if segments.is_empty() {
         "/".to_string()
     } else {
-        format!("/{}", segments.join("/"))
+        let parts: Vec<String> = segments
+            .iter()
+            .map(|s| match s {
+                Segment::Static(n) => n.clone(),
+                Segment::Capture(n) => format!(":{n}"),
+            })
+            .collect();
+        format!("/{}", parts.join("/"))
     }
 }
 
 /// Build the fully-qualified SQL handler function name. Format:
-/// `pgweb.pages__<seg>__<seg>__...__<stem>`. The stem is always included
-/// so GET handlers are `pgweb.pages__<path>__index` (distinct from POST
-/// handlers `pgweb.pages__<path>__post`).
-fn build_handler_name(segments: &[String], stem: &str) -> String {
+/// `pgweb.pages__<seg>__<seg>__...__<stem>`. Capture segments emit
+/// `$name` — `$` is a legal character in Postgres identifier bodies
+/// and is visually distinct from literal directory names (users aren't
+/// going to name a directory `$id`), so the handler name for
+/// `pages/posts/[id]/index.sql` cleanly disambiguates from `pages/posts/id/index.sql`.
+fn build_handler_name(segments: &[Segment], stem: &str) -> String {
     if segments.is_empty() {
         format!("pgweb.pages__{stem}")
     } else {
-        format!("pgweb.pages__{}__{stem}", segments.join("__"))
+        let parts: Vec<String> = segments
+            .iter()
+            .map(|s| match s {
+                Segment::Static(n) => n.clone(),
+                Segment::Capture(n) => format!("${n}"),
+            })
+            .collect();
+        format!("pgweb.pages__{}__{stem}", parts.join("__"))
     }
 }
 
@@ -227,6 +334,13 @@ mod tests {
         fs::write(path, content).unwrap();
     }
 
+    fn s(n: &str) -> Segment {
+        Segment::Static(n.into())
+    }
+    fn c(n: &str) -> Segment {
+        Segment::Capture(n.into())
+    }
+
     // ---- pure helpers ----
 
     #[test]
@@ -236,14 +350,24 @@ mod tests {
 
     #[test]
     fn build_route_single_segment() {
-        assert_eq!(build_route(&["todos".into()]), "/todos");
+        assert_eq!(build_route(&[s("todos")]), "/todos");
     }
 
     #[test]
     fn build_route_nested() {
+        assert_eq!(build_route(&[s("todos"), s("toggle")]), "/todos/toggle");
+    }
+
+    #[test]
+    fn build_route_with_capture_emits_colon_form() {
+        assert_eq!(build_route(&[s("posts"), c("id")]), "/posts/:id");
+    }
+
+    #[test]
+    fn build_route_with_multiple_captures() {
         assert_eq!(
-            build_route(&["todos".into(), "toggle".into()]),
-            "/todos/toggle"
+            build_route(&[s("users"), c("user"), s("posts"), c("post")]),
+            "/users/:user/posts/:post"
         );
     }
 
@@ -260,7 +384,7 @@ mod tests {
     #[test]
     fn build_handler_name_nested_index() {
         assert_eq!(
-            build_handler_name(&["todos".into()], "index"),
+            build_handler_name(&[s("todos")], "index"),
             "pgweb.pages__todos__index"
         );
     }
@@ -268,7 +392,7 @@ mod tests {
     #[test]
     fn build_handler_name_nested_post() {
         assert_eq!(
-            build_handler_name(&["todos".into()], "post"),
+            build_handler_name(&[s("todos")], "post"),
             "pgweb.pages__todos__post"
         );
     }
@@ -276,9 +400,101 @@ mod tests {
     #[test]
     fn build_handler_name_deeply_nested() {
         assert_eq!(
-            build_handler_name(&["todos".into(), "toggle".into()], "post"),
+            build_handler_name(&[s("todos"), s("toggle")], "post"),
             "pgweb.pages__todos__toggle__post"
         );
+    }
+
+    #[test]
+    fn build_handler_name_uses_dollar_for_captures() {
+        // `[id]` on disk → `$id` in the PG function name. Keeps captures
+        // visually distinct from literal directory names.
+        assert_eq!(
+            build_handler_name(&[s("posts"), c("id")], "index"),
+            "pgweb.pages__posts__$id__index"
+        );
+    }
+
+    #[test]
+    fn build_handler_name_multiple_captures() {
+        assert_eq!(
+            build_handler_name(&[s("users"), c("user"), s("posts"), c("post")], "index"),
+            "pgweb.pages__users__$user__posts__$post__index"
+        );
+    }
+
+    // ---- parse_segment / parse_segments ----
+
+    #[test]
+    fn parse_segment_static() {
+        assert_eq!(parse_segment("posts").unwrap(), s("posts"));
+        assert_eq!(parse_segment("todo-detail").unwrap(), s("todo-detail"));
+        assert_eq!(parse_segment("v2").unwrap(), s("v2"));
+    }
+
+    #[test]
+    fn parse_segment_capture() {
+        assert_eq!(parse_segment("[id]").unwrap(), c("id"));
+        assert_eq!(parse_segment("[user_id]").unwrap(), c("user_id"));
+        assert_eq!(parse_segment("[_internal]").unwrap(), c("_internal"));
+    }
+
+    #[test]
+    fn parse_segment_rejects_inline_brackets() {
+        for bad in &["foo[id]", "[id]bar", "prefix[id]suffix"] {
+            let err = parse_segment(bad).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("inline or unbalanced"), "for {bad}: {msg}");
+        }
+    }
+
+    #[test]
+    fn parse_segment_rejects_unbalanced_brackets() {
+        for bad in &["[id", "id]", "[foo][bar"] {
+            assert!(
+                parse_segment(bad).is_err(),
+                "unbalanced should error: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_segment_rejects_nested_brackets() {
+        let err = parse_segment("[[id]]").unwrap_err();
+        assert!(format!("{err:#}").contains("nested"));
+    }
+
+    #[test]
+    fn parse_segment_rejects_empty_capture() {
+        let err = parse_segment("[]").unwrap_err();
+        assert!(format!("{err:#}").contains("empty"));
+    }
+
+    #[test]
+    fn parse_segment_rejects_bad_capture_identifier() {
+        for bad in &["[id-x]", "[123]", "[my.id]", "[id space]", "[café]"] {
+            assert!(
+                parse_segment(bad).is_err(),
+                "bad capture identifier should error: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_segment_rejects_too_long_capture() {
+        let long = "a".repeat(64);
+        assert!(parse_segment(&format!("[{long}]")).is_err());
+    }
+
+    #[test]
+    fn parse_segments_mixes_static_and_capture() {
+        let got = parse_segments(Path::new("posts/[id]/comments")).unwrap();
+        assert_eq!(got, vec![s("posts"), c("id"), s("comments")]);
+    }
+
+    #[test]
+    fn parse_segments_empty_path_is_empty_list() {
+        assert_eq!(parse_segments(Path::new("")).unwrap(), Vec::<Segment>::new());
     }
 
     #[test]

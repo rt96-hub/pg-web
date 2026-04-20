@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>todo {{ id }} — demo</title>
+</head>
+<body>
+  {% if todo %}
+    <h1>todo #{{ todo.id }}</h1>
+    <p>{{ todo.title }}</p>
+    <p>status: {% if todo.done %}done{% else %}pending{% endif %}</p>
+  {% else %}
+    <h1>not found</h1>
+    <p>no todo with id &quot;{{ id }}&quot;.</p>
+  {% endif %}
+  <p><a href="/">&larr; back to list</a></p>
+</body>
+</html>

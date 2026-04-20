@@ -94,6 +94,50 @@ Given a file `pages/<segments...>/<stem>.<ext>`:
 
 Filesystem slashes and backslashes both normalize to `/`; the handler name uses `__`.
 
+## Dynamic segments
+
+A directory name wrapped in brackets is a **capture**: it matches any single URL segment, and the captured string is threaded into the handler's `req.path_params`.
+
+```
+pages/posts/[id]/index.html              # GET /posts/:id  — capture "id"
+pages/users/[user]/posts/[post]/index.sql# GET /users/:user/posts/:post — two captures
+```
+
+**Syntax rules (enforced at `pg-web push` time):**
+
+- The bracket pair must enclose the whole directory name. `foo[id]`, `[id]bar`, or nested `[[id]]` are errors.
+- The capture name inside the brackets must match `^[A-Za-z_][A-Za-z0-9_]*$` and be ≤ 63 characters.
+- `[` and `]` are reserved anywhere in a path segment: a static directory name containing brackets is rejected.
+
+**What the scanner emits:**
+
+| Filesystem | Route pattern (DB) | Handler function name |
+|---|---|---|
+| `pages/posts/[id]/index.sql` | `/posts/:id` | `pgweb.pages__posts__$id__index` |
+| `pages/users/[user]/posts/[post]/index.sql` | `/users/:user/posts/:post` | `pgweb.pages__users__$user__posts__$post__index` |
+
+The `$name` in the handler function name is the capture marker. `$` is a legal character inside Postgres identifiers (after the first position) so it keeps the name SQL-valid while staying visually distinct from any literal directory name a user might use.
+
+**Captures are always strings.** `/posts/123` and `/posts/all` both match `[id]`. The handler reads `req->'path_params'->>'id'` and casts / validates as needed:
+
+```sql
+CREATE OR REPLACE FUNCTION pgweb.pages__posts__$id__index(req json) RETURNS json AS $$
+  SELECT json_build_object(
+    'id',   req->'path_params'->>'id',
+    'post', (
+      SELECT to_json(p) FROM (
+        SELECT id, title FROM posts
+        WHERE id::text = req->'path_params'->>'id'
+      ) p
+    )
+  )
+$$ LANGUAGE sql STABLE;
+```
+
+The `id::text = req->'path_params'->>'id'` pattern keeps it tolerant: a non-numeric URL segment (like `/posts/all`) simply matches no rows, so `post` comes back NULL and the template renders a not-found branch.
+
+**Specificity: static beats dynamic.** If both `pages/posts/new/index.html` and `pages/posts/[id]/index.html` exist, `GET /posts/new` resolves to the static handler; `GET /posts/42` resolves to the dynamic one. The router sorts patterns by (static-segment count desc, capture-segment count asc, length desc) and takes the first match.
+
 ## Handler contract
 
 Every `.sql` handler must be a function in the `pgweb` schema taking a single `json` argument:
@@ -111,14 +155,15 @@ Every handler receives the same shape:
 
 ```json
 {
-  "body":   { "title": "buy milk" },   // parsed application/x-www-form-urlencoded; {} if empty
-  "query":  { "page": "2" },           // parsed query string; {} if empty
-  "method": "POST",                    // HTTP method, uppercase
-  "path":   "/todos"                   // URL path
+  "body":        { "title": "buy milk" },   // parsed application/x-www-form-urlencoded; {} if empty
+  "query":       { "page": "2" },           // parsed query string; {} if empty
+  "method":      "POST",                    // HTTP method, uppercase
+  "path":        "/todos/42",               // URL path (after capture, not pattern)
+  "path_params": { "id": "42" }             // captures from dynamic segments; {} if static route
 }
 ```
 
-`body` and `query` are always objects — never `null`. `req->'body'->>'title'` is always safe to write; returns NULL for missing keys.
+`body`, `query`, and `path_params` are always objects — never `null`. `req->'body'->>'title'`, `req->'path_params'->>'id'`, etc. are always safe to write; they return NULL for missing keys.
 
 ### Return type → pipeline dispatch
 

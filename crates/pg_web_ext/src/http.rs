@@ -56,11 +56,16 @@ async fn handle(req: Request) -> Response {
     };
     let query_obj = parse_urlencoded(&query_str);
 
+    // `path_params` starts empty; the router overwrites it with captures
+    // extracted from the matched dynamic route (e.g., /posts/:id → {id: "42"}).
+    // Always-present keeps the handler contract uniform: `req->'path_params'`
+    // is never null.
     let req_value = json!({
         "body": Value::Object(body_obj),
         "query": Value::Object(query_obj),
         "method": method,
         "path": path,
+        "path_params": Value::Object(Map::new()),
     });
 
     match router::serve(&method, &path, req_value) {
