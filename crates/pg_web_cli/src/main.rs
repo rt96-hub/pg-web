@@ -51,6 +51,15 @@ enum Command {
         #[arg(long)]
         volumes: bool,
     },
+    /// Watch pages/ + public/, re-push on save, and tail container logs.
+    Dev {
+        /// App directory (defaults to cwd).
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+        /// Don't tail `docker compose logs -f postgres` in-band.
+        #[arg(long)]
+        no_logs: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -130,6 +139,9 @@ fn run() -> Result<()> {
             } else {
                 println!("✓ stack down");
             }
+        }
+        Command::Dev { dir, no_logs } => {
+            pg_web_cli::dev::dev(&dir, !no_logs)?;
         }
     }
     Ok(())

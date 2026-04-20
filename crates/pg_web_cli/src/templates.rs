@@ -14,7 +14,7 @@ pub const INDEX_HTML: &str = r#"<!doctype html>
 <body>
   <h1>Welcome to {{ app_name }}</h1>
   <p>Edit <code>pages/index.html</code> and <code>pages/index.sql</code> to change this page.</p>
-  <p>Run <code>pg-web dev</code> to watch for changes (coming in M1.2).</p>
+  <p>Run <code>pg-web dev</code> to auto-push on save.</p>
 </body>
 </html>
 "#;

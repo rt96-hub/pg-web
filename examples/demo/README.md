@@ -35,6 +35,17 @@ HTTP server to accept connections, and prints the resolved
 from `pgweb.toml` + environment, so you don't need to pass `--url`
 unless you want to override.
 
+For iterative development, replace the explicit `push` with:
+
+```bash
+../../target/debug/pg-web dev
+```
+
+which watches `pages/` + `public/`, auto-pushes 200ms after every save
+(deduped by Blake3 content hash so no-op writes don't trigger a push),
+shift-left-preflights `.sql` changes against the DB before applying
+them, and tails the Postgres container logs inline.
+
 Add a todo via the form; toggle and delete the resulting rows via the
 `<li>` buttons. Every click is an HTMX request, round-tripped through
 Postgres, rendered server-side.

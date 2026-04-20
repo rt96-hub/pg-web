@@ -183,7 +183,7 @@ Daily iteration is `scripts/test-all.sh` and editing code.
 
 ## What's NOT wired yet
 
-- **Hot reload** — save `.sql`/`.html`, nothing happens. Re-run push. **M1.2 (Session 3).**
+- ~~**Hot reload**~~ — `pg-web dev` watches `pages/` + `public/`, re-pushes on save after a 200ms debounce + Blake3 content-hash dedupe + shift-left SQL preflight. Shipped **Session 3 Component B**. Browser-push (auto F5 via WS/SSE) is the remaining deferred-but-near-term piece → M1.4.
 - ~~**CLI stack management**~~ — `pg-web up` / `pg-web down` land **Session 3 Component A**. `pg-web dev` (file watcher) is still pending in Component B. `migrate apply` / `push` now auto-resolve `DATABASE_URL` from `pgweb.toml` + env, so `--url` is optional.
 - **Dynamic routes** — `[id]` patterns don't match yet. **M1.2.**
 - **Dev error page** — fatal SQL exceptions return generic 500 today. **M1.2.**

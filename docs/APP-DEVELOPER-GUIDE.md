@@ -32,9 +32,11 @@ pg-web push        # auto-resolves the URL from pgweb.toml + env
 open http://localhost:8080     # or `curl localhost:8080/`
 ```
 
-Four commands and you're serving. Edit `pages/index.html`, rerun `pg-web push`, refresh — live. (Hot reload via `pg-web dev` lands in **M1.2**.)
+Four commands and you're serving. Edit `pages/index.html`, refresh — live (if `pg-web dev` is running; otherwise rerun `pg-web push` first).
 
 `pg-web up` / `pg-web down` are thin wrappers over `docker compose up -d` / `down`. `up` polls Postgres + the HTTP server until both accept connections, and resolves `DATABASE_URL` from `pgweb.toml`'s `[database].url_env` (default `DATABASE_URL`), falling back to the dev-scaffold default baked into `docker-compose.yml`. `pg-web down --volumes` also drops the `pgdata` volume (destructive).
+
+`pg-web dev` watches `pages/` and `public/` for changes and auto-pushes on save. It also tails the Postgres container's logs inline (`--no-logs` turns that off). A save triggers a 200ms debounce → content-hash dedupe (so re-saving with identical bytes is a no-op) → a shift-left `BEGIN;...ROLLBACK;` preflight on any changed handler `.sql` (so parse errors surface without touching live routes) → a full `pg-web push`. Ctrl-C stops the watcher cleanly. Note: after save, the browser still needs a manual refresh — browser-push (WebSocket/SSE) is an M1.4 follow-up.
 
 ## Project anatomy
 

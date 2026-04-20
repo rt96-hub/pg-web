@@ -14,8 +14,11 @@
 //! than skipping — the Docker image is a shipped artifact, so silent-skip
 //! would give false confidence.
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use testcontainers::core::{IntoContainerPort, WaitFor};
@@ -211,4 +214,116 @@ fn post_form(client: &reqwest::blocking::Client, base: &str, path: &str, body: &
         .unwrap_or_else(|e| panic!("POST {path} failed: {e}"));
     assert_eq!(resp.status(), 200, "POST {path} status");
     resp.text().unwrap()
+}
+
+/// Recursively copy a directory tree, preserving structure. Keeps the
+/// watcher test self-contained — we copy `examples/demo` into a tempdir
+/// so mutations during the test never touch the checked-in source.
+fn copy_tree(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).unwrap();
+    for entry in fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            fs::copy(&from, &to).unwrap();
+        }
+    }
+}
+
+/// Tier 3 watcher test. Starts `dev::watch` against a fresh copy of the
+/// demo, then edits `pages/index.html` and polls HTTP until the new
+/// content is served — validating the full pipeline: notify watcher →
+/// 200ms debounce → Blake3 dedupe (hash map empty → first-pass change) →
+/// classify (pages/*.html → Push) → push::push → BGW serves updated HTML.
+#[test]
+#[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            --test docker_e2e -- --ignored`."]
+fn dev_watcher_repushes_on_save() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start pgweb/postgres container");
+
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+
+    let db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+
+    // Copy examples/demo to a tempdir so edits don't touch the checked-in source.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    copy_tree(&demo_dir(), tmp.path());
+
+    // Initial schema + push — matches the normal `pg-web migrate apply && pg-web push` flow.
+    pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
+    pg_web_cli::push::push(tmp.path(), &db_url).expect("initial push");
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("build http client");
+
+    // Baseline — pre-edit, the demo renders "No todos yet".
+    let body = get(&client, &base_url, "/");
+    assert!(
+        body.contains("No todos yet"),
+        "baseline render should have empty-state text, got: {body}"
+    );
+
+    // Spawn the watcher loop in a thread. `watch` drops back to the main
+    // thread when `stop` flips true.
+    let stop = Arc::new(AtomicBool::new(false));
+    let watch_dir = tmp.path().to_path_buf();
+    let watch_url = db_url.clone();
+    let watch_stop = stop.clone();
+    let handle = std::thread::spawn(move || pg_web_cli::dev::watch(&watch_dir, &watch_url, watch_stop));
+
+    // Let the watcher install its fs hooks before we edit. 250ms > 200ms
+    // debounce window so the first event we want to catch is the edit.
+    std::thread::sleep(Duration::from_millis(250));
+
+    // Edit pages/index.html — inject a unique marker in place of the
+    // empty-state text so we know the new template was re-synced.
+    const MARKER: &str = "WATCHER_E2E_MARKER_8f3c7a";
+    let index_html = tmp.path().join("pages/index.html");
+    let before = fs::read_to_string(&index_html).unwrap();
+    let after = before.replace("No todos yet. Add one above.", MARKER);
+    assert_ne!(before, after, "marker replacement should have matched");
+    fs::write(&index_html, &after).unwrap();
+
+    // Poll HTTP until the new marker shows up in the rendered body.
+    // Deadline covers: debounce (200ms) + push (≪1s) + any HTTP cache lag.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let body = get(&client, &base_url, "/");
+        if body.contains(MARKER) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("watcher didn't re-push within 10s; last body: {body}");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // Shutdown. watch() polls `stop` every 500ms, so join latency is
+    // bounded by SHUTDOWN_POLL.
+    stop.store(true, Ordering::SeqCst);
+    handle.join().expect("watcher thread panic").expect("watcher returned Err");
 }
