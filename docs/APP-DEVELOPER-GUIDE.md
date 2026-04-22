@@ -260,6 +260,38 @@ Order matters: `push` assumes the tables your handlers touch already exist (run 
 
 Push owns every Postgres function matching `pgweb.pages__<name>(req json) RETURNS <json|text>` — it creates them from your `.sql` files and drops any that no longer have a matching file. **Don't put your own helper functions in that namespace with that signature** or the next push will drop them. Safe patterns for helpers: `pgweb.helper_<name>(args)`, `pgweb.util_<name>(args)`, or `public.<name>(args)` — any name or signature that isn't `pages__*(json) RETURNS json|text` is left untouched.
 
+## Errors: dev vs. prod
+
+The extension behaves differently depending on `pgweb.settings.env`:
+
+- `development` (default for fresh installs and `pg-web dev`): fatal errors render a **typed error page** with the code (e.g. `PGWEB_E003_HANDLER_SQL_EXCEPTION`), the SQL diagnostics (`SQLSTATE`, `MESSAGE`, `DETAIL`, `HINT`), the handler function name, a one-paragraph remedy, and the pretty-printed `req` JSON that triggered the failure.
+- `production`: the response body is a generic `internal server error`. No internals leak. The full error still goes to the Postgres log.
+
+Flip modes by editing `pgweb.toml`:
+
+```toml
+[server]
+env = "production"   # or "development"
+```
+
+…and running `pg-web push`. Push upserts the value into `pgweb.settings` as its last step; the change takes effect on the next request. `pg-web dev` always forces `development` for the duration of its watch session.
+
+### Error codes you'll see
+
+| Code                                     | When                                                              |
+|------------------------------------------|-------------------------------------------------------------------|
+| `PGWEB_E001_HANDLER_MISSING`             | Route's handler function doesn't exist in `pg_proc`               |
+| `PGWEB_E002_HANDLER_SIGNATURE`           | Handler exists but the arg list or return type is wrong           |
+| `PGWEB_E003_HANDLER_SQL_EXCEPTION`       | SQL raised inside the handler (constraint violation, divide by 0) |
+| `PGWEB_E004_HANDLER_RETURN_NOT_JSON`     | Full-mode handler returned text that doesn't parse as JSON        |
+| `PGWEB_E005_TEMPLATE_MISSING`            | Route references a `template_path` not in `pgweb.templates`       |
+| `PGWEB_E006_TEMPLATE_PARSE`              | Tera can't parse the template                                     |
+| `PGWEB_E007_TEMPLATE_RENDER`             | Tera parsed but missing a variable / filter                       |
+| `PGWEB_E008_ROUTE_PATTERN_MALFORMED`     | Stored `path_pattern` doesn't match the `:name` syntax            |
+| `PGWEB_E999_OTHER`                       | Anything not yet classified — file an issue with the context      |
+
+Most of these are caught by `pg-web push` before they can reach runtime (handler existence + signature + template parse). The ones that surface in prod are usually `PGWEB_E003` (bad user input hitting a constraint) and `PGWEB_E007` (template expects a field your handler didn't emit on an edge-case code path).
+
 ## Configuration (`pgweb.toml`)
 
 ```toml
@@ -322,7 +354,7 @@ Your `pages/signup/post.html` template branches on `{% if ok %}` vs `{% else %}`
 |-----------------------------------------------------------------|----------|
 | ~~Hot reload (`pg-web dev`)~~                                   | M1.2 ✓   |
 | ~~Dynamic route patterns (`[id]` capture → `req.path_params`)~~ | M1.2 ✓   |
-| Dev error page (rich SQL exception overlay)                     | M1.2     |
+| ~~Dev error page (typed catalog + rich SQL overlay)~~           | M1.2 ✓   |
 | Static asset serving (`public/*` → HTTP)                        | M1.2–1.3 |
 | Browser live-reload push (WS/SSE; auto-F5 on save)              | M1.4     |
 | CLI `pg-web env set/unset/list` (secrets via GUC)               | M1.4     |

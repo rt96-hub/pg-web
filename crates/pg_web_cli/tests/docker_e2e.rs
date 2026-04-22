@@ -472,6 +472,193 @@ fn push_reconciles_deleted_files() {
     );
 }
 
+/// Tier 3 push-time template validation. Drop a .html with an unclosed
+/// `{% if %}` block into `pages/` and push — the pre-DB Tera parse check
+/// must reject it with the file path in the error, without touching
+/// the live extension's state.
+#[test]
+#[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            --test docker_e2e -- --ignored`."]
+fn push_rejects_broken_tera_template() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start pgweb/postgres container");
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    copy_tree(&demo_dir(), tmp.path());
+
+    // Prime: apply migrations + initial good push so there's live state.
+    pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
+    pg_web_cli::push::push(tmp.path(), &db_url).expect("initial good push");
+
+    // Inject a broken template under a new route.
+    let broken_dir = tmp.path().join("pages/mangled");
+    fs::create_dir_all(&broken_dir).unwrap();
+    fs::write(
+        broken_dir.join("index.html"),
+        "{% if whatever %}\n<p>no endif",
+    )
+    .unwrap();
+    fs::write(
+        broken_dir.join("index.sql"),
+        "CREATE OR REPLACE FUNCTION pgweb.pages__mangled__index(req json) RETURNS json AS $$ \
+         SELECT '{}'::json $$ LANGUAGE sql STABLE;\n",
+    )
+    .unwrap();
+
+    let err = pg_web_cli::push::push(tmp.path(), &db_url)
+        .expect_err("push should refuse a broken Tera template");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("mangled/index.html") || msg.contains("mangled\\index.html"),
+        "error should name the file, got: {msg}"
+    );
+    assert!(
+        msg.to_lowercase().contains("tera") || msg.to_lowercase().contains("parse"),
+        "error should flag as a template parse issue, got: {msg}"
+    );
+
+    // Live site untouched — the initial-push state still serves.
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let body = get(&client, &base_url, "/");
+    assert!(
+        body.contains("No todos yet"),
+        "rolled-back push should leave the prior template intact, got: {body}"
+    );
+}
+
+/// Tier 3 dev error page. Register a handler that raises at runtime
+/// (division by zero), set env=development, hit the route, and assert
+/// the response is the rich dev page (code, title, SQLSTATE, req dump).
+#[test]
+#[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            --test docker_e2e -- --ignored`."]
+fn dev_error_page_surfaces_sql_exception_detail() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start pgweb/postgres container");
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    copy_tree(&demo_dir(), tmp.path());
+
+    // Stamp a deliberately-exploding handler onto a fresh route. Full-mode
+    // (.html + .sql) so we go through the JSON → Tera pipeline — proving
+    // the error surfaces before template rendering even gets involved.
+    let boom_dir = tmp.path().join("pages/boom");
+    fs::create_dir_all(&boom_dir).unwrap();
+    fs::write(
+        boom_dir.join("index.html"),
+        "<p>will never render</p>\n",
+    )
+    .unwrap();
+    fs::write(
+        boom_dir.join("index.sql"),
+        "CREATE OR REPLACE FUNCTION pgweb.pages__boom__index(req json) RETURNS json AS $$ \
+         SELECT json_build_object('x', 1 / 0) $$ LANGUAGE sql;\n",
+    )
+    .unwrap();
+
+    pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
+    pg_web_cli::push::push(tmp.path(), &db_url).expect("push with boom route");
+
+    // Ensure env=development (the install-SQL seed default; belt-and-suspenders).
+    let mut pg = postgres::Client::connect(&db_url, postgres::NoTls).unwrap();
+    pg.execute(
+        "UPDATE pgweb.settings SET value = 'development' WHERE key = 'env'",
+        &[],
+    )
+    .unwrap();
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let resp = client.get(format!("{base_url}/boom")).send().unwrap();
+    assert_eq!(resp.status(), 500, "handler error should surface as 500");
+    let body = resp.text().unwrap();
+    assert!(
+        body.contains("PGWEB_E003_HANDLER_SQL_EXCEPTION"),
+        "dev page should include the error code, got: {body}"
+    );
+    assert!(
+        body.contains("SQL exception inside handler"),
+        "dev page should include the title, got: {body}"
+    );
+    assert!(
+        body.contains("22012"),
+        "dev page should include the SQLSTATE for division_by_zero, got: {body}"
+    );
+    assert!(
+        body.contains("How to fix"),
+        "dev page should include the remedy section, got: {body}"
+    );
+    assert!(
+        body.contains("pgweb.pages__boom__index"),
+        "dev page should name the handler, got: {body}"
+    );
+
+    // Flip to production and confirm the generic 500 hides internals.
+    pg.execute(
+        "UPDATE pgweb.settings SET value = 'production' WHERE key = 'env'",
+        &[],
+    )
+    .unwrap();
+    let resp = client.get(format!("{base_url}/boom")).send().unwrap();
+    assert_eq!(resp.status(), 500);
+    let body = resp.text().unwrap();
+    assert!(
+        !body.contains("PGWEB_E003"),
+        "prod body must not leak error codes, got: {body}"
+    );
+    assert!(
+        !body.contains("SQLSTATE"),
+        "prod body must not leak SQLSTATE, got: {body}"
+    );
+    assert!(
+        body.contains("internal server error"),
+        "prod body should be the generic message, got: {body}"
+    );
+}
+
 /// Tier 3 validation-failure test. A handler `.sql` file whose SQL
 /// doesn't actually define the expected function should fail push with
 /// a clear error and leave the DB unchanged — the live extension keeps

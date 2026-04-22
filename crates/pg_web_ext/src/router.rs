@@ -39,14 +39,16 @@ use pgrx::bgworkers::BackgroundWorker;
 use pgrx::Spi;
 use serde_json::{Map, Value};
 
+use crate::errors::ServeError;
 use crate::templating;
 
 /// What the HTTP layer turns into a response.
 pub enum ServeOutcome {
     /// 2xx or 4xx body with content-type text/html.
     Response { status: u16, body: String },
-    /// Internal error — HTTP 500 with a generic body.
-    Error(String),
+    /// Internal error — typed so `http.rs` can render either a rich dev
+    /// page (env=development) or a generic 500 (env=production).
+    Error(ServeError),
 }
 
 /// Default 404 body when no user-provided `pages/_404` template exists.
@@ -81,6 +83,16 @@ fn serve_in_tx(method: &str, path: &str, mut req: Value) -> ServeOutcome {
     }
 }
 
+/// Route path attached to the current request, used for error context
+/// when variants don't carry their own route (e.g., HandlerSqlException).
+/// Derived from `req.path` for simplicity.
+fn req_path(req: &Value) -> String {
+    req.get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<unknown>")
+        .to_string()
+}
+
 /// Overwrite `req.path_params` with the captures from the matched route.
 /// `req` always arrives with an empty `path_params` object from the HTTP
 /// layer, keeping the contract shape uniform across all request types.
@@ -109,13 +121,14 @@ fn render_route(route: &Route, req: &Value, status: u16) -> ServeOutcome {
             let context = match serde_json::from_str::<Value>(&handler_text) {
                 Ok(v) => v,
                 Err(e) => {
-                    return ServeOutcome::Error(format!(
-                        "handler {} did not return valid JSON for Tera context: {e}",
-                        route.handler_name
-                    ))
+                    return ServeOutcome::Error(ServeError::HandlerReturnNotJson {
+                        handler_name: route.handler_name.clone(),
+                        raw: handler_text.clone(),
+                        parse_error: e.to_string(),
+                    })
                 }
             };
-            match templating::render(&template, &context) {
+            match templating::render(tp, &template, &context) {
                 Ok(body) => ServeOutcome::Response { status, body },
                 Err(e) => ServeOutcome::Error(e),
             }
@@ -267,11 +280,13 @@ fn is_safe_ident(ident: &str) -> bool {
 /// `Err(SpiError::InvalidPosition)`. Normalize to `Ok(None)`.
 fn get_one_optional<T: pgrx::datum::FromDatum + pgrx::datum::IntoDatum>(
     query: &str,
-) -> Result<Option<T>, String> {
+) -> Result<Option<T>, ServeError> {
     match Spi::get_one::<T>(query) {
         Ok(v) => Ok(v),
         Err(pgrx::spi::Error::InvalidPosition) => Ok(None),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(ServeError::Other {
+            message: e.to_string(),
+        }),
     }
 }
 
@@ -284,25 +299,39 @@ struct RouteRow {
 /// Multi-row fetch: all routes for the given method. Pattern parsing +
 /// specificity sort + match happen in Rust so we can emit clear errors
 /// if any stored pattern is malformed.
-fn fetch_method_routes(method: &str) -> Result<Vec<RouteRow>, String> {
+fn fetch_method_routes(method: &str) -> Result<Vec<RouteRow>, ServeError> {
     let method_lit = quote_literal(method);
     let query = format!(
         "SELECT path_pattern, handler_name, template_path \
          FROM pgweb.routes WHERE method = {method_lit}"
     );
-    Spi::connect(|client| -> Result<Vec<RouteRow>, String> {
-        let table = client.select(&query, None, &[]).map_err(|e| e.to_string())?;
+    Spi::connect(|client| -> Result<Vec<RouteRow>, ServeError> {
+        let table = client
+            .select(&query, None, &[])
+            .map_err(|e| ServeError::Other {
+                message: e.to_string(),
+            })?;
         let mut out = Vec::new();
         for row in table {
             let path_pattern: String = row
                 .get(1)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "null path_pattern in pgweb.routes".to_string())?;
+                .map_err(|e| ServeError::Other {
+                    message: e.to_string(),
+                })?
+                .ok_or_else(|| ServeError::Other {
+                    message: "null path_pattern in pgweb.routes".into(),
+                })?;
             let handler_name: String = row
                 .get(2)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "null handler_name in pgweb.routes".to_string())?;
-            let template_path: Option<String> = row.get(3).map_err(|e| e.to_string())?;
+                .map_err(|e| ServeError::Other {
+                    message: e.to_string(),
+                })?
+                .ok_or_else(|| ServeError::Other {
+                    message: "null handler_name in pgweb.routes".into(),
+                })?;
+            let template_path: Option<String> = row.get(3).map_err(|e| ServeError::Other {
+                message: e.to_string(),
+            })?;
             out.push(RouteRow {
                 path_pattern,
                 handler_name,
@@ -313,14 +342,19 @@ fn fetch_method_routes(method: &str) -> Result<Vec<RouteRow>, String> {
     })
 }
 
-fn lookup_route(method: &str, path: &str) -> Result<Option<MatchedRoute>, String> {
+fn lookup_route(method: &str, path: &str) -> Result<Option<MatchedRoute>, ServeError> {
     let rows = fetch_method_routes(method)?;
 
     // Parse each pattern once. Any malformed pattern surfaces here rather
     // than as a silent mis-match at HTTP time.
     let mut parsed: Vec<(RouteRow, ParsedPattern)> = Vec::with_capacity(rows.len());
     for row in rows {
-        let pat = ParsedPattern::parse(&row.path_pattern)?;
+        let pat = ParsedPattern::parse(&row.path_pattern).map_err(|reason| {
+            ServeError::RoutePatternMalformed {
+                pattern: row.path_pattern.clone(),
+                reason,
+            }
+        })?;
         parsed.push((row, pat));
     }
 
@@ -353,7 +387,7 @@ fn lookup_route(method: &str, path: &str) -> Result<Option<MatchedRoute>, String
 /// 404 fallback lookup. Phase 1 only supports root-scoped fallbacks
 /// (`path_pattern='/'` with `method='404'`). Phase 2+ will extend to
 /// longest-prefix-match for per-subtree fallbacks.
-fn lookup_fallback(_path: &str) -> Result<Option<Route>, String> {
+fn lookup_fallback(_path: &str) -> Result<Option<Route>, ServeError> {
     let handler_name = match get_one_optional::<String>(
         "SELECT handler_name FROM pgweb.routes \
          WHERE method = '404' AND path_pattern = '/' LIMIT 1",
@@ -371,29 +405,129 @@ fn lookup_fallback(_path: &str) -> Result<Option<Route>, String> {
     }))
 }
 
-fn fetch_template(template_path: &str) -> Result<String, String> {
+fn fetch_template(template_path: &str) -> Result<String, ServeError> {
     let query = format!(
         "SELECT content FROM pgweb.templates WHERE template_path = {} LIMIT 1",
         quote_literal(template_path)
     );
     match get_one_optional::<String>(&query)? {
         Some(s) => Ok(s),
-        None => Err(format!("template not found: {template_path}")),
+        None => Err(ServeError::TemplateMissing {
+            template_path: template_path.to_string(),
+        }),
     }
 }
 
-fn call_handler(handler_name: &str, req: &Value) -> Result<String, String> {
+/// Call the user's handler through `pgweb._framework_call_handler`, the
+/// PL/pgSQL wrapper that catches `WHEN OTHERS` and returns structured
+/// diagnostics. On SQL failure we get SQLSTATE + MESSAGE + DETAIL + HINT
+/// + CONTEXT as columns and classify into a typed `ServeError` here.
+fn call_handler(handler_name: &str, req: &Value) -> Result<String, ServeError> {
     if !is_safe_ident(handler_name) {
-        return Err(format!("handler name rejected: {handler_name:?}"));
+        return Err(ServeError::Other {
+            message: format!("rejected handler name: {handler_name:?}"),
+        });
     }
-    let req_json = serde_json::to_string(req).map_err(|e| e.to_string())?;
+    let req_json = serde_json::to_string(req).map_err(|e| ServeError::Other {
+        message: e.to_string(),
+    })?;
     let query = format!(
-        "SELECT ({handler_name}({}::json))::text AS result",
-        quote_literal(&req_json)
+        "SELECT ok, result_text, error_sqlstate, error_message, \
+                error_detail, error_hint, error_context \
+         FROM pgweb._framework_call_handler({}, {}::json)",
+        quote_literal(handler_name),
+        quote_literal(&req_json),
     );
-    match get_one_optional::<String>(&query)? {
-        Some(s) => Ok(s),
-        None => Err(format!("handler {handler_name}: returned no row")),
+    Spi::connect(|client| -> Result<String, ServeError> {
+        let table = client
+            .select(&query, None, &[])
+            .map_err(|e| ServeError::Other {
+                message: e.to_string(),
+            })?;
+        let row = table.into_iter().next().ok_or_else(|| ServeError::Other {
+            message: "_framework_call_handler returned no row".into(),
+        })?;
+
+        let ok: bool = row
+            .get(1)
+            .map_err(|e| ServeError::Other {
+                message: e.to_string(),
+            })?
+            .unwrap_or(false);
+
+        if ok {
+            let result_text: Option<String> = row.get(2).map_err(|e| ServeError::Other {
+                message: e.to_string(),
+            })?;
+            return Ok(result_text.unwrap_or_default());
+        }
+
+        // Error path — classify by SQLSTATE.
+        let sqlstate: String = row
+            .get(3)
+            .map_err(|e| ServeError::Other {
+                message: e.to_string(),
+            })?
+            .unwrap_or_default();
+        let message: String = row
+            .get(4)
+            .map_err(|e| ServeError::Other {
+                message: e.to_string(),
+            })?
+            .unwrap_or_default();
+        let detail: Option<String> = row.get(5).map_err(|e| ServeError::Other {
+            message: e.to_string(),
+        })?;
+        let hint: Option<String> = row.get(6).map_err(|e| ServeError::Other {
+            message: e.to_string(),
+        })?;
+        let context: Option<String> = row.get(7).map_err(|e| ServeError::Other {
+            message: e.to_string(),
+        })?;
+
+        Err(classify_handler_error(
+            handler_name,
+            &sqlstate,
+            message,
+            detail,
+            hint,
+            context,
+            req,
+        ))
+    })
+}
+
+/// Map a SQLSTATE from the handler's EXCEPTION block to a typed variant.
+/// Adding a new dedicated variant for a SQLSTATE: add a match arm here.
+fn classify_handler_error(
+    handler_name: &str,
+    sqlstate: &str,
+    message: String,
+    detail: Option<String>,
+    hint: Option<String>,
+    context: Option<String>,
+    req: &Value,
+) -> ServeError {
+    match sqlstate {
+        // 42883 undefined_function: the handler function doesn't exist.
+        "42883" => ServeError::HandlerMissing {
+            handler_name: handler_name.to_string(),
+            route: req_path(req),
+        },
+        // 42P13 invalid_function_definition, 42725 ambiguous_function: wrong signature.
+        "42P13" | "42725" => ServeError::HandlerSignatureMismatch {
+            handler_name: handler_name.to_string(),
+            expected: "(req json) RETURNS json | text".to_string(),
+            actual: message,
+        },
+        _ => ServeError::HandlerSqlException {
+            handler_name: handler_name.to_string(),
+            sqlstate: sqlstate.to_string(),
+            message,
+            detail,
+            hint,
+            context,
+        },
     }
 }
 
@@ -701,5 +835,93 @@ mod tests {
     fn lookup_route_no_match_returns_none() {
         let matched = super::lookup_route("GET", "/nope/no/match").expect("lookup error");
         assert!(matched.is_none());
+    }
+
+    // ---- handler-call error classification (Component D) ----
+
+    #[pg_test]
+    fn call_handler_missing_function_returns_handler_missing() {
+        // No pgweb.pages__ghost exists. The framework wrapper catches the
+        // 42883 undefined_function and classify_handler_error maps it.
+        let err = super::call_handler(
+            "pgweb.pages__ghost",
+            &serde_json::json!({
+                "body": {}, "query": {}, "method": "GET", "path": "/ghost", "path_params": {}
+            }),
+        )
+        .expect_err("expected HandlerMissing");
+        match err {
+            crate::errors::ServeError::HandlerMissing { handler_name, route } => {
+                assert_eq!(handler_name, "pgweb.pages__ghost");
+                assert_eq!(route, "/ghost");
+            }
+            other => panic!("expected HandlerMissing, got {other:?}"),
+        }
+    }
+
+    #[pg_test]
+    fn call_handler_runtime_sql_error_returns_sql_exception() {
+        // Create a handler that divides by zero at execution time.
+        pgrx::Spi::run(
+            "CREATE FUNCTION pgweb.pages__boom(req json) RETURNS json AS $$ \
+             SELECT json_build_object('x', 1/0) $$ LANGUAGE sql",
+        )
+        .expect("create boom");
+        let err = super::call_handler(
+            "pgweb.pages__boom",
+            &serde_json::json!({
+                "body": {}, "query": {}, "method": "GET", "path": "/", "path_params": {}
+            }),
+        )
+        .expect_err("expected HandlerSqlException");
+        match err {
+            crate::errors::ServeError::HandlerSqlException {
+                handler_name,
+                sqlstate,
+                message,
+                ..
+            } => {
+                assert_eq!(handler_name, "pgweb.pages__boom");
+                // 22012 division_by_zero
+                assert_eq!(sqlstate, "22012");
+                assert!(message.to_lowercase().contains("division"));
+            }
+            other => panic!("expected HandlerSqlException, got {other:?}"),
+        }
+    }
+
+    #[pg_test]
+    fn call_handler_happy_path_returns_text() {
+        pgrx::Spi::run(
+            "CREATE FUNCTION pgweb.pages__happy(req json) RETURNS text AS $$ \
+             SELECT 'ok' $$ LANGUAGE sql",
+        )
+        .expect("create happy");
+        let s = super::call_handler(
+            "pgweb.pages__happy",
+            &serde_json::json!({
+                "body": {}, "query": {}, "method": "GET", "path": "/", "path_params": {}
+            }),
+        )
+        .expect("happy path should succeed");
+        assert_eq!(s, "ok");
+    }
+
+    // ---- settings ----
+
+    #[pg_test]
+    fn settings_current_env_defaults_to_development_from_seed() {
+        let env = crate::settings::current_env();
+        assert_eq!(env, crate::settings::Env::Development);
+    }
+
+    #[pg_test]
+    fn settings_current_env_reads_production_when_set() {
+        pgrx::Spi::run(
+            "UPDATE pgweb.settings SET value = 'production' WHERE key = 'env'",
+        )
+        .expect("update env to production");
+        let env = crate::settings::current_env();
+        assert_eq!(env, crate::settings::Env::Production);
     }
 }

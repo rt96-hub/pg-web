@@ -13,10 +13,13 @@ use axum::{
     response::{IntoResponse, Response},
     Router,
 };
+use pgrx::bgworkers::BackgroundWorker;
 use serde_json::{json, Map, Value};
 use tracing::error;
 
+use crate::errors::ServeError;
 use crate::router::{self, ServeOutcome};
+use crate::settings::{self, Env};
 
 /// Hard cap on request body size — defense against runaway POSTs. Forms are
 /// small in practice; anything bigger probably means misuse or file upload
@@ -68,6 +71,9 @@ async fn handle(req: Request) -> Response {
         "path_params": Value::Object(Map::new()),
     });
 
+    // Clone what the dev page needs before `router::serve` consumes `req_value`.
+    let req_for_dev_page = req_value.clone();
+
     match router::serve(&method, &path, req_value) {
         ServeOutcome::Response { status, body } => {
             let code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
@@ -78,13 +84,32 @@ async fn handle(req: Request) -> Response {
             )
                 .into_response()
         }
-        ServeOutcome::Error(err) => {
-            error!(method = %method, path = %path, error = %err, "handler error");
-            status_plain(
+        ServeOutcome::Error(err) => render_error(err, &method, &path, &req_for_dev_page),
+    }
+}
+
+/// Branch on `pgweb.settings.env`:
+/// - `development` → rich dev error page with code + title + remedy + req dump.
+/// - `production`  → generic 500 body; the log still gets the full picture.
+fn render_error(err: ServeError, method: &str, path: &str, req: &Value) -> Response {
+    // Structured log line always — this is how prod operators see failures.
+    error!(method = %method, path = %path, pgweb_error = %err.log_line(), "serve error");
+
+    let env = BackgroundWorker::transaction(settings::current_env);
+    match env {
+        Env::Development => {
+            let body = err.render_dev_page(req, 500);
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal server error\n",
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                body,
             )
+                .into_response()
         }
+        Env::Production => status_plain(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal server error\n",
+        ),
     }
 }
 

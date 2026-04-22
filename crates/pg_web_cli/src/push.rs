@@ -28,8 +28,26 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 use postgres::{Client, NoTls, Transaction};
+use serde::Deserialize;
 
 use crate::paths::{self, RouteEntry};
+
+/// Slice of `pgweb.toml` push cares about. Extra sections in the file
+/// are ignored silently so the user can add their own without push
+/// complaining.
+#[derive(Debug, Default, Deserialize)]
+struct PushTomlConfig {
+    #[serde(default)]
+    server: ServerSection,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ServerSection {
+    /// `development` | `production`. Controls whether the extension
+    /// surfaces rich error pages. Synced into `pgweb.settings` on every push.
+    #[serde(default)]
+    env: Option<String>,
+}
 
 /// What `push` changed. Returned so callers can display a summary.
 #[derive(Debug, Default, Clone)]
@@ -41,6 +59,9 @@ pub struct PushSummary {
     pub routes_deleted: usize,
     pub templates_deleted: usize,
     pub handlers_dropped: usize,
+    /// Set when push synced `[server].env` from `pgweb.toml` into
+    /// `pgweb.settings`. `None` when pgweb.toml didn't declare an env.
+    pub env_synced: Option<String>,
 }
 
 pub fn push(app_dir: &Path, url: &str) -> Result<PushSummary> {
@@ -53,6 +74,17 @@ pub fn push(app_dir: &Path, url: &str) -> Result<PushSummary> {
     }
 
     let entries = paths::scan(&pages_dir)?;
+
+    // Pre-flight: parse every HTML file as a Tera template before touching
+    // the DB. Caught here, a broken `{% if %}` block names the file + line;
+    // caught at render time, the user would see a generic 500 (prod) or
+    // a dev error page (dev) — either way, better to fail loud at push.
+    validate_templates(&entries)?;
+
+    // Parse pgweb.toml once. env gets synced into pgweb.settings below;
+    // other sections (database, dev, assets) stay the province of whoever
+    // reads them.
+    let toml_cfg = read_toml(app_dir)?;
 
     // Build the expected-state sets up front so the reconcile phase
     // has them ready without re-walking.
@@ -92,9 +124,63 @@ pub fn push(app_dir: &Path, url: &str) -> Result<PushSummary> {
     summary.templates_deleted = reconcile_templates(&mut tx, &expected_templates)?;
     summary.handlers_dropped = reconcile_handlers(&mut tx, &expected_handlers)?;
 
+    // Phase 4 — sync runtime settings. `pgweb.settings.env` becomes
+    // whatever `[server].env` is in pgweb.toml, so deploying a new
+    // image from the same source tree doesn't have to carry any
+    // environment variable alongside.
+    if let Some(env) = toml_cfg.server.env.as_deref() {
+        sync_env(&mut tx, env)?;
+        summary.env_synced = Some(env.to_string());
+    }
+
     tx.commit()?;
 
     Ok(summary)
+}
+
+/// Parse every `.html` under `pages/` as a Tera template. Syntax errors
+/// (unclosed blocks, unknown tags, mismatched braces) surface here —
+/// before the DB transaction opens — so the live extension can't end up
+/// with a bad template that 500s every request.
+fn validate_templates(entries: &[RouteEntry]) -> Result<()> {
+    for entry in entries {
+        let Some(html_path) = &entry.html_path else {
+            continue;
+        };
+        let source = fs::read_to_string(html_path)
+            .with_context(|| format!("reading {}", html_path.display()))?;
+        // Tera::new + add_raw_template is the idiomatic parse-only check.
+        // An empty dir glob (`""`) leaves Tera with no file-backed templates;
+        // we then register this one source under a stable name and let
+        // parse errors surface.
+        let mut tera = tera::Tera::default();
+        if let Err(e) = tera.add_raw_template("__pg_web_push_validate__", &source) {
+            bail!(
+                "{}: Tera template failed to parse — {e}",
+                html_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn read_toml(app_dir: &Path) -> Result<PushTomlConfig> {
+    let p = app_dir.join("pgweb.toml");
+    if !p.is_file() {
+        return Ok(PushTomlConfig::default());
+    }
+    let raw = fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
+    toml::from_str::<PushTomlConfig>(&raw).with_context(|| format!("parsing {}", p.display()))
+}
+
+fn sync_env(tx: &mut Transaction<'_>, env: &str) -> Result<()> {
+    tx.execute(
+        "INSERT INTO pgweb.settings (key, value) VALUES ('env', $1) \
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        &[&env],
+    )
+    .with_context(|| format!("upserting pgweb.settings.env = {env}"))?;
+    Ok(())
 }
 
 /// Apply one filesystem entry to the DB: run (or synthesize) its handler
@@ -337,5 +423,59 @@ mod tests {
         assert!(!is_safe_proname("pages__foo)--"));
         assert!(!is_safe_proname("pages__\"foo"));
         assert!(!is_safe_proname("pages__ foo"));
+    }
+
+    // ---- template validation (Component D) ----
+
+    fn mk_entry(html: &std::path::Path) -> RouteEntry {
+        RouteEntry {
+            method: "GET".into(),
+            route: "/".into(),
+            handler_name: "pgweb.pages__index".into(),
+            template_path: Some("pages/index.html".into()),
+            html_path: Some(html.to_path_buf()),
+            sql_path: None,
+        }
+    }
+
+    #[test]
+    fn validate_templates_accepts_well_formed_html() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("index.html");
+        std::fs::write(&p, "<h1>hello {{ name }}</h1>").unwrap();
+        let entries = vec![mk_entry(&p)];
+        validate_templates(&entries).expect("well-formed template should parse");
+    }
+
+    #[test]
+    fn validate_templates_rejects_unclosed_block_with_path_in_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("broken.html");
+        std::fs::write(&p, "{% if x %}no endif").unwrap();
+        let entries = vec![mk_entry(&p)];
+        let err = validate_templates(&entries).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("broken.html"),
+            "error should name the file: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("tera") || msg.contains("parse"),
+            "error should flag it as a template problem: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_templates_skips_entries_without_html() {
+        // raw-text route — no html_path, nothing to parse.
+        let entries = vec![RouteEntry {
+            method: "POST".into(),
+            route: "/x".into(),
+            handler_name: "pgweb.pages__x__post".into(),
+            template_path: None,
+            html_path: None,
+            sql_path: Some(std::path::PathBuf::from("dummy.sql")),
+        }];
+        validate_templates(&entries).expect("raw-text routes have no template to validate");
     }
 }

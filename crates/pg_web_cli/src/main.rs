@@ -119,6 +119,9 @@ fn run() -> Result<()> {
                     summary.handlers_dropped,
                 );
             }
+            if let Some(env) = &summary.env_synced {
+                println!("  env → {env} (synced from pgweb.toml → pgweb.settings)");
+            }
         }
         Command::Migrate { action } => match action {
             MigrateAction::Apply { url, dir } => {

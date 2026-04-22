@@ -1,9 +1,18 @@
+// `ServeError` carries enough structured context (SQLSTATE, message, detail,
+// hint, context, template path, req dump helpers) to render a developer-
+// friendly error page. That makes it ~144 bytes, which trips
+// clippy::result_large_err. Boxing it would push an allocation onto every
+// `?` in the hot path even though errors are the cold path. Allow it here.
+#![allow(clippy::result_large_err)]
+
 ::pgrx::pg_module_magic!(name, version);
 
+mod errors;
 mod http;
 mod logging;
 mod router;
 mod schema;
+mod settings;
 mod templating;
 mod worker;
 

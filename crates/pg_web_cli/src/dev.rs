@@ -79,6 +79,16 @@ pub fn dev(app_dir: &Path, tail_logs: bool) -> Result<()> {
     let url = stack::up(app_dir)?;
     println!("✓ stack up — DATABASE_URL={url}");
 
+    // `dev` forces env=development in pgweb.settings so the rich error
+    // page shows up regardless of whatever the last `pg-web push` left
+    // there. The next `pg-web push` re-syncs from pgweb.toml if needed.
+    if let Err(e) = force_env_development(&url) {
+        eprintln!("⚠ couldn't set pgweb.settings.env = 'development': {e:#}");
+        eprintln!("  (dev error pages may not show if the DB currently has env=production)");
+    } else {
+        println!("✓ env → development (pgweb.settings row overridden for this session)");
+    }
+
     let stop = Arc::new(AtomicBool::new(false));
     {
         let stop = stop.clone();
@@ -100,6 +110,22 @@ pub fn dev(app_dir: &Path, tail_logs: bool) -> Result<()> {
     }
     println!("\n✓ stopped");
     result
+}
+
+/// UPSERT `pgweb.settings` to `env='development'` in a one-shot
+/// connection. Runs outside the watcher loop — the subsequent push
+/// flow will re-sync from pgweb.toml if the user changes it.
+fn force_env_development(url: &str) -> Result<()> {
+    let mut client = postgres::Client::connect(url, postgres::NoTls)
+        .with_context(|| format!("connecting to {url} to override env"))?;
+    client
+        .execute(
+            "INSERT INTO pgweb.settings (key, value) VALUES ('env', 'development') \
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            &[],
+        )
+        .context("upserting pgweb.settings.env")?;
+    Ok(())
 }
 
 /// Core watcher loop — set up the debouncer on pages/ + public/ and run

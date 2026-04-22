@@ -35,6 +35,23 @@ CREATE TABLE pgweb.migrations (
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Framework-owned key/value settings. The database is the source of
+-- truth for runtime configuration so a container restart doesn't lose
+-- state and no separate config file lives inside the image. `pg-web push`
+-- syncs values from the user's `pgweb.toml` into this table.
+--
+-- Currently recognized keys:
+--   'env'  — 'development' enables rich error pages; 'production' serves
+--            generic 500s. Default 'development' so a fresh extension
+--            install is immediately debuggable; `pg-web push` overwrites
+--            based on pgweb.toml's [server] env.
+CREATE TABLE pgweb.settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+INSERT INTO pgweb.settings (key, value) VALUES ('env', 'development');
+
 -- Default handler for the seeded GET / route. Follows the standard
 -- app-developer contract: `(req json) RETURNS json`. Ignores `req` —
 -- the handler has no inputs to read — but the signature matches what
@@ -56,6 +73,51 @@ INSERT INTO pgweb.templates (template_path, content) VALUES (
 </html>
 '
 );
+
+-- Wrapper around every handler call. Runs the handler inside a PL/pgSQL
+-- EXCEPTION block so the router can catch SQL errors structurally —
+-- SQLSTATE + MESSAGE + DETAIL + HINT + CONTEXT come back as distinct
+-- columns instead of longjmping across the Rust FFI boundary. Every
+-- request pays one savepoint's worth of overhead (microseconds); we buy
+-- the rich-error-page UX with it.
+--
+-- Why `handler_name text` rather than `regprocedure`: regprocedure casts
+-- resolve at call time, which would surface a "function does not exist"
+-- error at the cast, not inside the EXCEPTION block where we can catch
+-- it. Dynamic EXECUTE lets the wrapper catch that case uniformly.
+CREATE FUNCTION pgweb._framework_call_handler(
+    p_handler_name TEXT,
+    p_req          JSON
+) RETURNS TABLE (
+    ok               BOOLEAN,
+    result_text      TEXT,
+    error_sqlstate   TEXT,
+    error_message    TEXT,
+    error_detail     TEXT,
+    error_hint       TEXT,
+    error_context    TEXT
+) LANGUAGE plpgsql AS $fn$
+DECLARE
+    v_sql TEXT;
+BEGIN
+    -- `format` with %s for identifier, %L for literal. $1 binds the json
+    -- at EXECUTE time so no string-escaping of user content is needed.
+    v_sql := format('SELECT (%s($1))::text', p_handler_name);
+    EXECUTE v_sql INTO result_text USING p_req;
+    ok := TRUE;
+    RETURN NEXT;
+EXCEPTION WHEN OTHERS THEN
+    ok := FALSE;
+    result_text := NULL;
+    GET STACKED DIAGNOSTICS
+        error_sqlstate = RETURNED_SQLSTATE,
+        error_message  = MESSAGE_TEXT,
+        error_detail   = PG_EXCEPTION_DETAIL,
+        error_hint     = PG_EXCEPTION_HINT,
+        error_context  = PG_EXCEPTION_CONTEXT;
+    RETURN NEXT;
+END;
+$fn$;
 
 COMMENT ON SCHEMA pgweb IS 'pg-web framework tables. Managed by the extension and CLI; do not modify directly.';
 "#,

@@ -121,12 +121,12 @@ scripts/test-all.sh
 
 | Tier | Command | Tests (today) |
 |---|---|---|
-| 1. SQL / pgrx  | `cargo pgrx test pg17`                              | 29 — 13 `#[pg_test]` (schema, seed, migrations ledger, `(req json)` contract, **dynamic-route capture lookup**, **static-beats-dynamic tie-break**) + 16 pure-Rust (pattern parse + match + specificity sort) |
+| 1. SQL / pgrx  | `cargo pgrx test pg17`                              | 46 — 18 `#[pg_test]` (schema, seed, migrations ledger, `(req json)` contract, dynamic-route capture lookup, static-beats-dynamic, **handler-missing classification**, **runtime SQL exception classification**, **settings env default + override**) + 28 pure-Rust (pattern parse/match/sort, **error catalog codes + HTML escape + dev page**, **Env parsing**, **Tera parse vs render classification**) |
 | 2a. HTTP smoke | `scripts/test-http.sh`                              | 2 `#[test]` — `GET /` renders seeded template, unknown path returns default 404 body |
-| 2b. CLI        | `cargo test -p pg_web_cli`                          | 86 — path scanner + **`[id]` capture parsing**, migrate apply, push + reconcile, init, demo-layout (6 routes incl. `/todos/:id`), stack (port poll / url resolve), dev (event classify / Blake3 sanity), push safe-proname guard |
-| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` | 4 — todo CRUD with **dynamic `/todos/:id` detail view** (numeric + literal + missing); watcher saves re-push; push reconciles deleted files; push rejects missing handler function (rolls back, live state preserved) |
+| 2b. CLI        | `cargo test -p pg_web_cli`                          | 89 — path scanner + `[id]` capture, migrate apply, push + reconcile, **push template-parse validation**, init, demo-layout, stack, dev, push safe-proname guard |
+| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` | 6 — todo CRUD with dynamic `/todos/:id`; watcher saves re-push; push reconciles deleted files; push rejects missing handler function; **push rejects broken Tera template (live state preserved)**; **dev error page surfaces SQLSTATE + handler name + PGWEB_E003 code + remedy, flips to generic 500 under env=production** |
 
-**121 tests all green via `scripts/test-all.sh`.**
+**143 tests all green via `scripts/test-all.sh`.**
 
 Feature matrix in `docs/TESTING.md` tracks which deliverables are demo-covered.
 
@@ -186,7 +186,7 @@ Daily iteration is `scripts/test-all.sh` and editing code.
 - ~~**Hot reload**~~ — `pg-web dev` watches `pages/` + `public/`, re-pushes on save after a 200ms debounce + Blake3 content-hash dedupe + shift-left SQL preflight. Shipped **Session 3 Component B**. Browser-push (auto F5 via WS/SSE) is the remaining deferred-but-near-term piece → M1.4.
 - ~~**CLI stack management**~~ — `pg-web up` / `pg-web down` land **Session 3 Component A**. `pg-web dev` (file watcher) is still pending in Component B. `migrate apply` / `push` now auto-resolve `DATABASE_URL` from `pgweb.toml` + env, so `--url` is optional.
 - ~~**Dynamic routes**~~ — `[id]` captures ship **Session 3 Component C**. `pages/posts/[id]/index.{html,sql}` → `GET /posts/:id` with `req.path_params.id` threaded in; captures are raw strings so `/posts/42` and `/posts/all` both match, handler decides. Static routes still beat dynamic on specificity. Naïve scan router, reevaluate at >1000 routes per app.
-- **Dev error page** — fatal SQL exceptions return generic 500 today. **M1.2.**
+- ~~**Dev error page**~~ — typed `ServeError` catalog (9 variants, PGWEB_E001–E999) surfaces SQLSTATE / MESSAGE / DETAIL / HINT + handler name + `req` dump + remedy hint when `pgweb.settings.env='development'`; generic 500 (no internals leaked) in production. Push-time Tera validation catches broken templates before the DB transaction. Shipped **Session 3 Component D**.
 - **Static assets** — `public/*` → 404 still. **M1.2.**
 - **Secrets** — `pg-web env set KEY=VAL` doesn't exist. **M1.4.**
 - **Project validator** — `pg-web check` for offline lint. **M1.4.**

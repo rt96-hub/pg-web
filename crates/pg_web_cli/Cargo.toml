@@ -35,6 +35,11 @@ notify-debouncer-full = "0.3"
 blake3 = "1"
 ctrlc = { version = "3", features = ["termination"] }
 
+# push: template-parse validation before the DB transaction so a bad
+# .html surfaces by path + line, not as an HTTP 500 at runtime. Same
+# Tera version as the extension crate to keep parse semantics aligned.
+tera = "1"
+
 [dev-dependencies]
 tempfile = "3"
 
