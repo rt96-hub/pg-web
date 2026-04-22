@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Full local test run: four tiers.
-#   1) SQL / pgrx #[pg_test]
+# Full local test run: five tiers.
+#   1)  SQL / pgrx #[pg_test]
 #   2a) HTTP smoke against a running extension
 #   2b) CLI unit + hermetic integration tests
-#   3) Docker E2E — boots pgweb/postgres:latest in a container and drives
-#      the full CRUD flow against examples/demo
+#   3)  Docker E2E — boots pgweb/postgres:latest in a container and drives
+#       the full CRUD flow against examples/demo
+#   4)  CLI black-box smoke — init → up → push → break 3 ways → down,
+#       exercising the user-visible CLI stdout and HTTP bodies
 #
-# Tier 3 is mandatory. If Docker or the image is missing, the test panics
-# with instructions (not a silent skip — the image is a shipped artifact).
+# Tier 3 is mandatory. Tier 4 is also mandatory — it's what catches
+# gotchas that fall between the rust tests (wrong image baked, stray
+# pgrx dev PG shadowing :8080, docker-compose service rename, etc.).
+# Both need Docker + pgweb/postgres:latest.
 #
 # This is what CI should invoke.
 set -euo pipefail
@@ -30,6 +34,10 @@ cargo test -p pg_web_cli
 echo
 echo "== Tier 3 — Docker E2E (pgweb/postgres:latest + examples/demo) =="
 cargo test -p pg_web_cli --test docker_e2e -- --ignored
+
+echo
+echo "== Tier 4 — CLI black-box smoke (scripts/smoke-cli.sh) =="
+bash "$REPO_ROOT/scripts/smoke-cli.sh"
 
 echo
 echo "All tests passed."

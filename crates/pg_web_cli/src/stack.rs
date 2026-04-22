@@ -65,6 +65,7 @@ struct DatabaseConfig {
 /// are reachable, and return the resolved DATABASE_URL for display.
 pub fn up(app_dir: &Path) -> Result<String> {
     preflight_docker()?;
+    preflight_ports_clear()?;
     let compose = ensure_compose_file(app_dir)?;
 
     let status = Command::new("docker")
@@ -86,7 +87,14 @@ pub fn up(app_dir: &Path) -> Result<String> {
     poll_tcp(&format!("{DEV_HOST}:{DEV_HTTP_PORT}"), deadline)
         .context("pg-web HTTP didn't accept connections on :8080 within deadline")?;
 
-    resolve_database_url(app_dir, |k| std::env::var(k).ok())
+    // TCP-accept fires before PG finishes running the container's init
+    // scripts (CREATE USER / DATABASE / EXTENSION). A client connect in
+    // that window gets "the database system is starting up" and aborts.
+    // Poll an application-level SELECT 1 so callers can push immediately.
+    let resolved = resolve_database_url(app_dir, |k| std::env::var(k).ok())?;
+    wait_for_db_ready(&resolved, deadline)
+        .context("Postgres accepts TCP but isn't accepting queries yet")?;
+    Ok(resolved)
 }
 
 /// `pg-web down` — stop the compose stack. When `drop_volumes` is true,
@@ -110,6 +118,60 @@ pub fn down(app_dir: &Path, drop_volumes: bool) -> Result<()> {
         bail!("`docker compose down` failed (exit {:?})", status.code());
     }
     Ok(())
+}
+
+/// Make sure the ports we're about to publish aren't already held by
+/// a non-Docker process. The usual culprit is a stray `cargo pgrx run
+/// pg17` session whose background worker is still bound to `:8080`:
+/// when Docker's port publish collides with a pre-existing host listener
+/// on Linux, the compose command succeeds silently but every HTTP
+/// request hits the stray BGW instead of our container (DEVELOPER-GUIDE
+/// pitfall #8). Catching it here turns "why is my push not showing up?"
+/// into a concrete fix step at the top of the command.
+fn preflight_ports_clear() -> Result<()> {
+    for port in [DEV_HTTP_PORT, DEV_PG_PORT] {
+        check_port_not_shadowed(port)?;
+    }
+    Ok(())
+}
+
+fn check_port_not_shadowed(port: u16) -> Result<()> {
+    use std::net::TcpListener;
+    // If we can bind, the port is free — nothing to worry about.
+    if TcpListener::bind(("0.0.0.0", port)).is_ok() {
+        return Ok(());
+    }
+    // Port is held. Is the holder a Docker container we already own? If so,
+    // the idempotent `docker compose up -d` below will no-op against it.
+    if docker_already_publishes_port(port) {
+        return Ok(());
+    }
+    // Port is held by something that isn't Docker — almost certainly a
+    // pgrx dev PG left running. Emit the fix instead of letting compose
+    // silently be shadowed.
+    bail!(
+        "port {port} is already bound on the host by a non-Docker process.\n  \
+         Most common cause: a `cargo pgrx run pg17` session whose background worker \n  \
+         never stopped — it shadows Docker's port publish, so curl and `pg-web push`\n  \
+         hit the dev PG instead of your container.\n\n  \
+         Fix:\n    \
+         cargo pgrx stop pg17\n    \
+         # or, more forcefully:\n    \
+         pg_ctl -D ~/.pgrx/data-17 -m fast stop\n\n  \
+         Diagnose with:  ss -tlnp sport = :{port}"
+    )
+}
+
+fn docker_already_publishes_port(port: u16) -> bool {
+    Command::new("docker")
+        .args(["ps", "--filter", &format!("publish={port}"), "--format", "{{.ID}}"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| {
+            o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty()
+        })
+        .unwrap_or(false)
 }
 
 /// Verify `docker --version` executes. Clear install hint on `ENOENT` so
@@ -145,6 +207,28 @@ pub fn ensure_compose_file(app_dir: &Path) -> Result<PathBuf> {
         );
     }
     Ok(p)
+}
+
+/// Wait until the given connection string can execute `SELECT 1`. A TCP
+/// accept isn't enough after a cold container boot — libpq clients see
+/// "the database system is starting up" until init scripts finish.
+fn wait_for_db_ready(url: &str, deadline: Instant) -> Result<()> {
+    loop {
+        match postgres::Client::connect(url, postgres::NoTls) {
+            Ok(mut client) => {
+                if client.simple_query("SELECT 1").is_ok() {
+                    return Ok(());
+                }
+            }
+            Err(_) => {
+                // keep retrying — likely "starting up" or auth not ready.
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!("Postgres didn't accept queries on {url} within deadline");
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
 }
 
 /// Poll `addr` (host:port) until a TCP connection succeeds or the deadline

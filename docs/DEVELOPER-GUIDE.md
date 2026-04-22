@@ -268,7 +268,9 @@ Adding `. "$HOME/.cargo/env"` to `~/.bashrc` only affects **new** shells. In the
 
 Both the pgrx dev Postgres (via `cargo pgrx run` / `pg_ctl start`) and the scaffolded `docker-compose.yml` bind host port `8080`. If dev PG is already running, Docker's port mapping silently does **not** take effect — curl will hit the dev instance, not the container. Symptoms: `pg-web push` updates DB rows but `curl http://localhost:8080/` keeps serving old/unrelated content.
 
-**Fix:** stop one of them before starting the other.
+**`pg-web up` preflights this** since Session 3 Component D: it tries to bind `:8080` + `:5432` before calling `docker compose up -d`. If something non-Docker already holds the port, it bails with the exact fix command instead of letting compose silently get shadowed. If the existing holder is a Docker container (your own previous `pg-web up`), preflight recognizes that and proceeds idempotently.
+
+**Manual fix** if you end up in the broken state anyway:
 
 ```bash
 # Stop dev PG
@@ -277,12 +279,12 @@ Both the pgrx dev Postgres (via `cargo pgrx run` / `pg_ctl start`) and the scaff
 cargo pgrx stop pg17
 
 # Check that nothing's still on :8080
-ss -tlnp | grep 8080
+ss -tlnp sport = :8080
 
-# Then: docker compose up -d
+# Then: pg-web up (or docker compose up -d)
 ```
 
-Diagnose by running `ss -tlnp | grep 8080` — whichever `users:(...)` it prints tells you who owns the port.
+Diagnose by running `ss -tlnp sport = :8080` — whichever `users:(...)` it prints tells you who owns the port. `docker-proxy` is fine (that's us); `postgres` or anything else is the culprit.
 
 ### 9. `notify-debouncer-full` re-exports `notify` but the `Watcher` trait is NOT in scope by default
 

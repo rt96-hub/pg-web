@@ -121,12 +121,13 @@ scripts/test-all.sh
 
 | Tier | Command | Tests (today) |
 |---|---|---|
-| 1. SQL / pgrx  | `cargo pgrx test pg17`                              | 46 — 18 `#[pg_test]` (schema, seed, migrations ledger, `(req json)` contract, dynamic-route capture lookup, static-beats-dynamic, **handler-missing classification**, **runtime SQL exception classification**, **settings env default + override**) + 28 pure-Rust (pattern parse/match/sort, **error catalog codes + HTML escape + dev page**, **Env parsing**, **Tera parse vs render classification**) |
+| 1. SQL / pgrx  | `cargo pgrx test pg17`                              | 46 — 18 `#[pg_test]` (schema, seed, migrations ledger, `(req json)` contract, dynamic-route capture lookup, static-beats-dynamic, handler-missing classification, runtime SQL exception classification, settings env default + override) + 28 pure-Rust (pattern parse/match/sort, error catalog codes + HTML escape + dev page, Env parsing, Tera parse vs render classification) |
 | 2a. HTTP smoke | `scripts/test-http.sh`                              | 2 `#[test]` — `GET /` renders seeded template, unknown path returns default 404 body |
-| 2b. CLI        | `cargo test -p pg_web_cli`                          | 89 — path scanner + `[id]` capture, migrate apply, push + reconcile, **push template-parse validation**, init, demo-layout, stack, dev, push safe-proname guard |
-| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` | 6 — todo CRUD with dynamic `/todos/:id`; watcher saves re-push; push reconciles deleted files; push rejects missing handler function; **push rejects broken Tera template (live state preserved)**; **dev error page surfaces SQLSTATE + handler name + PGWEB_E003 code + remedy, flips to generic 500 under env=production** |
+| 2b. CLI        | `cargo test -p pg_web_cli`                          | 89 — path scanner + `[id]` capture, migrate apply, push + reconcile, push template-parse validation, init, demo-layout, stack, dev, push safe-proname guard |
+| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` | 6 — todo CRUD with dynamic `/todos/:id`; watcher saves re-push; push reconciles deleted files; push rejects missing handler function; push rejects broken Tera template; dev error page surfaces SQLSTATE + handler name + PGWEB_E003 code + remedy, flips to generic 500 under env=production |
+| 4. CLI smoke   | `scripts/smoke-cli.sh`                              | Black-box end-to-end: scaffold → `pg-web up/push` → GET / renders → 404 fallback → induce SQL exception → dev page visible → break template → push rejected → flip to production → generic 500. Catches gotchas Rust tests miss (stale docker image, stray pgrx dev PG on `:8080`, wrong compose service name). |
 
-**143 tests all green via `scripts/test-all.sh`.**
+**143 Rust tests + 1 black-box smoke all green via `scripts/test-all.sh`.**
 
 Feature matrix in `docs/TESTING.md` tracks which deliverables are demo-covered.
 
