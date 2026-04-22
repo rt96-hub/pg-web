@@ -209,3 +209,61 @@ Components land A → E, each followed by a stop-and-check:
 5. **E** — Static assets. Independent but demo enhancement ties it to the final state.
 
 Order can shuffle if a component turns out to be blocked on an earlier one in a way the plan didn't anticipate.
+
+---
+
+## Recap — what shipped
+
+All five components landed in the planned order, plus two unplanned but in-scope additions (push reconciliation + port-shadowing preflight). Final test state: **153 Rust tests + 1 black-box smoke all green via `scripts/test-all.sh`** (up from 58 at session start).
+
+| #  | Commit      | Component / work                                     | Headline                                                                                      |
+|----|-------------|-------------------------------------------------------|-----------------------------------------------------------------------------------------------|
+| A  | `a28ec87`   | `pg-web up` / `pg-web down` stack lifecycle           | Wraps `docker compose`, polls `:5432` + `:8080`, resolves `DATABASE_URL` from `pgweb.toml`.   |
+| B  | `d3c3aa5`   | `pg-web dev` file watcher                             | notify-debouncer-full + 200ms + Blake3 dedupe + include/exclude filter + shift-left SQL preflight + in-band log tailing. Vite-architecture citation inline. |
+| —  | `90df716`   | docs: Session 3 lessons + parking-lot test framework  | Testing-framework spec parked post-v1; DEVELOPER-GUIDE pitfalls + closure-injection convention. |
+| —  | `5126182`   | **Push reconciliation** (pulled forward from M1.4)    | push is now 3-phase: apply → validate every handler's signature → reconcile stale routes / templates / `pgweb.pages__*(json)` handlers. `pgweb.pages__*(json) RETURNS json|text` is the formally-reserved push-managed namespace. |
+| C  | `29e5ebc`   | Dynamic route `[id]` captures                         | Scanner emits `/posts/:id` + `pgweb.pages__posts__$id__index`. Router: naïve specificity-sorted scan, captures derived at match time, `req.path_params` always present. Captures are strings; handler casts. |
+| D  | `bf5bfde`   | Typed error catalog + dev error page                  | `ServeError` enum (9 variants, PGWEB_E001–E999), code + title + remedy per variant. `pgweb.settings` table + `pg-web push` syncs env from `pgweb.toml`. PL/pgSQL `_framework_call_handler` wrapper catches `WHEN OTHERS` and returns SQLSTATE/MESSAGE/DETAIL/HINT/CONTEXT. Push-time Tera parse validation catches broken templates before the DB transaction. |
+| —  | `0c00f20`   | Port-shadowing preflight + CLI smoke tier             | `pg-web up` now refuses to proceed if `:8080` / `:5432` are held by a non-Docker process (classic pitfall-#8 cause). `scripts/smoke-cli.sh` is tier 4 of `test-all.sh`; full black-box user flow with visible CLI stdout + HTTP body assertions. |
+| E  | `b1d8e8b`   | Static asset serving from `public/*`                  | BYTEA-backed `pgweb.assets` with 2 MiB cap + Blake3 ETag. Router: asset fallback after page-route miss (GET-only). HTTP emits `ETag` + `Cache-Control`; `If-None-Match` → 304. `pg_largeobject` streaming + content-hash filenames deferred to M1.4. |
+
+## Key architectural decisions locked this session
+
+Logged in `docs/ROADMAP.md` § Decision log (all dated 2026-04-20 or 2026-04-22):
+
+- **Dynamic route captures derived from pattern, not stored** — `path_pattern` is the single source of truth; `req.path_params` built at match time.
+- **Router match = naïve specificity-sorted scan** — reevaluation trigger: >1000 routes/app OR measured hot path.
+- **File watcher stack: Vite-architecture replica** — `notify-debouncer-full` + 200ms + Blake3 + filters. Browser live-reload via WS/SSE deferred to M1.4 as explicit near-term priority.
+- **Static asset caching (M1.2): ETag + If-None-Match.** Content-hash filenames + HTML rewrite (the Vite/webpack model) deferred to M1.4 under "Content-hash asset filenames".
+- **`pgweb.pages__*(json) RETURNS json|text` is the reserved push-managed handler namespace.** Push reconciles this namespace — helpers must live elsewhere.
+- **`pgweb.settings` table is the runtime-config source of truth.** No GUC bridge; `pg-web push` syncs from `pgweb.toml`; `pg-web dev` overrides to `env='development'`. Choice: portability > microsecond-per-request savings on `current_setting`.
+- **PL/pgSQL `_framework_call_handler` wrapper** catches `WHEN OTHERS` and returns structured SQLSTATE / MESSAGE / DETAIL / HINT / CONTEXT columns. Trades one savepoint per request for rich typed-error classification without longjmping across the Rust FFI.
+- **Browser live-reload push (WS/SSE) deferred to M1.4 as near-term priority.** Gated on dogfooding M1.2's save-manual-F5 flow so the transport choice is evidence-driven.
+- **App testing framework (`pg-web test`) parked in ROADMAP's post-v1 section.** User-flagged as meaningfully-later; sketched out so the thinking isn't lost.
+- **Port-shadowing preflight in `pg-web up`** — refuses to run if a non-Docker process holds `:8080`/`:5432`. Formerly DEVELOPER-GUIDE pitfall #8; now caught at the top of the command.
+
+## Gotchas hit this session
+
+- **pgrx `#[pg_schema] mod` name must not start with `pg_`** — Postgres reserves `pg_*` schemas. My first attempt (`mod pg_tests`) failed at extension install with `SQLSTATE 42939 unacceptable schema name`. Module had to become `mod tests` (matching schema.rs) — pgrx's test framework calls `SELECT tests.<fn>()` with a hardcoded `tests` schema, so other names produce "function does not exist" at test time.
+- **`notify-debouncer-full` re-exports `notify` but doesn't re-export traits into the root** — needed `use notify_debouncer_full::notify::Watcher;` explicitly to call `.watch()` on the inner watcher. Promoted to DEVELOPER-GUIDE pitfall #9.
+- **`docker compose logs -f postgres` hardcodes service name** — if a user renames the scaffolded service, `pg-web dev --logs` silently goes quiet. Promoted to DEVELOPER-GUIDE pitfall #10; the scaffold template is the contract.
+- **`BackgroundWorker::transaction` panics outside a registered BGW** — can't unit-test `router::serve()` directly in `#[pg_test]`. Tested individual helpers (`lookup_route`, `lookup_asset`, `call_handler`) and relied on tier 3 for the full-path smoke.
+- **Stray `cargo pgrx run pg17` BGW shadows Docker's `:8080` publish on Linux** — pitfall #8. Docker's iptables rule + userspace port-publish doesn't intercept a pre-existing host listener; curl hits the pgrx dev PG with stale DB state and you chase ghosts. Fix shipped in `0c00f20` (preflight in `pg-web up`).
+- **TCP accept on `:5432` ≠ PG ready for queries.** Cold container boot runs POSTGRES_DB init scripts for several seconds after the socket opens. Added app-level `wait_for_db_ready` poll (`SELECT 1` via libpq) to `stack::up`.
+- **Tera parse vs render errors don't surface via a structured error kind** — tera 1.x's `Error::kind` is sparse. Had to string-match on the error chain in `templating::classify_tera_error` to split `TemplateParseError` from `TemplateRenderError`. Fragile across tera versions; worth revisiting if the crate evolves.
+- **`ServeError` enum is ~144 bytes** — trips `clippy::result_large_err`. Boxing every `Result<_, ServeError>` would push a heap alloc into every `?` on hot paths for cold-path errors. Suppressed with a crate-level `#[allow]` and a comment explaining the tradeoff.
+- **`push::push` used to leave stale routes / templates / handlers** after filesystem deletes — surfaced by the Component B watcher. Pulled push-reconciliation forward from M1.4 in-session; `push` is now fully reconciling and also validates handler existence + signature + template parse pre-DB.
+
+## Handoff to Session 4
+
+See `docs/sessions/session_4.md` for M1.4 closeout (v0.1 release). Highlights:
+
+- `pgweb.html_escape()` SQL helper → user-facing form-validation UX.
+- `pg-web env set/unset/list` for secrets via GUC.
+- `pg-web init --template <name>` + scaffolded `README.md`.
+- `pg-web check` offline validator (layout + Tera + SQL parse).
+- **Browser live-reload push (WS/SSE)** — the near-term item we deferred from Session 3.
+- **Content-hash asset filenames + HTML rewrite** — the Vite/webpack caching upgrade.
+- **`pg_largeobject` streaming** for assets >2 MiB.
+- `push` polished for prod deploy.
+- Release pipeline + Docker Hub publish + docs pass.
