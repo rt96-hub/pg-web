@@ -119,6 +119,12 @@ fn run() -> Result<()> {
                     summary.handlers_dropped,
                 );
             }
+            if summary.assets_upserted > 0 || summary.assets_deleted > 0 {
+                println!(
+                    "  assets — {} upserted, {} removed",
+                    summary.assets_upserted, summary.assets_deleted
+                );
+            }
             if let Some(env) = &summary.env_synced {
                 println!("  env → {env} (synced from pgweb.toml → pgweb.settings)");
             }

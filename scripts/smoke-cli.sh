@@ -76,6 +76,15 @@ assert_status() {
     fi
 }
 
+assert_header_starts() {
+    local actual="$1" needle="$2" label="$3"
+    if [[ "$actual" == "$needle"* ]]; then
+        ok "$label — $actual"
+    else
+        fail "$label — header was $(printf %q "$actual") (expected prefix $(printf %q "$needle"))"
+    fi
+}
+
 # Populate globals $SMOKE_CODE and $SMOKE_BODY after each call. Callers:
 #   http GET /foo
 #   code=$SMOKE_CODE; body=$SMOKE_BODY
@@ -214,6 +223,59 @@ assert_not_contains "$body" "PGWEB_E003" "prod body does NOT leak error code"
 assert_not_contains "$body" "SQLSTATE" "prod body does NOT leak SQLSTATE"
 assert_not_contains "$body" "division by zero" "prod body does NOT leak PG message"
 assert_not_contains "$body" "pgweb.pages__boom__index" "prod body does NOT leak handler name"
+
+# --- 7. static assets: push, serve, revalidate, reconcile ------------
+
+step "7. static asset served with ETag + If-None-Match revalidation"
+# Restore env=development so subsequent pushes in dev mode don't leak
+# generic 500s if something goes wrong here.
+sed -i 's/^env  = "production"/env  = "development"/' "$SMOKE_DIR/pgweb.toml"
+
+mkdir -p "$SMOKE_DIR/public"
+printf 'body{background:#fafafa;color:#333}' > "$SMOKE_DIR/public/smoke.css"
+
+push_output=$("$BIN" push 2>&1)
+echo "$push_output" | grep -q "assets — 1 upserted" \
+    || fail "push should have reported 1 asset upserted, got: $push_output"
+ok "push: 1 asset upserted"
+
+# First request: full body + ETag header. `-D FILE` writes response
+# headers; we parse ETag / Content-Type / Cache-Control out of it.
+code=$(curl -sS -o /tmp/smoke-css -D /tmp/smoke-hdr -w "%{http_code}" "$BASE_URL/smoke.css")
+assert_status "$code" "200" "GET /smoke.css"
+# awk strips the trailing \r\n and gives us just the header value.
+etag=$(awk 'BEGIN{IGNORECASE=1} /^etag:/ {sub(/^[Ee][Tt][Aa][Gg]: */, ""); sub(/\r$/, ""); print}' /tmp/smoke-hdr)
+ctype=$(awk 'BEGIN{IGNORECASE=1} /^content-type:/ {sub(/^[Cc][Oo][Nn][Tt][Ee][Nn][Tt]-[Tt][Yy][Pp][Ee]: */, ""); sub(/\r$/, ""); print}' /tmp/smoke-hdr)
+cctl=$(awk 'BEGIN{IGNORECASE=1} /^cache-control:/ {sub(/^[Cc][Aa][Cc][Hh][Ee]-[Cc][Oo][Nn][Tt][Rr][Oo][Ll]: */, ""); sub(/\r$/, ""); print}' /tmp/smoke-hdr)
+assert_header_starts "$ctype" "text/css" "content-type"
+[[ "$etag" =~ ^\".+\"$ ]] && ok "etag is double-quoted: $etag" \
+    || fail "etag not double-quoted: $etag"
+[[ -n "$cctl" ]] && ok "cache-control present: $cctl" \
+    || fail "cache-control header missing"
+body=$(cat /tmp/smoke-css)
+assert_contains "$body" "background:#fafafa" "CSS body served verbatim"
+
+# Revalidation: same ETag in If-None-Match → 304, empty body.
+code=$(curl -sS -o /tmp/smoke-304 -w "%{http_code}" \
+    -H "If-None-Match: $etag" "$BASE_URL/smoke.css")
+assert_status "$code" "304" "GET /smoke.css with matching If-None-Match"
+[[ ! -s /tmp/smoke-304 ]] && ok "304 body is empty" \
+    || fail "304 body should be empty, got: $(cat /tmp/smoke-304)"
+
+# Mismatched ETag → full body again.
+mismatch=$(curl -sS -o /dev/null -w "%{http_code}" \
+    -H "If-None-Match: \"something-else\"" "$BASE_URL/smoke.css")
+assert_status "$mismatch" "200" "GET /smoke.css with non-matching If-None-Match"
+
+# Delete the file, push, asset should be reconciled away.
+rm "$SMOKE_DIR/public/smoke.css"
+push_output=$("$BIN" push 2>&1)
+echo "$push_output" | grep -q "assets — 0 upserted, 1 removed" \
+    || fail "push should have removed 1 asset, got: $push_output"
+ok "push: 1 asset reconciled away"
+
+code=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE_URL/smoke.css")
+assert_status "$code" "404" "GET /smoke.css after delete+push"
 
 # --- done -----------------------------------------------------------
 

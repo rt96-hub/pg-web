@@ -62,7 +62,14 @@ pub struct PushSummary {
     /// Set when push synced `[server].env` from `pgweb.toml` into
     /// `pgweb.settings`. `None` when pgweb.toml didn't declare an env.
     pub env_synced: Option<String>,
+    pub assets_upserted: usize,
+    pub assets_deleted: usize,
 }
+
+/// Hard cap on per-asset size. Matches the `CHECK` in schema.rs so the
+/// CLI catches oversized files before the DB does — the error is much
+/// clearer when it names the offending file.
+const MAX_ASSET_BYTES: u64 = 2 * 1024 * 1024;
 
 pub fn push(app_dir: &Path, url: &str) -> Result<PushSummary> {
     let pages_dir = app_dir.join("pages");
@@ -80,6 +87,10 @@ pub fn push(app_dir: &Path, url: &str) -> Result<PushSummary> {
     // caught at render time, the user would see a generic 500 (prod) or
     // a dev error page (dev) — either way, better to fail loud at push.
     validate_templates(&entries)?;
+
+    // Walk `public/` for static assets — same fail-loud philosophy. We
+    // hash + read once here so the DB transaction is just inserts.
+    let assets = scan_public(app_dir)?;
 
     // Parse pgweb.toml once. env gets synced into pgweb.settings below;
     // other sections (database, dev, assets) stay the province of whoever
@@ -123,6 +134,16 @@ pub fn push(app_dir: &Path, url: &str) -> Result<PushSummary> {
     summary.routes_deleted = reconcile_routes(&mut tx, &expected_routes)?;
     summary.templates_deleted = reconcile_templates(&mut tx, &expected_templates)?;
     summary.handlers_dropped = reconcile_handlers(&mut tx, &expected_handlers)?;
+
+    // Phase 3.5 — static assets. Upsert every file walked from `public/`,
+    // then delete rows whose path isn't in the expected set.
+    let expected_asset_paths: HashSet<String> =
+        assets.iter().map(|a| a.url_path.clone()).collect();
+    for a in &assets {
+        upsert_asset(&mut tx, a)?;
+        summary.assets_upserted += 1;
+    }
+    summary.assets_deleted = reconcile_assets(&mut tx, &expected_asset_paths)?;
 
     // Phase 4 — sync runtime settings. `pgweb.settings.env` becomes
     // whatever `[server].env` is in pgweb.toml, so deploying a new
@@ -387,6 +408,122 @@ fn reconcile_handlers(tx: &mut Transaction<'_>, expected: &HashSet<String>) -> R
     Ok(dropped)
 }
 
+/// One asset discovered under `public/`, already read + hashed in
+/// memory. Kept tiny; we don't hold refs to the filesystem after scan.
+#[derive(Debug, Clone)]
+struct Asset {
+    /// URL path the browser uses, e.g. `/styles.css`. Leading slash
+    /// always present. Subdirs preserved: `public/img/logo.png` →
+    /// `/img/logo.png`.
+    url_path: String,
+    content: Vec<u8>,
+    content_type: String,
+    /// HTTP ETag value in its exact on-the-wire form (double-quoted).
+    etag: String,
+}
+
+/// Walk `<app_dir>/public/` recursively, hashing each file into an
+/// `Asset` record. Returns an empty vec if `public/` is missing or
+/// empty — a route-only app is valid. Errors on any file exceeding
+/// the 2 MiB cap so the user gets a clear name-the-file error instead
+/// of the CHECK-constraint bounce-back from Postgres.
+fn scan_public(app_dir: &Path) -> Result<Vec<Asset>> {
+    use walkdir::WalkDir;
+
+    let public_dir = app_dir.join("public");
+    if !public_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in WalkDir::new(&public_dir).sort_by_file_name() {
+        let entry = entry.context("walking public/")?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        // `.gitkeep` is allowed by init to keep the empty dir in git,
+        // but pushing it as a route is silly — skip.
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name == ".gitkeep" {
+            continue;
+        }
+
+        let meta = entry.metadata().with_context(|| format!("stat {}", path.display()))?;
+        if meta.len() > MAX_ASSET_BYTES {
+            bail!(
+                "{}: asset is {} bytes (cap is {} bytes / 2 MiB). \
+                 Larger assets via pg_largeobject are deferred to M1.4.",
+                path.display(),
+                meta.len(),
+                MAX_ASSET_BYTES,
+            );
+        }
+
+        let rel = path
+            .strip_prefix(&public_dir)
+            .unwrap_or(path)
+            .to_str()
+            .ok_or_else(|| anyhow!("non-UTF-8 path: {}", path.display()))?
+            .replace('\\', "/");
+        let url_path = format!("/{rel}");
+
+        let content =
+            fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        let content_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .as_ref()
+            .to_string();
+        let etag = blake3_etag(&content);
+
+        out.push(Asset {
+            url_path,
+            content,
+            content_type,
+            etag,
+        });
+    }
+    Ok(out)
+}
+
+/// Format the Blake3 content hash as a strong HTTP ETag literal. The
+/// stored value is what we want the browser to send back verbatim in
+/// `If-None-Match` — keeping the double quotes in-DB means the router
+/// can emit headers without any per-request formatting.
+fn blake3_etag(content: &[u8]) -> String {
+    let hex = blake3::hash(content).to_hex();
+    format!("\"{hex}\"")
+}
+
+fn upsert_asset(tx: &mut Transaction<'_>, a: &Asset) -> Result<()> {
+    tx.execute(
+        "INSERT INTO pgweb.assets (path, content, content_type, etag) \
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (path) DO UPDATE \
+           SET content = EXCLUDED.content, \
+               content_type = EXCLUDED.content_type, \
+               etag = EXCLUDED.etag",
+        &[&a.url_path, &a.content, &a.content_type, &a.etag],
+    )
+    .with_context(|| format!("upsert asset {}", a.url_path))?;
+    Ok(())
+}
+
+fn reconcile_assets(tx: &mut Transaction<'_>, expected: &HashSet<String>) -> Result<usize> {
+    let rows = tx
+        .query("SELECT path FROM pgweb.assets", &[])
+        .context("listing pgweb.assets for reconcile")?;
+    let mut deleted = 0usize;
+    for row in rows {
+        let path: String = row.get(0);
+        if !expected.contains(&path) {
+            tx.execute("DELETE FROM pgweb.assets WHERE path = $1", &[&path])
+                .with_context(|| format!("deleting stale asset {path}"))?;
+            deleted += 1;
+        }
+    }
+    Ok(deleted)
+}
+
 /// Accept Postgres identifier body chars: ASCII letters, digits,
 /// underscore, and `$` (used as the capture marker in dynamic-route
 /// handler names, e.g., `pages__posts__$id__index`). Belt-and-suspenders
@@ -477,5 +614,85 @@ mod tests {
             sql_path: Some(std::path::PathBuf::from("dummy.sql")),
         }];
         validate_templates(&entries).expect("raw-text routes have no template to validate");
+    }
+
+    // ---- static asset scan (Component E) ----
+
+    #[test]
+    fn scan_public_returns_empty_when_dir_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        // No public/ subdir.
+        let assets = scan_public(dir.path()).unwrap();
+        assert!(assets.is_empty());
+    }
+
+    #[test]
+    fn scan_public_returns_empty_when_dir_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("public")).unwrap();
+        let assets = scan_public(dir.path()).unwrap();
+        assert!(assets.is_empty());
+    }
+
+    #[test]
+    fn scan_public_skips_gitkeep() {
+        let dir = tempfile::tempdir().unwrap();
+        let pub_dir = dir.path().join("public");
+        std::fs::create_dir(&pub_dir).unwrap();
+        std::fs::write(pub_dir.join(".gitkeep"), "").unwrap();
+        let assets = scan_public(dir.path()).unwrap();
+        assert!(assets.is_empty());
+    }
+
+    #[test]
+    fn scan_public_picks_up_flat_and_nested_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let pub_dir = dir.path().join("public");
+        std::fs::create_dir_all(pub_dir.join("img")).unwrap();
+        std::fs::write(pub_dir.join("styles.css"), "body{}").unwrap();
+        std::fs::write(pub_dir.join("img/logo.png"), b"\x89PNG\r\n").unwrap();
+
+        let mut assets = scan_public(dir.path()).unwrap();
+        assets.sort_by(|a, b| a.url_path.cmp(&b.url_path));
+
+        assert_eq!(assets.len(), 2);
+        assert_eq!(assets[0].url_path, "/img/logo.png");
+        assert!(
+            assets[0].content_type.starts_with("image/"),
+            "png content_type: {}",
+            assets[0].content_type
+        );
+        assert_eq!(assets[1].url_path, "/styles.css");
+        assert_eq!(assets[1].content_type, "text/css");
+    }
+
+    #[test]
+    fn scan_public_rejects_oversized_asset() {
+        let dir = tempfile::tempdir().unwrap();
+        let pub_dir = dir.path().join("public");
+        std::fs::create_dir(&pub_dir).unwrap();
+        // 2MiB + 1 byte.
+        let big = vec![0u8; (2 * 1024 * 1024) + 1];
+        std::fs::write(pub_dir.join("huge.bin"), &big).unwrap();
+        let err = scan_public(dir.path()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("huge.bin"), "error names the file: {msg}");
+        assert!(
+            msg.contains("2 MiB") || msg.contains(&format!("{}", MAX_ASSET_BYTES)),
+            "error mentions the cap: {msg}"
+        );
+    }
+
+    #[test]
+    fn blake3_etag_is_quoted_and_stable() {
+        let a = blake3_etag(b"hello");
+        let b = blake3_etag(b"hello");
+        assert_eq!(a, b, "same bytes → same ETag");
+        assert!(a.starts_with('"') && a.ends_with('"'), "etag is double-quoted");
+        // Blake3 hex output is 64 chars → 66 chars with quotes.
+        assert_eq!(a.len(), 66);
+
+        let c = blake3_etag(b"world");
+        assert_ne!(a, c, "different bytes → different ETag");
     }
 }

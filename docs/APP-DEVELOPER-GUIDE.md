@@ -256,6 +256,28 @@ Order matters: `push` assumes the tables your handlers touch already exist (run 
 
 `pg-web dev` watches `pages/` and `public/` — **not `migrations/`.** Adding a new `migrations/NNNN_x.sql` file doesn't trigger anything; run `pg-web migrate apply` explicitly whenever the schema needs to advance. This is deliberate: migrations are permanent history, not reloadable code.
 
+### Static assets in `public/`
+
+Files under `public/` are served from the database at their URL-equivalent path:
+
+- `public/styles.css` → `GET /styles.css`
+- `public/img/logo.png` → `GET /img/logo.png`
+
+`pg-web push` walks the tree, reads each file, computes a Blake3 content hash (used as the HTTP `ETag`), and upserts the row into `pgweb.assets`. Deletions are reconciled: remove a file from `public/`, re-run push, the row is dropped.
+
+Responses include:
+- `ETag`: the Blake3 hash, double-quoted as the HTTP spec requires.
+- `Cache-Control`: `no-cache` in development, `public, max-age=0, must-revalidate` in production.
+
+A follow-up request that sends back the advertised `ETag` in `If-None-Match` gets `304 Not Modified` with no body — so repeat hits save bytes but always revalidate. True long-cache (`immutable`) requires content-hash filenames (`styles.abc123.css`) which are deferred to M1.4.
+
+**Limits:**
+- Per-file cap is **2 MiB** (CHECK constraint in `pgweb.assets`). Push refuses oversized files with the path in the error.
+- `.gitkeep` is skipped so an empty `public/` dir can live in git.
+- If a page route exists at the same path as an asset, the page wins — user-defined routes are always more specific than the asset fallback.
+
+Larger assets (images >2 MiB, large PDFs) via `pg_largeobject` with SPI streaming is tracked for M1.4; until then, host those on a CDN or object store and link to them from your templates.
+
 ### The `pgweb.pages__*(json)` namespace is reserved
 
 Push owns every Postgres function matching `pgweb.pages__<name>(req json) RETURNS <json|text>` — it creates them from your `.sql` files and drops any that no longer have a matching file. **Don't put your own helper functions in that namespace with that signature** or the next push will drop them. Safe patterns for helpers: `pgweb.helper_<name>(args)`, `pgweb.util_<name>(args)`, or `public.<name>(args)` — any name or signature that isn't `pages__*(json) RETURNS json|text` is left untouched.
@@ -355,7 +377,7 @@ Your `pages/signup/post.html` template branches on `{% if ok %}` vs `{% else %}`
 | ~~Hot reload (`pg-web dev`)~~                                   | M1.2 ✓   |
 | ~~Dynamic route patterns (`[id]` capture → `req.path_params`)~~ | M1.2 ✓   |
 | ~~Dev error page (typed catalog + rich SQL overlay)~~           | M1.2 ✓   |
-| Static asset serving (`public/*` → HTTP)                        | M1.2–1.3 |
+| ~~Static asset serving (`public/*` → HTTP)~~                    | M1.2 ✓   |
 | Browser live-reload push (WS/SSE; auto-F5 on save)              | M1.4     |
 | CLI `pg-web env set/unset/list` (secrets via GUC)               | M1.4     |
 | CLI `pg-web check` (project validator)                          | M1.4     |

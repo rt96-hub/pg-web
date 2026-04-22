@@ -52,6 +52,24 @@ CREATE TABLE pgweb.settings (
 
 INSERT INTO pgweb.settings (key, value) VALUES ('env', 'development');
 
+-- Static assets served from the `public/` tree. BYTEA-backed, capped at
+-- 2 MiB per file by a CHECK constraint so a runaway file doesn't wedge
+-- the worker on read. Larger-file support via pg_largeobject with SPI
+-- streaming is deferred to M1.4 — practical web assets (CSS / JS / small
+-- icons) fit well under 2 MiB.
+--
+-- The ETag column stores a content-hash digest pre-wrapped in the
+-- double-quoted form the HTTP header uses, so the router can emit it
+-- verbatim. Cache-Control header values live in the router, not the DB
+-- (same value for every asset in a given env).
+CREATE TABLE pgweb.assets (
+    path          TEXT PRIMARY KEY,
+    content       BYTEA NOT NULL,
+    content_type  TEXT NOT NULL,
+    etag          TEXT NOT NULL,
+    CHECK (length(content) <= 2097152)
+);
+
 -- Default handler for the seeded GET / route. Follows the standard
 -- app-developer contract: `(req json) RETURNS json`. Ignores `req` —
 -- the handler has no inputs to read — but the signature matches what

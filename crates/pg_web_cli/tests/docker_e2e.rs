@@ -659,6 +659,127 @@ fn dev_error_page_surfaces_sql_exception_detail() {
     );
 }
 
+/// Tier 3 static-asset flow. Pushes the demo (which now ships a
+/// `public/styles.css`), then:
+/// - GET /styles.css returns 200 with content-type text/css, cached
+///   headers (ETag + Cache-Control), and the stylesheet bytes.
+/// - Re-requesting with the advertised ETag in `If-None-Match` returns
+///   304 Not Modified with no body.
+/// - Deleting the file and re-pushing removes the asset from the DB;
+///   the next request 404s.
+#[test]
+#[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            --test docker_e2e -- --ignored`."]
+fn static_asset_serves_with_etag_and_revalidates() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start pgweb/postgres container");
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    copy_tree(&demo_dir(), tmp.path());
+
+    pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
+    let summary = pg_web_cli::push::push(tmp.path(), &db_url).expect("push");
+    assert!(
+        summary.assets_upserted >= 1,
+        "push should have synced at least one asset (demo ships public/styles.css), got summary {summary:?}"
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    // First request: full asset.
+    let resp = client.get(format!("{base_url}/styles.css")).send().unwrap();
+    assert_eq!(resp.status(), 200, "asset should serve 200");
+    let ctype = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        ctype.starts_with("text/css"),
+        "content-type should be text/css, got {ctype}"
+    );
+    let etag = resp
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        etag.starts_with('"') && etag.ends_with('"') && etag.len() > 2,
+        "ETag should be a non-empty double-quoted string, got {etag}"
+    );
+    assert!(
+        resp.headers().get("cache-control").is_some(),
+        "Cache-Control should be set"
+    );
+    let body = resp.text().unwrap();
+    assert!(
+        body.contains("font-family") && body.contains("system-ui"),
+        "CSS body should contain the stylesheet content, got first 80 bytes: {}",
+        &body.chars().take(80).collect::<String>()
+    );
+
+    // Revalidation with matching ETag: 304, no body.
+    let resp = client
+        .get(format!("{base_url}/styles.css"))
+        .header("If-None-Match", &etag)
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 304, "matching If-None-Match should 304");
+    let body = resp.text().unwrap();
+    assert!(
+        body.is_empty(),
+        "304 body should be empty, got: {body:?}"
+    );
+
+    // Mismatched If-None-Match: full body again.
+    let resp = client
+        .get(format!("{base_url}/styles.css"))
+        .header("If-None-Match", "\"not-the-etag\"")
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 200, "non-matching If-None-Match → 200");
+
+    // Delete the file from disk, re-push, the asset row should be reconciled
+    // away and the request should 404.
+    std::fs::remove_file(tmp.path().join("public/styles.css")).unwrap();
+    let summary = pg_web_cli::push::push(tmp.path(), &db_url).expect("reconcile push");
+    assert_eq!(
+        summary.assets_deleted, 1,
+        "reconcile should drop exactly 1 stale asset, got {summary:?}"
+    );
+    let resp = client.get(format!("{base_url}/styles.css")).send().unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "after reconcile, asset should be gone — got status {}",
+        resp.status()
+    );
+}
+
 /// Tier 3 validation-failure test. A handler `.sql` file whose SQL
 /// doesn't actually define the expected function should fail push with
 /// a clear error and leave the DB unchanged — the live extension keeps

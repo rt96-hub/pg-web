@@ -44,8 +44,16 @@ use crate::templating;
 
 /// What the HTTP layer turns into a response.
 pub enum ServeOutcome {
-    /// 2xx or 4xx body with content-type text/html.
+    /// 2xx or 4xx body with content-type text/html (page route).
     Response { status: u16, body: String },
+    /// Static asset response (CSS, JS, images, …). Bytes + content-type
+    /// + ETag from `pgweb.assets`. `http.rs` owns the Cache-Control
+    /// header and the `If-None-Match` → 304 conversion.
+    Asset {
+        body: Vec<u8>,
+        content_type: String,
+        etag: String,
+    },
     /// Internal error — typed so `http.rs` can render either a rich dev
     /// page (env=development) or a generic 500 (env=production).
     Error(ServeError),
@@ -72,7 +80,23 @@ fn serve_in_tx(method: &str, path: &str, mut req: Value) -> ServeOutcome {
         Ok(None) => {}
     }
 
-    // Route miss — try the root-scoped 404 fallback.
+    // GET-only: if no page route matched, try static assets. Pages win
+    // over assets by design — user-defined routes are more specific.
+    if method == "GET" {
+        match lookup_asset(path) {
+            Err(e) => return ServeOutcome::Error(e),
+            Ok(Some(asset)) => {
+                return ServeOutcome::Asset {
+                    body: asset.content,
+                    content_type: asset.content_type,
+                    etag: asset.etag,
+                };
+            }
+            Ok(None) => {}
+        }
+    }
+
+    // Route + asset miss — try the root-scoped 404 fallback.
     match lookup_fallback(path) {
         Err(e) => ServeOutcome::Error(e),
         Ok(Some(route)) => render_route(&route, &req, 404),
@@ -81,6 +105,62 @@ fn serve_in_tx(method: &str, path: &str, mut req: Value) -> ServeOutcome {
             body: DEFAULT_NOT_FOUND_BODY.to_string(),
         },
     }
+}
+
+struct Asset {
+    content: Vec<u8>,
+    content_type: String,
+    etag: String,
+}
+
+/// Fetch a single row from `pgweb.assets` by exact path match. Static
+/// assets are keyed by their URL path (`/styles.css`) — the CLI push
+/// derives this from the filesystem under `public/`.
+fn lookup_asset(path: &str) -> Result<Option<Asset>, ServeError> {
+    let query = format!(
+        "SELECT content, content_type, etag FROM pgweb.assets \
+         WHERE path = {} LIMIT 1",
+        quote_literal(path)
+    );
+    Spi::connect(|client| -> Result<Option<Asset>, ServeError> {
+        let table = client
+            .select(&query, None, &[])
+            .map_err(|e| ServeError::Other {
+                message: e.to_string(),
+            })?;
+        let Some(row) = table.into_iter().next() else {
+            return Ok(None);
+        };
+        let content: Vec<u8> = row
+            .get(1)
+            .map_err(|e| ServeError::Other {
+                message: e.to_string(),
+            })?
+            .ok_or_else(|| ServeError::Other {
+                message: "null content in pgweb.assets".into(),
+            })?;
+        let content_type: String = row
+            .get(2)
+            .map_err(|e| ServeError::Other {
+                message: e.to_string(),
+            })?
+            .ok_or_else(|| ServeError::Other {
+                message: "null content_type in pgweb.assets".into(),
+            })?;
+        let etag: String = row
+            .get(3)
+            .map_err(|e| ServeError::Other {
+                message: e.to_string(),
+            })?
+            .ok_or_else(|| ServeError::Other {
+                message: "null etag in pgweb.assets".into(),
+            })?;
+        Ok(Some(Asset {
+            content,
+            content_type,
+            etag,
+        }))
+    })
 }
 
 /// Route path attached to the current request, used for error context
@@ -924,4 +1004,51 @@ mod tests {
         let env = crate::settings::current_env();
         assert_eq!(env, crate::settings::Env::Production);
     }
+
+    // ---- static assets (Component E) ----
+
+    #[pg_test]
+    fn lookup_asset_returns_none_when_missing() {
+        let a = super::lookup_asset("/nothing-here.css").expect("lookup");
+        assert!(a.is_none());
+    }
+
+    #[pg_test]
+    fn lookup_asset_roundtrips_bytes_and_headers() {
+        // 'body{}' in hex = 62 6f 64 79 7b 7d.
+        pgrx::Spi::run(
+            "INSERT INTO pgweb.assets (path, content, content_type, etag) \
+             VALUES ('/styles.css', decode('626f64797b7d', 'hex'), 'text/css', '\"abc123\"')",
+        )
+        .expect("insert asset");
+        let a = super::lookup_asset("/styles.css")
+            .expect("lookup")
+            .expect("row present");
+        assert_eq!(a.content, b"body{}".to_vec());
+        assert_eq!(a.content_type, "text/css");
+        assert_eq!(a.etag, "\"abc123\"");
+    }
+
+    #[pg_test]
+    fn lookup_asset_returns_svg_bytes_verbatim() {
+        // '<svg' = 3c 73 76 67.
+        pgrx::Spi::run(
+            "INSERT INTO pgweb.assets (path, content, content_type, etag) \
+             VALUES ('/logo.svg', decode('3c737667', 'hex'), 'image/svg+xml', '\"svg1\"')",
+        )
+        .expect("insert svg");
+        let a = super::lookup_asset("/logo.svg")
+            .expect("lookup")
+            .expect("row present");
+        assert_eq!(a.content, b"<svg".to_vec());
+        assert_eq!(a.content_type, "image/svg+xml");
+        assert_eq!(a.etag, "\"svg1\"");
+    }
+
+    // Note: we don't test the route-vs-asset precedence via `serve()` at the
+    // pg_test layer because `serve` wraps the call in
+    // `BackgroundWorker::transaction`, which panics outside a registered
+    // BGW. The precedence is covered by the tier-3 smoke: the demo has a
+    // page route at `/` + a `public/styles.css` asset, and the smoke asserts
+    // the page renders at / while `/styles.css` serves the asset.
 }

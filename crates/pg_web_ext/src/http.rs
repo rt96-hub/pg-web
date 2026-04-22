@@ -40,6 +40,13 @@ async fn handle(req: Request) -> Response {
         .and_then(|v| v.to_str().ok())
         .map(|v| v.starts_with("application/x-www-form-urlencoded"))
         .unwrap_or(false);
+    // Preserve the client's If-None-Match (if any) so an asset lookup can
+    // short-circuit to 304 without re-sending bytes.
+    let if_none_match = req
+        .headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
 
     let body_bytes = match to_bytes(req.into_body(), MAX_BODY_BYTES).await {
         Ok(b) => b,
@@ -84,8 +91,60 @@ async fn handle(req: Request) -> Response {
             )
                 .into_response()
         }
+        ServeOutcome::Asset {
+            body,
+            content_type,
+            etag,
+        } => render_asset(body, content_type, etag, if_none_match.as_deref()),
         ServeOutcome::Error(err) => render_error(err, &method, &path, &req_for_dev_page),
     }
+}
+
+/// Build the static-asset response. ETag + Cache-Control are always
+/// emitted; if the request's `If-None-Match` matches the stored ETag,
+/// skip the body and return 304.
+///
+/// Cache-Control policy:
+/// - dev:  `no-cache` — browser always revalidates via ETag, so a
+///         saved file shows up on refresh without hard-reload gymnastics.
+/// - prod: `public, max-age=0, must-revalidate` — same revalidate-every-
+///         time behavior, but explicit about cacheability. Upgrading to
+///         true long-cache (immutable) requires content-hash filenames
+///         which is deferred to M1.4; `max-age=0, must-revalidate` is
+///         the conservative default in the meantime.
+fn render_asset(
+    body: Vec<u8>,
+    content_type: String,
+    etag: String,
+    if_none_match: Option<&str>,
+) -> Response {
+    let env = BackgroundWorker::transaction(settings::current_env);
+    let cache_control = match env {
+        Env::Development => "no-cache",
+        Env::Production => "public, max-age=0, must-revalidate",
+    };
+
+    if if_none_match.map(|v| v == etag).unwrap_or(false) {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [
+                (header::ETAG, etag.as_str()),
+                (header::CACHE_CONTROL, cache_control),
+            ],
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, content_type.as_str()),
+            (header::ETAG, etag.as_str()),
+            (header::CACHE_CONTROL, cache_control),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// Branch on `pgweb.settings.env`:

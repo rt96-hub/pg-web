@@ -40,6 +40,11 @@ ctrlc = { version = "3", features = ["termination"] }
 # Tera version as the extension crate to keep parse semantics aligned.
 tera = "1"
 
+# push: MIME type detection for static assets synced from public/. Small
+# crate with a built-in extension→type map; no runtime magic-byte sniffing
+# (which we'd want anyway-blocked for BYTEA-backed text).
+mime_guess = "2"
+
 [dev-dependencies]
 tempfile = "3"
 
