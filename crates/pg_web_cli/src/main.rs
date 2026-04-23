@@ -21,6 +21,16 @@ enum Command {
         name: String,
     },
     /// Sync the current pg-web app directory into a running Postgres.
+    ///
+    /// Works today when --url points at a Postgres reachable from the
+    /// machine running the CLI (localhost for dev, or a tunneled localhost
+    /// like `ssh -L 5432:localhost:5432 deploy@vps` for prod). Pushing to
+    /// a non-local --url without a tunnel requires the remote's :5432 to
+    /// be publicly reachable — NOT recommended. See docs/DEPLOYMENT.md.
+    ///
+    /// The automated-tunnel flag `--target <name>` is Session 4 Component
+    /// F.2 (not yet implemented); until it lands, tunnel manually or SSH
+    /// in and run push on the server.
     Push {
         /// Postgres connection URL. If omitted, resolved from $DATABASE_URL
         /// (or the env var named in `pgweb.toml [database].url_env`), then

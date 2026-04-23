@@ -59,24 +59,54 @@ Caddy handles Let's Encrypt certificate issuance + renewal automatically. pg-web
 3. Set `POSTGRES_PASSWORD` in a `.env` next to the compose file.
 4. `docker compose up -d`.
 5. Wait ~30 seconds for Caddy to provision TLS.
-6. From your laptop: `pg-web push --url postgres://postgres:$POSTGRES_PASSWORD@vps.example.com:5432/app`
+6. From your laptop, open a **background SSH tunnel** to the DB (see below), then run:
+   ```bash
+   pg-web push --url postgres://postgres:$POSTGRES_PASSWORD@localhost:5432/app
+   ```
 7. Visit `https://myapp.example.com`.
 
 The `pg-web push` step is where your routes, templates, assets, and migrations get uploaded. The VPS container alone has no app code baked in — it's a generic `pgweb/postgres` image.
 
-### Production port exposure
+### Production port exposure — how `pg-web push` reaches remote Postgres
 
-For `pg-web push` to reach the database, the Postgres container needs port 5432 exposed to the internet OR you need to tunnel. Options:
+**`pg-web push` today connects as an ordinary libpq client to whatever URL you give it.** No built-in remoting. So the DB has to be reachable from wherever you invoke the CLI. Three ways, in order of safety:
 
-- **Expose 5432 publicly** with `ports: - "5432:5432"` and rely on strong password + connection-limit rules. Simple; fine for small deployments. Lock down with `pg_hba.conf` to only allow from your CI's IP.
-- **SSH tunnel** from your deploy machine: `ssh -L 5432:localhost:5432 deploy@vps.example.com` then point `pg-web push` at `postgres://localhost:5432`.
-- **WireGuard / Tailscale** — put the VPS on a private network, push over the private IP.
+**1. SSH tunnel (recommended).** The remote's Postgres binds only to `127.0.0.1` (never to `0.0.0.0`), and you open a port-forward just for the duration of the deploy:
 
-Recommend SSH tunnel or Tailscale for anything production-grade.
+```bash
+# In one terminal, hold the tunnel open
+ssh -L 5432:localhost:5432 deploy@vps.example.com
+
+# In another terminal (or CI step after the tunnel backgrounds)
+pg-web push --url postgres://postgres:$POSTGRES_PASSWORD@localhost:5432/app
+```
+
+Nothing touches the public internet except SSH port 22, which already has to be open for admin anyway. This is the story you should use in production.
+
+**2. Private overlay (Tailscale / WireGuard).** Put the VPS on a private network. Postgres binds to the tailnet interface only. `pg-web push --url postgres://…@vps.tail-net:5432/app` works without any exposed public port. Same safety profile as SSH tunnel, with per-device fine-grained access.
+
+**3. Expose `:5432` to the internet (DO NOT).** The scaffolded `docker-compose.yml` publishes `"5432:5432"` with a dev-default password as a **local-loopback convenience for `pg-web push` on your laptop**. Before you deploy, change it to `"127.0.0.1:5432:5432"` (binds only to the server's loopback) or remove it entirely. Publishing Postgres to `0.0.0.0` with the dev password — or any password — is an invitation.
+
+### Coming in M1.4 — automated target-based deploy
+
+Tunneling manually works but is tedious. Session 4 Component **F.2** adds a `--target <name>` flag:
+
+```bash
+# One-time in pgweb.toml
+[deploy.prod]
+ssh = "deploy@vps.example.com"
+
+# Every deploy
+pg-web push --target prod
+```
+
+The CLI opens the SSH tunnel itself (using your existing `~/.ssh/config`, ssh-agent, deploy keys — same keys you'd use manually), runs the push, and tears the tunnel down. GitHub Actions treats an SSH deploy key the same way it treats any other credential. Full spec in `docs/sessions/session_4.md` Component F.
+
+Until then: the manual SSH-tunnel path above is the standard answer. The code comments in `crates/pg_web_cli/src/push.rs` and the `Push` subcommand's `--help` both call this out.
 
 ## CI/CD (GitHub Actions example)
 
-`.github/workflows/deploy.yml`:
+`.github/workflows/deploy.yml` — uses an SSH-forwarded tunnel (not a publicly-exposed DB):
 
 ```yaml
 name: Deploy to prod
@@ -91,11 +121,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pg-web CLI
         run: cargo install pg-web-cli --locked
+      - uses: webfactory/ssh-agent@v0.9
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+      - name: Open DB tunnel in background
+        run: ssh -fN -L 5432:localhost:5432 -o StrictHostKeyChecking=no deploy@${{ vars.PROD_HOST }}
       - name: Push to prod
-        run: pg-web push --url "$DB_URL"
+        run: pg-web push --url "postgres://postgres:$POSTGRES_PASSWORD@localhost:5432/app"
         env:
-          DB_URL: ${{ secrets.PROD_DB_URL }}
+          POSTGRES_PASSWORD: ${{ secrets.PROD_POSTGRES_PASSWORD }}
 ```
+
+Once Component F.2 lands (Session 4), this collapses to a single `pg-web push --target prod` step — the tunnel lifecycle moves into the CLI.
 
 What `pg-web push` does:
 
@@ -152,9 +189,10 @@ Two patterns, both deferred to post-1.0:
 ## Security checklist
 
 - [ ] Strong `POSTGRES_PASSWORD` (generated, stored in secrets manager, not git).
-- [ ] DB port 5432 not exposed publicly (use SSH tunnel or Tailscale).
+- [ ] `docker-compose.yml`'s `postgres` service uses `"127.0.0.1:5432:5432"` or **no `ports:` stanza at all** — never `"5432:5432"` in prod.
+- [ ] DB accessed from outside the VPS only via SSH tunnel or private overlay (Tailscale / WireGuard).
 - [ ] Caddy on latest patch version.
 - [ ] Postgres on latest patch version (patch releases don't break the ABI; the `pgweb/postgres:pg17-X.Y` tag tracks upstream).
-- [ ] `pgweb.env = 'production'` set before deploy — disables the debug error page.
-- [ ] Secrets via `pg-web env set`, never in committed files.
+- [ ] `pgweb.settings.env = 'production'` set before deploy (flip in `pgweb.toml` and re-`pg-web push`) — disables the debug error page and the `div by zero / PGWEB_E003` leak.
+- [ ] Secrets via `pg-web env set` (Session 4 Component C — not yet shipped; until then use `.env` next to compose), never in committed files.
 - [ ] Postgres `pg_hba.conf` configured to restrict connection sources.

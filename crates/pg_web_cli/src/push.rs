@@ -71,6 +71,28 @@ pub struct PushSummary {
 /// clearer when it names the offending file.
 const MAX_ASSET_BYTES: u64 = 2 * 1024 * 1024;
 
+/// Sync the filesystem app under `app_dir` into the Postgres at `url`.
+///
+/// # Connectivity note (pre-v0.1)
+///
+/// This function opens a direct libpq connection to `url`. In practice
+/// that means **the DB must be reachable from wherever the CLI runs** —
+/// typically `localhost:5432` against a local Docker stack. Pushing to a
+/// remote production stack requires either:
+///
+/// 1. Exposing the remote's `:5432` to the internet (**don't** — the
+///    scaffolded docker-compose publishes it with a dev password for
+///    local-loopback convenience only; it MUST be removed before prod).
+/// 2. SSH-tunneling: `ssh -L 5432:localhost:5432 deploy@vps` then
+///    pointing push at `postgres://…@localhost:5432/app`.
+/// 3. Putting the VPS on a private overlay (Tailscale / WireGuard) and
+///    using the overlay address.
+/// 4. SSHing in and running `pg-web push` on the server itself (requires
+///    the CLI to be present there — see Session 4 Component F.3).
+///
+/// The automated path — `pg-web push --target <name>` with SSH-tunnel
+/// plumbing — is tracked as Session 4 Component F.2. Until it ships,
+/// users handle the tunnel themselves. See `docs/DEPLOYMENT.md`.
 pub fn push(app_dir: &Path, url: &str) -> Result<PushSummary> {
     let pages_dir = app_dir.join("pages");
     if !pages_dir.is_dir() {

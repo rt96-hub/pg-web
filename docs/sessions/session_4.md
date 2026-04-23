@@ -116,13 +116,71 @@ Output: grouped diagnostics, file + line where applicable. Non-zero exit on any 
 
 ### F. Push polished for prod deploy
 
-**Work:** tighten push for production ergonomics.
+Split into three sub-components because remote-deploy ergonomics (F.2) and bundling the CLI with the image (F.3) are substantial on their own. F.1 can ship independently; F.2 and F.3 pair well but aren't strictly sequential.
 
-- `pg-web push --dry-run` — report the planned changes without touching the DB.
+#### F.1 — Local-push polish
+
+- `pg-web push --dry-run` — report the planned changes (routes / templates / handlers to upsert, delete, drop) without touching the DB. Implementation: start the transaction, do the usual walk, print the summary, ROLLBACK instead of COMMIT.
 - `pg-web push` with `migrate apply` wired: detect pending migrations and refuse (or, behind `--with-migrate`, run them first). Prevents the footgun where a dev pushes handler code that references a column that doesn't exist yet.
-- Push preserves a ledger row in `pgweb.deployments` (new table: `id`, `pushed_at`, `from_host`, `file_count`). For ops visibility.
+- `pgweb.deployments` ledger (new table: `id BIGSERIAL`, `pushed_at TIMESTAMPTZ`, `from_host TEXT`, `file_count INT`, `migrations_applied INT`). Every successful push inserts a row. For ops visibility — answer "when did we last deploy, from where?" via one query.
 
-**Tests:** CLI integration + tier 3 — `--dry-run` against demo reports nothing committed; `--with-migrate` on an unmigrated app applies + pushes in one call.
+**Tests:** CLI integration + tier 3 — `--dry-run` against demo reports nothing committed; `--with-migrate` on an unmigrated app applies + pushes in one call; `pgweb.deployments` gains a row per push.
+
+#### F.2 — Automated remote deploy via SSH tunnel — **user-flagged important**
+
+**The problem:** `pg-web push` today is local-only. Pushing to a remote production stack means either (a) exposing the VPS's `:5432` to the internet (bad), or (b) manually opening an SSH tunnel before each push (tedious and error-prone in CI). Users have been asking "why can't I just point at the server?" — this is the answer that doesn't compromise security.
+
+**The design:**
+
+- `pgweb.toml` gains a `[deploy.<name>]` table with SSH target info:
+  ```toml
+  [deploy.prod]
+  ssh = "deploy@app.example.com"     # anything `ssh` accepts; ssh_config aliases work
+  # Everything below has sensible defaults — declare only what differs.
+  # ssh_port  = 22
+  # db_host   = "127.0.0.1"          # on the remote
+  # db_port   = 5432                 # on the remote
+  # pgpass_from = "PGWEB_PROD_PASSWORD"   # env var on the dev machine
+  ```
+- `pg-web push --target prod` reads that table, opens an SSH session via the [`openssh`](https://docs.rs/openssh) crate (thin wrapper over the system `ssh` binary — uses user's existing `~/.ssh/config`, ssh-agent, known_hosts transparently), sets up a local port-forward `127.0.0.1:<ephemeral> → remote:127.0.0.1:5432`, runs the normal push transaction against that forwarded port, tears down the tunnel on exit.
+- `pg-web migrate apply --target <name>` gets the same treatment automatically — same tunnel lifecycle, different CLI verb.
+
+**What's exposed:** SSH (port 22) on the server, which is already open for admin. Postgres stays bound to remote `127.0.0.1`; **nothing** listens on the public internet for Postgres.
+
+**Credentials story:**
+- SSH auth: user's existing keys via ssh-agent / `~/.ssh/id_*` / deploy keys (in CI, via [webfactory/ssh-agent](https://github.com/webfactory/ssh-agent) or similar).
+- PG auth: libpq's standard `~/.pgpass` / `$PGPASSWORD` / env-var mechanisms. No pg-web-specific credential store.
+- **Zero new secret types.** Nothing pg-web invents around auth.
+
+**Implementation choice:** `openssh` crate over `russh`. Reasons: (1) user's SSH config / keys Just Work without re-implementing any of it; (2) ProxyJump + jump-host patterns inherited for free; (3) known_hosts checking handled correctly; (4) one less thing for us to audit for security bugs. Tradeoff: requires the system `ssh` binary, which is a non-issue on Linux/macOS/WSL and now ships by default on Windows 10+.
+
+**Error paths to test:**
+- SSH auth failure (wrong key, no ssh-agent, known_hosts mismatch) — surface the underlying ssh error verbatim, don't swallow.
+- Remote PG not reachable on `127.0.0.1:5432` inside the server (container down, firewall internal to the box, etc.) — clear message pointing at `ssh <target> 'docker ps'` or similar diagnostic.
+- Deploy target name not in `pgweb.toml` — list the defined targets, error.
+- Dry-run with `--target` — tunnel opens, dry-run runs, tunnel closes, nothing touched. Useful for CI smoke.
+
+**Tests:**
+- Unit: TOML deserialization of `[deploy.<name>]` variants + defaults.
+- Integration: spawn a sshd in a container (via testcontainers), tunnel to a second container's PG, push, assert. Harder to set up but real; alternatively mock the openssh::Session.
+- Tier 3: gated under `--ignored` (needs sshd infrastructure), similar to docker_e2e.
+
+#### F.3 — CLI bundled in the postgres image
+
+**The need:** once you've SSHed to a VPS (manually or via F.2), you sometimes want to run the CLI **on** the server — e.g., an in-compose-network `docker compose exec postgres pg-web push` to bypass even the `127.0.0.1:5432` publish. Requires the CLI binary to already be on the server.
+
+**The work:**
+- Modify the `pgweb/postgres` image's Dockerfile to also `cargo install --path crates/pg_web_cli` into the image. Shipped binary goes to `/usr/local/bin/pg-web` inside the image.
+- Users can then `docker exec postgres-1 pg-web push --dir /app` (with `/app` bind-mounted or pre-copied).
+- Alternative: publish a standalone `pgweb/cli:<version>` image (tiny Alpine + the CLI binary). Users compose it in with `network_mode: "service:postgres"` or `--network <project>_default` and it can talk to postgres on the internal network.
+
+**When you use which:**
+- `pgweb/postgres:latest` with CLI baked in — one-container convenience for small deployments.
+- `pgweb/cli:<ver>` separate — cleaner for larger ops, lets the CLI upgrade independently of Postgres.
+
+**Tests:** tier 3 addition — `docker compose exec postgres pg-web --version` succeeds.
+
+**Interplay with F.2:** F.2 and F.3 are orthogonal. F.2 lets you deploy from a laptop without SSHing in; F.3 means that if you DO SSH in (or CI drops you in), the CLI is waiting. Many deployments end up using both over their lifecycle.
 
 ### G. Browser live-reload push (WS or SSE) — **deferred from Session 3**
 
@@ -192,11 +250,11 @@ Leaning: **SSE**. Resolve with the user before coding.
 
 | Tier | What gains coverage                                                                     |
 |------|------------------------------------------------------------------------------------------|
-| 1 — `#[pg_test]`   | `pgweb.html_escape` edge cases. `pgweb.setting(key)` NULL-on-miss. Large-object round-trip if I ships. |
+| 1 — `#[pg_test]`   | `pgweb.html_escape` edge cases. `pgweb.setting(key)` NULL-on-miss. `pgweb.deployments` ledger row inserted per push. Large-object round-trip if I ships. |
 | 2a — HTTP smoke    | `/_pgweb/livereload` keep-alive frame if G ships. Fingerprinted asset URL if H ships.     |
-| 2b — CLI           | `env set/unset/list`. `init --template`. `check` (unit + fixture). `push --dry-run`.      |
-| 3 — Docker E2E     | Live-reload end-to-end (push → SSE event). Fingerprinted asset with `Cache-Control: immutable`. Large asset (>2 MiB) if I ships. Validation demo (empty form → inline error). |
-| 4 — CLI smoke      | Extend `smoke-cli.sh`: `env set` → `env list` visible. `check` fails on a broken fixture. Live-reload section if G ships. |
+| 2b — CLI           | `env set/unset/list`. `init --template`. `check` (unit + fixture). `push --dry-run`. F.2 target-TOML deserialization. |
+| 3 — Docker E2E     | Live-reload end-to-end (push → SSE event). Fingerprinted asset with `Cache-Control: immutable`. Large asset (>2 MiB) if I ships. Validation demo (empty form → inline error). **F.2 SSH-tunneled push**: spawn sshd in a container, deploy key, tunnel, push against a second container's PG, assert. **F.3 bundled CLI**: `docker compose exec postgres pg-web --version`. |
+| 4 — CLI smoke      | Extend `smoke-cli.sh`: `env set` → `env list` visible. `check` fails on a broken fixture. Live-reload section if G ships. SSH-tunnel push section if F.2 ships (harder — needs sshd scaffolding; could split into `smoke-deploy.sh`). |
 
 Target: 180+ Rust tests + smoke sections tracking every new component.
 
@@ -220,7 +278,9 @@ Target: 180+ Rust tests + smoke sections tracking every new component.
 3. **Large asset streaming vs buffered BYTEA up to N MiB?** Leaning buffered (5-10 MiB cap) with true streaming flagged as follow-up. Full streaming is a rabbit hole vs. the v0.1 release gate.
 4. **`pg-web check` — pg_query crate vs throwaway Postgres for SQL parse?** `pg_query` adds a C dep; throwaway PG needs a running PG. Leaning pg_query — `check` should be offline by its nature.
 5. **`pg-web init --template` — bundled templates or fetched from a registry?** v0.1 ships bundled (`examples/` tree). Registry is post-v1.
-6. **Tagged release strategy — `0.1.0` now or after a couple of Phase-2 items land?** Discuss with user. Defensible v0.1 = "what's in Session 4 at session end."
+6. **F.2 SSH layer: `openssh` crate (system ssh wrapper) vs `russh` (pure-Rust)?** Leaning `openssh` — free inheritance of user's ssh config, keys, agent, known_hosts, ProxyJump. Requires system ssh, which is a non-issue on Linux/macOS/WSL and ships with Windows 10+.
+7. **F.3 distribution: bake CLI into `pgweb/postgres:latest` OR ship `pgweb/cli:<ver>` separately OR both?** Leaning both — baked for single-container-convenience, separate for independent upgrade cycles.
+8. **Tagged release strategy — `0.1.0` now or after a couple of Phase-2 items land?** Discuss with user. Defensible v0.1 = "what's in Session 4 at session end."
 
 ---
 
@@ -233,16 +293,20 @@ Components can interleave more than Session 3 did (fewer cross-dependencies). On
 3. **C** — `env set/unset/list`. Small CLI addition.
 4. **D** — `init --template` + scaffolded README. DX win.
 5. **E** — `pg-web check`. Bigger scope; multiple validators.
-6. **F** — Push polish (`--dry-run`, `--with-migrate`, deployments ledger).
-7. **G** — Browser live-reload. The deferred Session-3 priority.
-8. **H** — Content-hash asset filenames. The other deferred priority.
-9. **I** — Large-asset tier (if scope allows).
-10. **J** — Release pipeline. Last, so the release reflects everything prior.
-11. **K** — Docs pass. Can overlap with J.
+6. **F.1** — Push polish: `--dry-run`, `--with-migrate`, `pgweb.deployments` ledger.
+7. **F.2** — SSH-tunneled `pg-web push --target <name>`. **User-flagged important** — the thing that makes deploy actually production-friendly without exposing `:5432`.
+8. **F.3** — CLI bundled into `pgweb/postgres:latest` (and/or standalone `pgweb/cli:<ver>` image). Pairs with F.2 for the "SSH-into-server and run it there" path.
+9. **G** — Browser live-reload. The deferred Session-3 priority.
+10. **H** — Content-hash asset filenames. The other deferred priority.
+11. **I** — Large-asset tier (if scope allows).
+12. **J** — Release pipeline. Last, so the release reflects everything prior.
+13. **K** — Docs pass. Can overlap with J.
 
 Each followed by a stop-and-check at phase boundaries — same workflow as Session 3.
 
-If scope runs long, **punt I to Session 5 + cut the release tag until M1.4 is complete**. Don't ship an incomplete release pipeline.
+**F.2 is a legitimate Session 4 highlight** — it's what users have been asking about, and until it ships, `pg-web push` is effectively local-only or requires the user to hold an SSH tunnel open manually. Consider reordering to F.1 → F.2 → F.3 → A → B → … if the remote-deploy story matters more than the user-facing polish for this session.
+
+If scope runs long, **punt I (large assets) to Session 5 + cut the release tag until M1.4 is complete**. Don't ship an incomplete release pipeline.
 
 ---
 
