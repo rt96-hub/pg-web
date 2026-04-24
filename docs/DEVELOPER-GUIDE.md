@@ -112,6 +112,25 @@ See `TESTING.md` for full strategy. Maintainer tl;dr:
 - **CLI code** → `#[test]` + optional `testcontainers::postgres::Postgres` fixtures.
 - **Product behavior** → add a flow in `examples/todo/` (the companion app is THE acceptance gate).
 
+## BGW connection accounting
+
+`pg_web_ext`'s background worker uses Postgres backend slots like this:
+
+- **1 SPI session (always)** — `BackgroundWorker::connect_worker_to_spi` at startup. Every HTTP request runs its route-lookup + handler-call SQL on this session via `BackgroundWorker::transaction`.
+- **1 libpq LISTEN session (dev only)** — started from `worker.rs::pg_web_worker_main` when `pgweb.settings.env = 'development'` at worker startup. Opens a tokio-postgres connection to `127.0.0.1:<PostPortNumber>`, issues `LISTEN pgweb_livereload`, forwards notifications to the in-memory `ListenRouter::publish`. The SPI session can't hold a LISTEN (it's request-scoped), so Component G needs its own connection.
+
+Total: **2 backend slots in dev**, **1 in prod**. Against typical `max_connections = 100` defaults the +1 is noise; on a resource-starved instance (`max_connections = 10` or less) it's meaningful and the dev-only gating matters. The fan-out from LISTEN to N browser SSE tabs is all in-memory (`tokio::sync::broadcast`) — no per-tab backend.
+
+SSE tasks are HTTP connections on the BGW's existing tokio runtime. They don't show up in `pg_stat_activity`; they're pure tokio tasks.
+
+For Phase 2 app-level realtime subscriptions the same LISTEN connection is reused — `listen_router::ListenRouter` is deliberately channel-agnostic. Adding another channel (e.g. `pgweb_app_todos`) is one more entry in `worker.rs`'s `preregister` + one more `LISTEN` in the same session. No extra backend slot.
+
+## Tokio runtime constraint
+
+The BGW runs `tokio::runtime::Builder::new_current_thread()` — single-threaded. Reason: SPI is pinned to the OS thread `connect_worker_to_spi` attached to. A multi-threaded runtime would migrate tasks to worker threads that lack SPI context, causing panics.
+
+**Implication for new async code:** anything that calls SPI (via `BackgroundWorker::transaction` or pgrx's `Spi`) must run on the current-thread runtime's main task — never on a `tokio::spawn`'d task if the spawn happens inside a multi-threaded runtime. In our current-thread runtime, `tokio::spawn` is fine; all tasks share the same thread. **Anything that does only network I/O** (like the livereload LISTEN task using tokio-postgres) is fine either way.
+
 ## Workspace conventions
 
 - Resolver 2 (`resolver = "2"` at workspace root).

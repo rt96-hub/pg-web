@@ -401,6 +401,45 @@ $$ LANGUAGE sql;
 
 **What this is not.** The CLI writes values in cleartext; encrypted secrets / KMS integration are Phase 2. Don't store anything the DB admin shouldn't be able to `SELECT`. For TLS-at-rest, use a PG instance with disk encryption; for TLS-in-transit, use `sslmode=require` on the connection URL.
 
+## Browser live-reload under `pg-web dev`
+
+`pg-web dev` auto-reloads connected browser tabs on every save. No HTMX config, no extra scripts to include — the dev server injects a tiny client stub into every rendered HTML response, and the running extension exposes an SSE stream the stub subscribes to.
+
+The chain:
+
+1. You save `pages/index.html` (or `post.sql`, or `public/styles.css`, etc.).
+2. `pg-web dev` debounces, preflights, pushes the change into the DB.
+3. On successful push, `pg-web dev` issues `NOTIFY pgweb_livereload, '{"kind":"full"}'` (or `'{"kind":"css"}'` for pure CSS changes).
+4. The extension's LISTEN task forwards to every connected SSE client.
+5. Each browser tab either cache-busts stylesheets (CSS-only change → no page reload, no flash) or calls `location.reload()` (anything else).
+
+**What gets injected.** In dev mode, a `<script src="/_pgweb/livereload.js" async data-pgweb-livereload></script>` is spliced in right before `</body>` on every rendered HTML document. HTMX fragment responses (no `</body>` tag) are left alone — the OOB swap path is unaffected.
+
+**Production mode is untouched.** `pgweb.settings.env = 'production'` disables the injection AND 404s the `/_pgweb/livereload` SSE endpoint. No connection leaks, no stray script downloads in prod.
+
+**Opt out:** `pg-web dev --no-livereload` skips the NOTIFY broadcast (connected tabs just stay quiet). The script injection still happens in dev mode — the EventSource connects, receives nothing, costs nothing. This is useful when you're running a heavy-JS app whose in-page state would be lost on reload and you'd rather manually control when the refresh happens.
+
+**What about HTMX?** No dependency. If your app already uses HTMX, live-reload's `location.reload()` blows away whatever state HTMX was maintaining — same as any other full-page reload. Phase 2 will layer an HTMX-friendly morph path on top of the same SSE transport so partial state can survive refreshes; the current v0.1 client is deliberately minimal.
+
+**Wiring diagram:**
+
+```
+  pg-web dev                pg_web_ext (BGW)           browser
+  ──────────               ──────────────────         ─────────
+  save ──▶ push ──▶ NOTIFY ──▶ LISTEN task
+                                   │
+                                   ▼
+                              broadcast ch ──▶ SSE /_pgweb/livereload
+                                                        │
+                                                        ▼
+                                              EventSource onmessage
+                                                        │
+                                                        ▼
+                                        (css cache-bust | location.reload)
+```
+
+One LISTEN PG backend slot for the whole BGW — not per-tab. Browser tabs are HTTP/SSE only; they hold zero DB connections. Total cost in dev: **+1 Postgres backend**. In prod: **+0** (LISTEN task doesn't start when env is production).
+
 ## Pushing: `--dry-run`, `--with-migrate`, deployments ledger
 
 `pg-web push` is transactional: it either commits every change together or leaves the live extension's state exactly as it was. Two flags shape when and how that commit happens.
@@ -509,7 +548,7 @@ Templates:
 | ~~User-facing form validation UX (inline error via `check_violation`)~~ | M1.4 ✓   |
 | ~~CLI `pg-web env set/unset/list` + `pgweb.setting()` helper~~  | M1.4 ✓   |
 | ~~CLI `pg-web check` (offline project validator)~~              | M1.4 ✓   |
-| Browser live-reload push (WS/SSE; auto-F5 on save)              | M1.4     |
+| ~~Browser live-reload push (SSE; auto-reload on save)~~         | M1.4 ✓   |
 | Declarative schema-diffing (`migrate create`)                   | Phase 2.5 |
 | Auth + sessions + RLS bridge                                    | Phase 2   |
 | Async job queue                                                 | Phase 3   |

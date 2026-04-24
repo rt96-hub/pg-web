@@ -71,9 +71,30 @@ pub enum Action {
     Ignore,
 }
 
+/// Bundle of toggles `pg-web dev` accepts. Using a struct (rather than
+/// stacking positional bools) so adding the next flag — say,
+/// `--no-preflight` — stays a one-line change at every call site.
+#[derive(Debug, Clone, Copy)]
+pub struct DevOptions {
+    pub tail_logs: bool,
+    /// Emit `NOTIFY pgweb_livereload` after every successful push so
+    /// connected browser tabs auto-reload. Disable if the auto-reload
+    /// UX interferes with a heavy-JS app; defaults on.
+    pub livereload: bool,
+}
+
+impl Default for DevOptions {
+    fn default() -> Self {
+        Self {
+            tail_logs: true,
+            livereload: true,
+        }
+    }
+}
+
 /// `pg-web dev` entry point. Brings the stack up, installs a Ctrl-C
 /// handler, optionally tails logs, then drops into [`watch`] until stop.
-pub fn dev(app_dir: &Path, tail_logs: bool) -> Result<()> {
+pub fn dev(app_dir: &Path, opts: DevOptions) -> Result<()> {
     // `stack::up` is idempotent — `docker compose up -d` against an
     // already-running stack is a ~1s no-op. Simpler than pre-checking.
     let url = stack::up(app_dir)?;
@@ -96,13 +117,19 @@ pub fn dev(app_dir: &Path, tail_logs: bool) -> Result<()> {
             .context("installing Ctrl-C handler")?;
     }
 
-    let logs_child = if tail_logs {
+    let logs_child = if opts.tail_logs {
         Some(spawn_logs_tail(app_dir)?)
     } else {
         None
     };
 
-    let result = watch(app_dir, &url, stop);
+    if opts.livereload {
+        println!("✓ livereload — browsers watching /_pgweb/livereload will auto-reload on save");
+    } else {
+        println!("— livereload disabled (--no-livereload)");
+    }
+
+    let result = watch(app_dir, &url, stop, opts.livereload);
 
     if let Some(mut c) = logs_child {
         let _ = c.kill();
@@ -132,7 +159,12 @@ fn force_env_development(url: &str) -> Result<()> {
 /// the event loop until `stop` is raised. Public so integration tests
 /// can drive it against a testcontainer-provided URL without needing a
 /// real `docker compose` stack.
-pub fn watch(app_dir: &Path, url: &str, stop: Arc<AtomicBool>) -> Result<()> {
+pub fn watch(
+    app_dir: &Path,
+    url: &str,
+    stop: Arc<AtomicBool>,
+    livereload: bool,
+) -> Result<()> {
     let (tx, rx) = mpsc::channel();
     let mut debouncer =
         new_debouncer(DEBOUNCE_WINDOW, None, tx).context("creating file watcher")?;
@@ -147,7 +179,7 @@ pub fn watch(app_dir: &Path, url: &str, stop: Arc<AtomicBool>) -> Result<()> {
     }
     println!("⟳ watching pages/ + public/ — edit files to re-push, Ctrl-C to stop");
 
-    let result = event_loop(&rx, app_dir, url, &stop);
+    let result = event_loop(&rx, app_dir, url, &stop, livereload);
     drop(debouncer);
     result
 }
@@ -157,6 +189,7 @@ fn event_loop(
     app_dir: &Path,
     url: &str,
     stop: &AtomicBool,
+    livereload: bool,
 ) -> Result<()> {
     let mut hashes: HashMap<PathBuf, blake3::Hash> = HashMap::new();
     loop {
@@ -165,7 +198,7 @@ fn event_loop(
         }
         match rx.recv_timeout(SHUTDOWN_POLL) {
             Ok(Ok(events)) => {
-                if let Err(e) = handle_batch(&events, app_dir, url, &mut hashes) {
+                if let Err(e) = handle_batch(&events, app_dir, url, &mut hashes, livereload) {
                     eprintln!("✗ {e:#}");
                 }
             }
@@ -187,9 +220,11 @@ fn handle_batch(
     app_dir: &Path,
     url: &str,
     hashes: &mut HashMap<PathBuf, blake3::Hash>,
+    livereload: bool,
 ) -> Result<()> {
     let mut changed_any = false;
     let mut changed_sql: Vec<PathBuf> = Vec::new();
+    let mut changed_all: Vec<PathBuf> = Vec::new();
 
     for ev in events {
         for p in &ev.event.paths {
@@ -204,6 +239,7 @@ fn handle_batch(
             if matches!(ev.event.kind, EventKind::Remove(_)) {
                 hashes.remove(p);
                 changed_any = true;
+                changed_all.push(p.clone());
                 continue;
             }
 
@@ -213,6 +249,7 @@ fn handle_batch(
                 Ok(c) => c,
                 Err(_) => {
                     changed_any = true;
+                    changed_all.push(p.clone());
                     continue;
                 }
             };
@@ -222,6 +259,7 @@ fn handle_batch(
             }
             hashes.insert(p.clone(), hash);
             changed_any = true;
+            changed_all.push(p.clone());
             if is_pages_sql(p, app_dir) {
                 changed_sql.push(p.clone());
             }
@@ -253,6 +291,78 @@ fn handle_batch(
         "⟳ pushed — {} routes, {} templates, {} SQL files",
         summary.routes_upserted, summary.templates_upserted, summary.sql_files_executed
     );
+
+    // Post-push livereload: classify the change-set and NOTIFY. The
+    // extension's LISTEN task picks this up and fans out to SSE clients.
+    // Fires in its own short-lived connection so a NOTIFY failure
+    // doesn't kill the watcher loop.
+    if livereload {
+        let kind = livereload_kind(&changed_all, app_dir);
+        if !matches!(kind, LivereloadKind::None) {
+            if let Err(e) = notify_livereload(url, kind) {
+                eprintln!("⚠ livereload NOTIFY failed: {e:#}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Kind of reload signal to broadcast. Client stub (crate
+/// `pg_web_ext::livereload`'s JS) interprets:
+/// - `Css`: cache-bust `<link rel=stylesheet>` — zero page reload, no
+///   flash. Applies only when EVERY changed file is a .css under
+///   public/ (so a mixed CSS + HTML save still does a full reload to
+///   pick up both).
+/// - `Full`: `location.reload()`. Catches everything that isn't a pure
+///   CSS change — HTML templates, handler SQL, non-CSS public assets,
+///   mixed change-sets.
+/// - `None`: suppresses the NOTIFY (empty change-set).
+#[derive(Debug, PartialEq, Eq)]
+pub enum LivereloadKind {
+    None,
+    Css,
+    Full,
+}
+
+/// Pure classifier — unit-tested directly. The rule is tight: only pure
+/// CSS-under-public changes get the cache-bust fast path.
+pub fn livereload_kind(changed: &[PathBuf], app_dir: &Path) -> LivereloadKind {
+    if changed.is_empty() {
+        return LivereloadKind::None;
+    }
+    let all_public_css = changed.iter().all(|p| {
+        let Ok(rel) = p.strip_prefix(app_dir) else {
+            return false;
+        };
+        let first = rel.components().next().and_then(|c| c.as_os_str().to_str());
+        first == Some("public")
+            && p.extension().and_then(|e| e.to_str()) == Some("css")
+    });
+    if all_public_css {
+        LivereloadKind::Css
+    } else {
+        LivereloadKind::Full
+    }
+}
+
+/// Fire `NOTIFY pgweb_livereload '<json>'` on its own short-lived
+/// connection. Payload stays small (< 8 kB Postgres NOTIFY limit) —
+/// v0.1 just sends `{"kind":"css"}` or `{"kind":"full"}`.
+fn notify_livereload(url: &str, kind: LivereloadKind) -> Result<()> {
+    let payload = match kind {
+        LivereloadKind::Css => "{\"kind\":\"css\"}",
+        LivereloadKind::Full => "{\"kind\":\"full\"}",
+        LivereloadKind::None => return Ok(()),
+    };
+    let mut client = Client::connect(url, NoTls).context("connecting for livereload NOTIFY")?;
+    // NOTIFY's parameter is an IDENT not a string, so the channel name
+    // can't be parameterized with $1. Channel name is a hardcoded
+    // literal — no user input reaches this query.
+    let stmt = format!("NOTIFY pgweb_livereload, '{}'", payload);
+    client
+        .batch_execute(&stmt)
+        .context("issuing NOTIFY pgweb_livereload")?;
     Ok(())
 }
 
@@ -490,5 +600,79 @@ mod tests {
         let a = blake3::hash(b"CREATE TABLE t (id int);");
         let b = blake3::hash(b"CREATE TABLE t (id bigint);");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn livereload_kind_empty_set_is_none() {
+        assert_eq!(
+            livereload_kind(&[], Path::new("/app")),
+            LivereloadKind::None
+        );
+    }
+
+    #[test]
+    fn livereload_kind_pure_public_css_is_css() {
+        let paths = vec![cwd("public/styles.css")];
+        assert_eq!(
+            livereload_kind(&paths, Path::new("/app")),
+            LivereloadKind::Css
+        );
+    }
+
+    #[test]
+    fn livereload_kind_multiple_public_css_is_css() {
+        let paths = vec![
+            cwd("public/styles.css"),
+            cwd("public/print.css"),
+        ];
+        assert_eq!(
+            livereload_kind(&paths, Path::new("/app")),
+            LivereloadKind::Css
+        );
+    }
+
+    #[test]
+    fn livereload_kind_mixed_css_and_html_is_full() {
+        // Dropping to Full when anything non-CSS changes ensures the
+        // HTML shift shows up. Picking css because most files are CSS
+        // would miss the HTML reload.
+        let paths = vec![
+            cwd("public/styles.css"),
+            cwd("pages/index.html"),
+        ];
+        assert_eq!(
+            livereload_kind(&paths, Path::new("/app")),
+            LivereloadKind::Full
+        );
+    }
+
+    #[test]
+    fn livereload_kind_html_under_pages_is_full() {
+        let paths = vec![cwd("pages/index.html")];
+        assert_eq!(
+            livereload_kind(&paths, Path::new("/app")),
+            LivereloadKind::Full
+        );
+    }
+
+    #[test]
+    fn livereload_kind_sql_under_pages_is_full() {
+        let paths = vec![cwd("pages/todos/post.sql")];
+        assert_eq!(
+            livereload_kind(&paths, Path::new("/app")),
+            LivereloadKind::Full
+        );
+    }
+
+    #[test]
+    fn livereload_kind_non_css_public_asset_is_full() {
+        // public/logo.png changed: we can't cache-bust an <img src>
+        // generically without DOM introspection. Full reload picks it
+        // up and is the conservative call.
+        let paths = vec![cwd("public/logo.png")];
+        assert_eq!(
+            livereload_kind(&paths, Path::new("/app")),
+            LivereloadKind::Full
+        );
     }
 }

@@ -6,11 +6,14 @@
 //!   a JSON object for the handler's `req` argument.
 //! - Hand off to `router::serve` with the built `req` and shape the response.
 
+use std::sync::Arc;
+
 use axum::{
     body::{to_bytes, Body},
     extract::Request,
     http::{header, StatusCode},
     response::{IntoResponse, Response},
+    routing::get,
     Router,
 };
 use pgrx::bgworkers::BackgroundWorker;
@@ -18,6 +21,8 @@ use serde_json::{json, Map, Value};
 use tracing::error;
 
 use crate::errors::ServeError;
+use crate::listen_router::ListenRouter;
+use crate::livereload;
 use crate::router::{self, ServeOutcome};
 use crate::settings::{self, Env};
 
@@ -26,8 +31,22 @@ use crate::settings::{self, Env};
 /// (not supported in Phase 1).
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
-pub fn app() -> Router {
-    Router::new().fallback(handle)
+pub fn app(listen_router: Arc<ListenRouter>) -> Router {
+    // Framework-reserved `/_pgweb/*` routes sit above the fallback so
+    // a user's own GET /_pgweb/foo handler (unusual but legal) can
+    // still be defined without colliding with livereload internals.
+    // SSE carries the ListenRouter as axum state; the JS stub is
+    // a static response and doesn't need state.
+    let livereload_routes = Router::new()
+        .route("/_pgweb/livereload", get(livereload::serve_livereload_sse))
+        .with_state(listen_router);
+    let static_routes =
+        Router::new().route("/_pgweb/livereload.js", get(livereload::serve_livereload_js));
+
+    Router::new()
+        .merge(livereload_routes)
+        .merge(static_routes)
+        .fallback(handle)
 }
 
 async fn handle(req: Request) -> Response {
@@ -84,6 +103,12 @@ async fn handle(req: Request) -> Response {
     match router::serve(&method, &path, req_value) {
         ServeOutcome::Response { status, body } => {
             let code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+            // Inject the livereload client into full HTML documents in
+            // dev mode. The helper is a no-op in production and on
+            // fragment responses (no </body>). Env is fetched via SPI
+            // once here per request.
+            let env = BackgroundWorker::transaction(settings::current_env);
+            let body = livereload::inject_script_if_eligible(body, env);
             (
                 code,
                 [(header::CONTENT_TYPE, "text/html; charset=utf-8")],

@@ -2207,6 +2207,7 @@ name = "pg_web_ext"
 version = "0.0.1"
 dependencies = [
  "axum",
+ "futures-util",
  "pgrx",
  "pgrx-bench",
  "pgrx-tests",
@@ -2215,6 +2216,8 @@ dependencies = [
  "serde_urlencoded",
  "tera",
  "tokio",
+ "tokio-postgres",
+ "tokio-stream",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -3569,6 +3572,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

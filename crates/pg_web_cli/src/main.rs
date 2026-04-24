@@ -88,6 +88,13 @@ enum Command {
         /// Don't tail `docker compose logs -f postgres` in-band.
         #[arg(long)]
         no_logs: bool,
+        /// Don't emit livereload NOTIFYs after pushes. Browsers still
+        /// load the livereload stub (rendered HTML in dev has it) but
+        /// the EventSource will just stay quiet. Use when the auto-
+        /// reload UX interferes with a heavy-JS app that holds complex
+        /// local state you want to preserve across saves.
+        #[arg(long)]
+        no_livereload: bool,
     },
     /// Manage key/value settings in `pgweb.settings` (secrets, runtime flags).
     ///
@@ -279,8 +286,16 @@ fn run() -> Result<ExitCode> {
                 println!("✓ stack down");
             }
         }
-        Command::Dev { dir, no_logs } => {
-            pg_web_cli::dev::dev(&dir, !no_logs)?;
+        Command::Dev {
+            dir,
+            no_logs,
+            no_livereload,
+        } => {
+            let opts = pg_web_cli::dev::DevOptions {
+                tail_logs: !no_logs,
+                livereload: !no_livereload,
+            };
+            pg_web_cli::dev::dev(&dir, opts)?;
         }
         Command::Check { dir, url } => {
             let report = pg_web_cli::check::check(&dir, url.as_deref())?;

@@ -302,6 +302,132 @@ fn post_form(client: &reqwest::blocking::Client, base: &str, path: &str, body: &
     resp.text().unwrap()
 }
 
+/// Tier 3 Component G coverage: the livereload chain end-to-end.
+///
+/// 1. Pushed app has the `<script src="/_pgweb/livereload.js">` tag
+///    injected in dev mode.
+/// 2. `GET /_pgweb/livereload.js` returns the JS stub content.
+/// 3. Open an SSE connection to `/_pgweb/livereload`; issue `NOTIFY
+///    pgweb_livereload` via a direct PG connection (standing in for
+///    `pg-web dev`'s post-push hook); assert the SSE stream carries
+///    the payload.
+///
+/// Runs in one container to amortize startup cost.
+#[test]
+#[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            --test docker_e2e -- --ignored`."]
+fn livereload_sse_chain_end_to_end() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start pgweb/postgres container");
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    copy_tree(&todo_app_dir(), tmp.path());
+    pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
+    pg_web_cli::push::push(tmp.path(), &db_url).expect("push");
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    // 1. Script is auto-injected in dev mode.
+    let home = get(&client, &base_url, "/");
+    assert!(
+        home.contains("data-pgweb-livereload"),
+        "rendered HTML should have the livereload script injected: {home}"
+    );
+    assert!(
+        home.contains("/_pgweb/livereload.js"),
+        "injected script should point at /_pgweb/livereload.js: {home}"
+    );
+
+    // 2. The JS stub is served.
+    let js = get(&client, &base_url, "/_pgweb/livereload.js");
+    assert!(
+        js.contains("EventSource") && js.contains("/_pgweb/livereload"),
+        "livereload.js should contain an EventSource to /_pgweb/livereload: {js}"
+    );
+
+    // 3. Open an SSE stream on a background thread, fire NOTIFY from
+    //    this thread, confirm the event body lands.
+    //
+    // Use a non-blocking reqwest Response with a bounded read. The test
+    // runs quickly; no need for sophisticated stream parsing — we just
+    // scan the first N bytes for the expected event/data frame.
+    use std::io::Read;
+    use std::sync::mpsc;
+    use std::thread;
+
+    let (tx, rx) = mpsc::channel::<String>();
+    let sse_url = format!("{base_url}/_pgweb/livereload");
+    let client_for_sse = client.clone();
+    thread::spawn(move || {
+        let resp = client_for_sse
+            .get(&sse_url)
+            .send()
+            .expect("open SSE stream");
+        assert_eq!(resp.status(), 200, "SSE endpoint should be 200 in dev mode");
+        assert!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.starts_with("text/event-stream"))
+                .unwrap_or(false),
+            "SSE endpoint should return text/event-stream content-type"
+        );
+        // Read up to 512 bytes — enough to capture the full event frame.
+        let mut body = resp;
+        let mut buf = [0u8; 512];
+        let n = body.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(String::from_utf8_lossy(&buf[..n]).into_owned());
+    });
+
+    // Give the SSE handler a tick to register + issue LISTEN on the BGW
+    // side. 500 ms is comfortably more than the typical broadcast-
+    // subscribe round-trip + NOTIFY delivery.
+    thread::sleep(Duration::from_millis(500));
+
+    // Fire NOTIFY from a separate PG connection, standing in for what
+    // `pg-web dev`'s post-push hook will do in production.
+    let mut pg = postgres::Client::connect(&db_url, postgres::NoTls).unwrap();
+    pg.batch_execute(r#"NOTIFY pgweb_livereload, '{"kind":"css"}'"#)
+        .expect("NOTIFY");
+
+    // Wait for the SSE thread to report what it read. 3 s buffer for
+    // slow CI — actual delivery takes single-digit ms.
+    let chunk = rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("SSE thread never delivered bytes");
+
+    assert!(
+        chunk.contains("event: reload"),
+        "SSE stream should carry the `reload` event type: {chunk:?}"
+    );
+    assert!(
+        chunk.contains("\"kind\":\"css\""),
+        "SSE stream should carry the NOTIFY payload: {chunk:?}"
+    );
+}
+
 /// Tier 3 F.1 coverage: migration gate, `--with-migrate`, `--dry-run`,
 /// and the `pgweb.deployments` ledger. One container, multiple pushes,
 /// asserts DB-side state between each. Kept as one test to amortize the
@@ -564,7 +690,12 @@ fn dev_watcher_repushes_on_save() {
     let watch_dir = tmp.path().to_path_buf();
     let watch_url = db_url.clone();
     let watch_stop = stop.clone();
-    let handle = std::thread::spawn(move || pg_web_cli::dev::watch(&watch_dir, &watch_url, watch_stop));
+    // livereload=true so the same path production uses is exercised —
+    // the LISTEN task is env=development-gated in the extension, so
+    // even if the NOTIFY fires without a listener this just logs.
+    let handle = std::thread::spawn(move || {
+        pg_web_cli::dev::watch(&watch_dir, &watch_url, watch_stop, true)
+    });
 
     // Let the watcher install its fs hooks before we edit. 250ms > 200ms
     // debounce window so the first event we want to catch is the edit.

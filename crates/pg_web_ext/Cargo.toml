@@ -21,7 +21,7 @@ pgrx = "=0.18.0"
 
 # HTTP stack: Axum as a thin shell over Hyper, Tower for middleware.
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros", "sync"] }
 tower = { version = "0.5", default-features = false }
 
 # Tracing — quiet by default, structured output. See docs/DEVELOPER-GUIDE.md § logging.
@@ -34,6 +34,20 @@ tera = { version = "1", default-features = false }
 serde_json = "1"
 # Form body and query string parsing — HTMX sends application/x-www-form-urlencoded.
 serde_urlencoded = "0.7"
+
+# Livereload (Component G): LISTEN on a dedicated libpq-side connection,
+# fanned out to SSE subscribers via a tokio broadcast channel. tokio-
+# postgres is async so it fits the BGW's single-threaded tokio runtime
+# without conflicting with SPI (the LISTEN task does socket I/O only;
+# SPI stays on the main task). Connection costs one Postgres backend
+# slot against max_connections — so the LISTEN task is only started
+# when `pgweb.settings.env = 'development'`. Zero extra backends in prod.
+tokio-postgres = { version = "0.7", default-features = false, features = ["runtime"] }
+# Adapter between broadcast::Receiver and the Stream trait axum's
+# response::Sse wants. `sync` feature enables BroadcastStream.
+tokio-stream = { version = "0.1", default-features = false, features = ["sync"] }
+# Stream combinators for the SSE fan-out path + keepalive merge.
+futures-util = { version = "0.3", default-features = false }
 
 [dependencies.pgrx-bench]
 version = "=0.18.0"

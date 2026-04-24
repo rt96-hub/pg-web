@@ -538,7 +538,48 @@ assert_contains "$check_out" "CRATE" "diagnostic surfaces the parser's unexpecte
 # Clean up so subsequent sections (if any) see a clean state.
 rm "$SMOKE_DIR/migrations/0999_typo.sql"
 
-step "17. pg-web check catches a broken Tera template → exit 1"
+step "17. livereload: script auto-injected, JS stub served, SSE returns 200"
+# Script injection into the rendered scaffold homepage.
+http GET /
+code="$SMOKE_CODE"; body="$SMOKE_BODY"
+assert_status "$code" "200" "GET /"
+assert_contains "$body" "data-pgweb-livereload" "livereload <script> auto-injected"
+assert_contains "$body" "/_pgweb/livereload.js" "injected script points at the right URL"
+assert_contains "$body" "</script></body>" "injection landed immediately before </body>"
+
+# JS stub content.
+http GET /_pgweb/livereload.js
+code="$SMOKE_CODE"; body="$SMOKE_BODY"
+assert_status "$code" "200" "GET /_pgweb/livereload.js"
+assert_contains "$body" "EventSource" "stub uses native EventSource"
+assert_contains "$body" "/_pgweb/livereload" "stub subscribes to the right endpoint"
+
+# SSE endpoint in dev mode. curl holds the connection open until
+# `timeout` kills it; we just want to capture the response headers.
+# `|| true` because curl exits 28 (timed out) even on success here —
+# the interesting signal is the content-type header, not the exit.
+timeout 2 curl -sS -o /dev/null -D /tmp/sse-hdr \
+    "$BASE_URL/_pgweb/livereload" || true
+ct=$(awk 'BEGIN{IGNORECASE=1} /^content-type:/ {sub(/^[Cc][Oo][Nn][Tt][Ee][Nn][Tt]-[Tt][Yy][Pp][Ee]: */, ""); sub(/\r$/, ""); print}' /tmp/sse-hdr)
+assert_header_starts "$ct" "text/event-stream" "SSE content-type"
+
+# 18-20: flip to production, assert everything goes silent.
+step "18. livereload: production mode — SSE 404s, script NOT injected"
+sed -i 's/^env  = "development"/env  = "production"/' "$SMOKE_DIR/pgweb.toml"
+"$BIN" push >/dev/null
+
+http GET /
+body="$SMOKE_BODY"
+assert_not_contains "$body" "data-pgweb-livereload" "production: NO script injection"
+
+code=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE_URL/_pgweb/livereload")
+assert_status "$code" "404" "production: SSE endpoint 404s"
+
+# Restore dev mode for any subsequent section.
+sed -i 's/^env  = "production"/env  = "development"/' "$SMOKE_DIR/pgweb.toml"
+"$BIN" push >/dev/null
+
+step "19. pg-web check catches a broken Tera template → exit 1"
 mkdir -p "$SMOKE_DIR/pages/checktpl"
 cat > "$SMOKE_DIR/pages/checktpl/index.html" <<'HTML'
 {% if x %}unclosed block

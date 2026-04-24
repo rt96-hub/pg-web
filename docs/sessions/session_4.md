@@ -1,7 +1,32 @@
 # Session 4 — Closeout toward v0.1 (M1.4)
 
-**Status:** planned, not started.
+**Status:** in progress. Components A / B / C / D / E / F.1 / G shipped. H / J / K remain. F.2 / F.3 / I deferred to Session 5.
 **Theme:** ship the remaining Phase-1 feature surface + the two explicit near-term deferrals from Session 3 (browser live-reload, content-hash asset filenames), polish push for prod deploy, and cut the v0.1 release.
+
+## Shipping log (running)
+
+| Component | Commit | Notes |
+|---|---|---|
+| A. `pgweb.html_escape` | `e41b522` | STRICT IMMUTABLE PARALLEL SAFE, pure SQL fn in install SQL |
+| B. Form-validation UX | `2966864` | PL/pgSQL `EXCEPTION WHEN check_violation` → inline OOB fragment |
+| (dev-doc) | `eb69168` | DEVELOPER-GUIDE pitfalls #12/#13, sharpened #5/#8 |
+| C. `pg-web env` + `pgweb.setting()` | `97bfaa2` | CLI subcommand + SQL helper; reserved-key guard for `env` |
+| D. `pg-web init --template` + README | `1eb0cd0` | `include_dir!`-bundled template tree; scaffold gets a README |
+| (rename) | `0e85ab3` | `examples/demo/` → `examples/todo/` for `--template` clarity |
+| E. `pg-web check` | `1b2afef` | Offline validator: layout / Tera / SQL / migration-prefix via `sqlparser` |
+| (dev-doc) | `966a67f` | DEVELOPER-GUIDE pitfall #14 — Git Bash eats `$?` through wsl |
+| F.1 Push polish | `42b725d` | `--dry-run`, `--with-migrate`, `pgweb.deployments` ledger |
+| G. Browser live-reload | (this commit) | SSE via `LISTEN pgweb_livereload`; channel-aware router reused for Phase 2 |
+
+## Design decisions locked during Session 4
+
+- **`pgweb.setting()` parameter named `p_key`** to avoid ambiguity with the `pgweb.settings.key` column (`WHERE key = key` is ambiguous in SQL functions). Project convention for any future SQL-function parameters: `p_<name>` prefix if there's any column-collision risk. (Component C.)
+- **`--template` flag name = directory name under `examples/`.** So `--template todo` loads `examples/todo/`. Adding a new template is one `include_dir!` call + one match arm. No registry / manifest. (Component D.)
+- **`pg-web check` uses `sqlparser` (pure Rust), NOT `pg_query`.** `pg_query` needs cmake for protobuf; sqlparser is zero-system-deps. "Good enough for catching typos + unbalanced parens + malformed DDL" is the explicit v0.1 bar. Upgrade path flagged if we ever need libpg_query-level strictness. (Component E.)
+- **`run()` returns `Result<ExitCode>`, not `Result<()>`.** Needed so `pg-web check` can exit 1 on findings without the "pg-web: error:" prefix (a validator finding isn't a CLI error). (Component E.)
+- **`push --dry-run + --with-migrate`: reports would-apply, doesn't apply.** `migrate::apply` commits per file — can't be rolled back after the fact. Under dry-run we bypass the actual apply step but still report it in the summary so CI previews stay useful. (Component F.1.)
+- **Livereload — two-backends-in-dev, one-in-prod.** LISTEN needs its own libpq session (SPI can't hold LISTEN). Gating on `env = development` at worker startup means prod never pays the +1 backend slot. Channel-aware `ListenRouter` so Phase-2 app-level subscriptions reuse the same in-memory fan-out without another backend. (Component G.)
+- **Livereload JS is framework-free.** Native `EventSource` + one CSS cache-bust path + `location.reload()` fallback. ~30 lines of vanilla JS bundled as a `const &str`. Phase 2 can layer HTMX-friendly morph on top without breaking this. (Component G.)
 
 Unlike M1.2 (which was user-facing DX), M1.4 is mostly about **finishing the frame**: the feature table in `APP-DEVELOPER-GUIDE.md` still has rows — turn them into "shipped". Not all items are equal weight. A realistic cut: Session 4 ships the user-facing items (A–F) and the deferred Session-3 near-term work (G–H); **Session 5 picks up the ops/release track** (I–K) if scope runs long.
 
