@@ -137,6 +137,46 @@ EXCEPTION WHEN OTHERS THEN
 END;
 $fn$;
 
+-- User-facing helper: escape the five HTML-unsafe characters so a
+-- handler (especially a raw-text one with no Tera template) can safely
+-- interpolate user input into its response body. Mirrors the in-Rust
+-- escape used by the dev error page; if the five-char policy ever
+-- changes, update both sites.
+--
+-- STRICT      — NULL input returns NULL, so call sites don't need
+--               NULL-wrapping ceremony.
+-- IMMUTABLE   — planner can fold constants, use in indexes / generated
+--               columns, and inline the call into outer queries.
+-- PARALLEL SAFE — pure text transform, no side effects.
+--
+-- Escape order (innermost replace runs first, so '&' must be at the
+-- inside or the '&' characters introduced by later entity refs get
+-- double-escaped):
+--   &  → &amp;
+--   <  → &lt;
+--   >  → &gt;
+--   "  → &quot;
+--   '  → &#39;
+--
+-- NOT idempotent by design: html_escape('&amp;') = '&amp;amp;'. The
+-- contract is single-pass escaping of user input; re-escaping already-
+-- escaped text is caller error.
+CREATE FUNCTION pgweb.html_escape(s TEXT) RETURNS TEXT
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
+    SELECT replace(
+             replace(
+               replace(
+                 replace(
+                   replace(s, '&', '&amp;'),
+                   '<', '&lt;'),
+                 '>', '&gt;'),
+               '"', '&quot;'),
+             '''', '&#39;')
+$$;
+
+COMMENT ON FUNCTION pgweb.html_escape(TEXT) IS
+    'Escape HTML-unsafe characters (& < > " '') for safe embedding in response bodies. Returns NULL on NULL input.';
+
 COMMENT ON SCHEMA pgweb IS 'pg-web framework tables. Managed by the extension and CLI; do not modify directly.';
 "#,
     name = "framework_tables",
@@ -263,5 +303,39 @@ mod tests {
         .expect("query should not error")
         .expect("row should exist");
         assert!(within, "applied_at should default to current transaction time");
+    }
+
+    #[pg_test]
+    fn html_escape_nulls_pass_through() {
+        // STRICT makes this a Postgres-layer guarantee: NULL in → NULL
+        // out, no body execution. Saves every caller an IS NOT NULL
+        // check before interpolating.
+        let is_null = Spi::get_one::<bool>("SELECT pgweb.html_escape(NULL::text) IS NULL")
+            .expect("query should not error")
+            .expect("query should return a row");
+        assert!(is_null, "html_escape(NULL) should return NULL (STRICT)");
+    }
+
+    #[pg_test]
+    fn html_escape_handles_all_five_chars() {
+        // Input value is literally `& < > " '` (spaces between each);
+        // the `''` in the SQL literal is one escaped single-quote.
+        let out = Spi::get_one::<String>("SELECT pgweb.html_escape('& < > \" ''')")
+            .expect("query should not error")
+            .expect("query should return a row");
+        assert_eq!(out, "&amp; &lt; &gt; &quot; &#39;");
+    }
+
+    #[pg_test]
+    fn html_escape_is_not_idempotent_by_design() {
+        // Re-escaping already-escaped text double-escapes. This is the
+        // documented contract: handlers must escape user input exactly
+        // once, at the point of interpolation. If this test ever flips
+        // to idempotent, something changed the replace semantics and
+        // docs need updating too.
+        let out = Spi::get_one::<String>("SELECT pgweb.html_escape('&amp;')")
+            .expect("query should not error")
+            .expect("query should return a row");
+        assert_eq!(out, "&amp;amp;");
     }
 }

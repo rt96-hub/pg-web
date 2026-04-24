@@ -277,6 +277,32 @@ ok "push: 1 asset reconciled away"
 code=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE_URL/smoke.css")
 assert_status "$code" "404" "GET /smoke.css after delete+push"
 
+# --- 8. pgweb.html_escape renders safely end-to-end -----------------
+
+step "8. pgweb.html_escape escapes user input at the SQL layer"
+# Raw-text handler (no .html sibling). The route returns text directly;
+# Tera never sees the bytes, so whatever `pgweb.html_escape` produces is
+# literally what the client gets. That's the tight end-to-end check: if
+# the helper isn't installed, missing, or wrong, the response body
+# differs from the expected entity string.
+mkdir -p "$SMOKE_DIR/pages/escape"
+cat > "$SMOKE_DIR/pages/escape/index.sql" <<'SQL'
+CREATE OR REPLACE FUNCTION pgweb.pages__escape__index(req json) RETURNS text AS $$
+    SELECT pgweb.html_escape(req->'query'->>'in')
+$$ LANGUAGE sql STABLE;
+SQL
+"$BIN" push >/dev/null
+ok "push accepted /escape raw-text route"
+
+# URL-encoded payload is <script>alert('x')</script>.
+http GET "/escape?in=%3Cscript%3Ealert(%27x%27)%3C%2Fscript%3E"
+code="$SMOKE_CODE"; body="$SMOKE_BODY"
+assert_status "$code" "200" "GET /escape with html-ish input"
+assert_contains "$body" "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;" \
+    "html_escape produced fully-escaped entities"
+assert_not_contains "$body" "<script>" "raw <script> tag absent from body"
+assert_not_contains "$body" "alert('x')" "raw single-quoted alert absent from body"
+
 # --- done -----------------------------------------------------------
 
 printf "\n\033[1;32m✓ smoke-cli: all assertions passed\033[0m\n"
