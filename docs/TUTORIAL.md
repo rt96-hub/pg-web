@@ -224,6 +224,71 @@ Type something in the form and hit Add. The new `<li>` appears at the bottom wit
 
 Reload the page fresh — the list persists because the data is in Postgres, not anywhere transient.
 
+### What if the title is empty?
+
+Try submitting a single space. (Purely-empty submissions are blocked by the input's `required` attribute in the browser; whitespace gets through.) You'll get a 500 error page.
+
+That's because the `CHECK (length(trim(title)) > 0)` constraint in the migration bounces the insert, and the handler has no catch. The framework surfaces it as `PGWEB_E003_HANDLER_SQL_EXCEPTION` in dev mode and a generic 500 in production — neither is what a user should see. Let Postgres validate; catch the exception in the handler and return an inline error.
+
+Rewrite `pages/todos/post.sql` as a PL/pgSQL function with an `EXCEPTION` block:
+
+```sql
+CREATE OR REPLACE FUNCTION pgweb.pages__todos__post(req json) RETURNS json AS $fn$
+DECLARE
+  v_title text := trim(COALESCE(req->'body'->>'title', ''));
+  v_id    bigint;
+  v_done  boolean;
+BEGIN
+  INSERT INTO public.todos (title)
+  VALUES (v_title)
+  RETURNING id, done INTO v_id, v_done;
+
+  RETURN json_build_object(
+    'success', true,
+    'todo',    json_build_object('id', v_id, 'title', v_title, 'done', v_done)
+  );
+EXCEPTION WHEN check_violation THEN
+  RETURN json_build_object(
+    'success', false,
+    'error',   'Title cannot be empty.'
+  );
+END;
+$fn$ LANGUAGE plpgsql;
+```
+
+Update `pages/todos/post.html` so the template dispatches on the `success` flag:
+
+```html
+{%- if success -%}
+<li>{{ todo.title }}</li>
+<div id="form-error" hx-swap-oob="true"></div>
+{%- else -%}
+<div id="form-error" hx-swap-oob="true">{{ error }}</div>
+{%- endif -%}
+```
+
+Finally, give the error somewhere to land — add an empty `<div id="form-error">` below the form in `pages/index.html`:
+
+```html
+<form ...> ... </form>
+
+<div id="form-error"></div>
+
+<ul id="todos"> ... </ul>
+```
+
+Push and try the empty / whitespace submission again. The error renders inline next to the form — no page reload, no 500.
+
+**How it works:**
+
+- `BEGIN ... EXCEPTION WHEN check_violation` is PL/pgSQL's try/catch. Any SQLSTATE `23514` raised inside the block is caught.
+- The handler always returns a JSON object. On success, `{success: true, todo: {...}}`; on failure, `{success: false, error: "..."}`. Template dispatches on `success`.
+- On success, the template emits the new `<li>` (appended via `hx-swap="beforeend"` into `#todos`) AND an empty `<div id="form-error" hx-swap-oob="true"></div>` that clears any prior error.
+- On failure, the template emits only the error div. HTMX sees `hx-swap-oob="true"` with matching `id="form-error"` in the DOM, does an outerHTML swap there, and the main target gets nothing to append.
+- One response, two swap destinations — no extra round trip.
+
+Other exception classes follow the same shape: `WHEN unique_violation` for duplicate-key, `WHEN foreign_key_violation` for missing parent rows, and so on. Each can return a tailored error message.
+
 ## Step 6 — Toggle
 
 Each row gets Toggle/Delete buttons. First, update the index + fragment templates to render the buttons. Replace `<li>{{ todo.title }}</li>` in both `pages/index.html` and `pages/todos/post.html` with:

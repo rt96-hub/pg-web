@@ -36,7 +36,7 @@ Goal: `examples/demo/` is a fully functional todo list with real DB interactions
 - [x] Companion app at `examples/demo/` — full todo CRUD with HTMX form (create / append), toggle (outerHTML swap), delete (empty-body swap), custom 404 page.
 - [x] `README.md` in `examples/demo/` + `docs/TUTORIAL.md` walking through building the same app from `pg-web init`.
 - [x] Tier 3 Docker E2E test — `testcontainers` boots `pgweb/postgres:latest`, runs `migrate apply` + `push` against the demo, exercises CRUD over HTTP.
-- [ ] **Deferred to M1.4:** user-facing validation UX (`check_violation` rendered inline via `hx-swap-oob` and/or a dev error page), `pgweb.html_escape()` helper. Currently empty submissions surface as a 500. Acceptable gap for Session 2's contracts-first focus.
+- [x] **Deferred to M1.4, shipped Session 4:** user-facing validation UX (`check_violation` caught in a PL/pgSQL `EXCEPTION` block, rendered inline via `hx-swap-oob`), `pgweb.html_escape()` helper. Demo's POST `/todos` now returns an inline error fragment for empty/whitespace titles instead of a 500.
 - [ ] **Deferred to M1.2:** `public/` static asset serving (the demo ships with inline CSS for now; `public/` exists empty).
 
 ### Milestone 1.2 — Interactive Dev Loop (Session 3 next)
@@ -59,8 +59,8 @@ Goal: a developer can run `pg-web dev`, save a `.sql` file, and see the change r
 Goal: close out Phase 1 for a releasable v0.1.
 
 - [ ] CLI `pg-web env set KEY=VAL` / `env list` / `env unset KEY` — GUC injection for secrets.
-- [ ] SQL helper `pgweb.html_escape(text) → text` shipped in the extension's install SQL for raw-text-return handlers that interpolate user content.
-- [ ] User-facing validation UX: `check_violation` / `unique_violation` exceptions in handlers render inline via `hx-swap-oob` (or a framework-provided error fragment). Currently surfaces as plain 500.
+- [x] SQL helper `pgweb.html_escape(text) → text` shipped in the extension's install SQL for raw-text-return handlers that interpolate user content. (Session 4 / Component A.)
+- [x] User-facing validation UX: `check_violation` / `unique_violation` exceptions in handlers render inline via `hx-swap-oob`. Demo's POST `/todos` demonstrates the pattern; empty/whitespace-only title → 200 + inline error fragment, no 500. (Session 4 / Component B.)
 - [ ] Asset serving in the demo app with a large asset (image via `pg_largeobject`).
 - [ ] `pg-web push` polished for prod deploy (transaction-wrapped, migration-runner integrated).
 - [ ] CLI `pg-web init --template <name>` — fetches a named example (initially `todo-demo`) from this repo's `examples/` tree and drops it into the user's directory. Mirrors Next.js's `create-next-app --example <name>` pattern. Opt-in; plain `init` stays the minimal hello-world scaffold.

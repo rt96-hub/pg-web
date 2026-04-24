@@ -17,6 +17,8 @@
     <button>Add</button>
   </form>
 
+  <div id="form-error" class="form-error"></div>
+
   <ul id="todos">
     {% for todo in todos %}
       <li class="{% if todo.done %}done{% endif %}">

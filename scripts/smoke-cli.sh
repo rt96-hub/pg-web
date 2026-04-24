@@ -303,6 +303,69 @@ assert_contains "$body" "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;" \
 assert_not_contains "$body" "<script>" "raw <script> tag absent from body"
 assert_not_contains "$body" "alert('x')" "raw single-quoted alert absent from body"
 
+# --- 9. form-validation pattern: EXCEPTION → inline error ------------
+
+step "9. handler catches check_violation → inline error (200, not 500)"
+# Pure smoke setup (no migrations / no table): the handler uses RAISE
+# with SQLSTATE 23514 (check_violation) to simulate the same failure a
+# real table CHECK would cause, then catches it in its EXCEPTION block
+# and returns an inline error fragment. Exercises the Component B
+# pattern end-to-end in the black-box smoke layer.
+mkdir -p "$SMOKE_DIR/pages/echoform"
+cat > "$SMOKE_DIR/pages/echoform/post.sql" <<'SQL'
+CREATE OR REPLACE FUNCTION pgweb.pages__echoform__post(req json) RETURNS text AS $fn$
+DECLARE
+  v_body text := trim(COALESCE(req->'body'->>'body', ''));
+BEGIN
+  IF length(v_body) = 0 THEN
+    RAISE EXCEPTION 'body cannot be empty' USING ERRCODE = '23514';
+  END IF;
+  RETURN '<p class="ok">Saved: ' || pgweb.html_escape(v_body) || '</p>';
+EXCEPTION WHEN check_violation THEN
+  RETURN '<p id="form-error" hx-swap-oob="true">Body cannot be empty.</p>';
+END;
+$fn$ LANGUAGE plpgsql;
+SQL
+"$BIN" push >/dev/null
+ok "push accepted /echoform raw-text handler"
+
+# Happy path: non-empty body survives, gets html_escape'd before echo.
+code=$(curl -sS -o /tmp/smoke-echoform-ok \
+    -w "%{http_code}" \
+    -X POST \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data 'body=hello%20%3Cworld%3E' \
+    "$BASE_URL/echoform")
+assert_status "$code" "200" "POST /echoform with real body"
+body=$(cat /tmp/smoke-echoform-ok)
+assert_contains "$body" "Saved: hello &lt;world&gt;" "happy path echoes escaped"
+assert_not_contains "$body" "<world>" "raw <world> tag absent"
+
+# Empty body: handler RAISEs, catches, returns inline error.
+code=$(curl -sS -o /tmp/smoke-echoform-err \
+    -w "%{http_code}" \
+    -X POST \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data 'body=' \
+    "$BASE_URL/echoform")
+assert_status "$code" "200" "POST /echoform with empty body (NOT 500)"
+body=$(cat /tmp/smoke-echoform-err)
+assert_contains "$body" "Body cannot be empty" "inline error rendered"
+assert_contains "$body" 'hx-swap-oob="true"' "error targets OOB swap"
+assert_not_contains "$body" "PGWEB_E003" "no dev error page leaked"
+assert_not_contains "$body" "SQLSTATE" "no SQLSTATE leaked"
+
+# Whitespace-only body: trim() path, same check_violation, same handling.
+code=$(curl -sS -o /tmp/smoke-echoform-ws \
+    -w "%{http_code}" \
+    -X POST \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data 'body=%20%20%20' \
+    "$BASE_URL/echoform")
+assert_status "$code" "200" "POST /echoform with whitespace-only body"
+body=$(cat /tmp/smoke-echoform-ws)
+assert_contains "$body" "Body cannot be empty" "whitespace trimmed + caught"
+
 # --- done -----------------------------------------------------------
 
 printf "\n\033[1;32m✓ smoke-cli: all assertions passed\033[0m\n"

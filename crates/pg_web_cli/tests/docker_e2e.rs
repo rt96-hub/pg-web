@@ -142,12 +142,63 @@ fn full_todo_crud_flow() {
         body.contains("buy milk"),
         "new <li> fragment should contain the title, got: {body}"
     );
+    // Successful insert clears any prior error via an OOB-swapped empty
+    // #form-error div (see pages/todos/post.html).
+    assert!(
+        body.contains(r#"id="form-error""#) && body.contains(r#"hx-swap-oob="true""#),
+        "success response should include the OOB-clear div, got: {body}"
+    );
 
     // The first insert gets id=1 on a clean DB.
     let body = get(&client, &base_url, "/");
     assert!(
         body.contains("buy milk"),
         "index should now include the new todo, got: {body}"
+    );
+
+    // --- Validation UX: empty / whitespace-only title → inline error ---
+    // The table's CHECK (length(trim(title)) > 0) is caught by the
+    // handler's EXCEPTION WHEN check_violation; response is 200 with an
+    // OOB error fragment rather than 500 + dev error page. Exercises
+    // M1.4 Component B (form-validation pattern).
+    let body = post_form(&client, &base_url, "/todos", "title=");
+    assert!(
+        body.contains("Title cannot be empty"),
+        "empty title should return inline error, got: {body}"
+    );
+    assert!(
+        body.contains(r#"id="form-error""#) && body.contains(r#"hx-swap-oob="true""#),
+        "error response should use OOB swap to #form-error, got: {body}"
+    );
+    assert!(
+        !body.contains("PGWEB_E003"),
+        "empty title must NOT surface the dev error page, got: {body}"
+    );
+    assert!(
+        !body.contains("internal server error"),
+        "empty title must NOT surface a generic 500, got: {body}"
+    );
+
+    // Whitespace-only title should also trip the CHECK — `trim()` in the
+    // handler collapses "   " to "" before insert.
+    let body = post_form(&client, &base_url, "/todos", "title=+++");
+    assert!(
+        body.contains("Title cannot be empty"),
+        "whitespace-only title should also return inline error, got: {body}"
+    );
+    assert!(
+        !body.contains("PGWEB_E003"),
+        "whitespace-only title must NOT surface the dev error page, got: {body}"
+    );
+
+    // Verify the failed inserts didn't leave orphan rows. An empty-title
+    // row would render as <span class="title"></span>; the existing
+    // "buy milk" row has content there. Matching the empty-span form is
+    // the tight signal for "the CHECK actually blocked the insert."
+    let body = get(&client, &base_url, "/");
+    assert!(
+        !body.contains(r#"<span class="title"></span>"#),
+        "failed inserts should not create empty-title rows, got: {body}"
     );
 
     // --- Dynamic route: /todos/:id detail view ---

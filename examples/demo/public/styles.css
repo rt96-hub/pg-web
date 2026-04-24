@@ -9,3 +9,5 @@ li { padding: 0.6rem 0.25rem; border-bottom: 1px solid #eee; display: flex; just
 li.done span.title { color: #888; text-decoration: line-through; }
 li .actions { display: flex; gap: 0.25rem; flex-shrink: 0; }
 .empty { color: #888; font-style: italic; padding: 1rem 0; }
+.form-error { color: #c0392b; font-size: 0.9rem; min-height: 1.2rem; margin: -1rem 0 1rem; }
+.form-error:empty { display: none; }

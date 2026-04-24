@@ -1,16 +1,38 @@
--- POST /todos — create a new todo.
+-- POST /todos — create a new todo, or return an inline error on
+-- check_violation. Demonstrates the Phase 1 form-validation pattern
+-- (see docs/APP-DEVELOPER-GUIDE.md § Forms & validation).
 --
--- Inserts and returns the new row so Tera can render pages/todos/post.html
--- (the single-<li> fragment appended to the list via hx-swap="beforeend").
+-- Handler stays `RETURNS json`; it always succeeds. The `success` flag
+-- tells the Tera template (pages/todos/post.html) which branch to
+-- render: the <li> fragment for append-to-list OR an OOB-swapped error
+-- div targeting #form-error in the index.
 --
--- NULLIF(trim(...), '') turns a whitespace-only title into NULL, which
--- trips the NOT NULL constraint and surfaces a 500 to the browser. Phase
--- 1 has no user-facing validation UX yet — see docs/ROADMAP.md.
+-- COALESCE(..., '') + trim() normalizes missing / NULL / whitespace-
+-- only inputs to empty string. That way the table's CHECK
+-- (length(trim(title)) > 0) is the single source of validation truth;
+-- we don't duplicate the rule in the handler.
 
-CREATE OR REPLACE FUNCTION pgweb.pages__todos__post(req json) RETURNS json AS $$
+CREATE OR REPLACE FUNCTION pgweb.pages__todos__post(req json) RETURNS json AS $fn$
+DECLARE
+  v_title text := trim(COALESCE(req->'body'->>'title', ''));
+  v_id    bigint;
+  v_done  boolean;
+BEGIN
   INSERT INTO public.todos (title)
-  VALUES (NULLIF(trim(req->'body'->>'title'), ''))
-  RETURNING json_build_object(
-    'todo', json_build_object('id', id, 'title', title, 'done', done)
-  )
-$$ LANGUAGE sql;
+  VALUES (v_title)
+  RETURNING id, done INTO v_id, v_done;
+
+  RETURN json_build_object(
+    'success', true,
+    'todo',    json_build_object('id', v_id, 'title', v_title, 'done', v_done)
+  );
+EXCEPTION WHEN check_violation THEN
+  -- Empty / whitespace-only title rejected by the table's CHECK.
+  -- Return a success=false payload so the template renders an inline
+  -- error fragment instead of surfacing a 500.
+  RETURN json_build_object(
+    'success', false,
+    'error',   'Title cannot be empty.'
+  );
+END;
+$fn$ LANGUAGE plpgsql;

@@ -340,17 +340,31 @@ DECLARE
 BEGIN
   INSERT INTO users(email, password_hash)
   VALUES (v_email, crypt(v_pw, gen_salt('bf', 12)));
-  RETURN json_build_object('ok', true);
+  RETURN json_build_object('success', true);
 EXCEPTION
   WHEN unique_violation THEN
-    RETURN json_build_object('ok', false, 'error', 'Email already taken');
+    RETURN json_build_object('success', false, 'error', 'Email already taken');
   WHEN check_violation THEN
-    RETURN json_build_object('ok', false, 'error', 'Invalid input');
+    RETURN json_build_object('success', false, 'error', 'Invalid input');
 END;
 $$ LANGUAGE plpgsql;
 ```
 
-Your `pages/signup/post.html` template branches on `{% if ok %}` vs `{% else %}`. HTMX's `hx-swap-oob="true"` lets you update multiple page regions from one response.
+Your `pages/signup/post.html` template branches on `{% if success %}` vs `{% else %}`. HTMX's `hx-swap-oob="true"` lets you update a separate region (e.g. a `<div id="form-error">` next to the form) from the same response, so the main target still receives the success fragment on happy path and the error lands beside the form on failure.
+
+**Live reference:** `examples/demo/pages/todos/post.sql` + `pages/todos/post.html` + `pages/index.html` exercise this pattern end-to-end. The table's `CHECK (length(trim(title)) > 0)` on `public.todos` is the validation rule; the handler catches `check_violation` and the template dispatches between an appended `<li>` (success) and an OOB `#form-error` fragment (failure).
+
+### Escaping user input in raw-text handlers
+
+When you return text directly from a handler (no `.html` template sibling), Tera is not in the render path — nothing auto-escapes the bytes you emit. Use `pgweb.html_escape(text)` to make user input safe to interpolate inline:
+
+```sql
+CREATE OR REPLACE FUNCTION pgweb.pages__search__post(req json) RETURNS text AS $$
+  SELECT '<p>No results for "' || pgweb.html_escape(req->'body'->>'q') || '".</p>'
+$$ LANGUAGE sql;
+```
+
+Escapes the five HTML-unsafe characters (`&`, `<`, `>`, `"`, `'`). `STRICT`, so NULL input → NULL output without extra ceremony. Handlers returning via a Tera template don't need this — Tera's default `{{ var }}` already escapes — but it's the right tool whenever you're concatenating strings into raw HTML.
 
 ## What you DON'T have to do
 
@@ -378,10 +392,11 @@ Your `pages/signup/post.html` template branches on `{% if ok %}` vs `{% else %}`
 | ~~Dynamic route patterns (`[id]` capture → `req.path_params`)~~ | M1.2 ✓   |
 | ~~Dev error page (typed catalog + rich SQL overlay)~~           | M1.2 ✓   |
 | ~~Static asset serving (`public/*` → HTTP)~~                    | M1.2 ✓   |
+| ~~`pgweb.html_escape()` SQL helper~~                            | M1.4 ✓   |
+| ~~User-facing form validation UX (inline error via `check_violation`)~~ | M1.4 ✓   |
 | Browser live-reload push (WS/SSE; auto-F5 on save)              | M1.4     |
 | CLI `pg-web env set/unset/list` (secrets via GUC)               | M1.4     |
 | CLI `pg-web check` (project validator)                          | M1.4     |
-| `pgweb.html_escape()` SQL helper                                | M1.4     |
 | Declarative schema-diffing (`migrate create`)                   | Phase 2.5 |
 | Auth + sessions + RLS bridge                                    | Phase 2   |
 | Async job queue                                                 | Phase 3   |

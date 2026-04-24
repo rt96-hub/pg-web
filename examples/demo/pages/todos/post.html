@@ -1,3 +1,4 @@
+{%- if success -%}
 <li class="{% if todo.done %}done{% endif %}">
   <span class="title">{{ todo.title }}</span>
   <span class="actions">
@@ -11,3 +12,7 @@
             hx-swap="outerHTML">Delete</button>
   </span>
 </li>
+<div id="form-error" class="form-error" hx-swap-oob="true"></div>
+{%- else -%}
+<div id="form-error" class="form-error" hx-swap-oob="true">{{ error }}</div>
+{%- endif -%}
