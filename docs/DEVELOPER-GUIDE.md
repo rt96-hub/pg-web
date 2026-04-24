@@ -333,3 +333,15 @@ bash scripts/build-image.sh
 ```
 `scripts/test-all.sh` deliberately does **not** rebuild — a couple of minutes of image build on every test run would wreck the dev loop, so rebuild is on the author's conscience when the touched tier crosses the Docker boundary. Tier 1 (`cargo pgrx test`) and tier 2 (CLI unit/integration) test the current source tree directly and are immune. Hit in Session 4 Component A: the new `pgweb.html_escape` function passed tier 1 and tier 2b, then tier 3 ran against a pre-Component-A image where the function didn't exist, producing a baffling "the test calls it but the DB doesn't know it" until the build-image step was re-run.
 
+### 14. Git Bash eats `$?` from `wsl -- bash -c '...'` — inner exit code is invisible
+
+Running `wsl -d Ubuntu-22.04 -u pgweb -- bash -c 'cmd; echo $?'` from Git Bash does **not** report `cmd`'s exit code — you get `0` (or whatever the outer Git Bash's `$?` happens to be) regardless of whether the inner command succeeded or failed. MSYS2 bash's argument-passing layer performs early dollar expansion when invoking native (non-MSYS) executables like `wsl.exe`, so `$?` is resolved against the *outer* shell before the string ever reaches inner WSL bash. Standard Linux bash doesn't do this; it's MSYS2-specific. The real bite is silent false negatives: any shell-orchestrated test or script that gates on exit codes from WSL will look green when it should be red.
+
+**Fix:**
+- Escape the dollar so inner bash sees it: `wsl -u pgweb -- bash -c 'false; echo "exit=\$?"'` → `exit=1`.
+- Persist the code to a file: `cmd > /tmp/out 2>&1; echo \$? > /tmp/rc; cat /tmp/rc`.
+- Use explicit short-circuit logic instead of reading `$?`: `cmd && echo ok || echo fail`.
+- Put the whole thing in a `.sh` script under `/home/pgweb/...` and invoke that — no outer-shell expansion to worry about.
+
+Hit in Session 4 Component E: spent ~20 min chasing why `pg-web check`'s `return Ok(ExitCode::FAILURE)` seemingly didn't propagate, even auditing Rust's `ExitCode`/`Termination` wiring. The code was correct — Git Bash was eating the `$?`. Narrower than #5 (which covers the broad path-translation / variable-eating class); this one is specifically about exit-code visibility so a future maintainer grepping for "exit code" lands here fast.
+
