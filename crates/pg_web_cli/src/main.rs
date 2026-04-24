@@ -19,6 +19,11 @@ enum Command {
     Init {
         /// Directory name for the new app (also used inside generated templates).
         name: String,
+        /// Scaffold from a bundled example instead of the minimal hello-world.
+        /// Run without the flag first to see what the minimal scaffold looks
+        /// like; run with `--template demo` for the full HTMX todo list.
+        #[arg(long, value_name = "NAME")]
+        template: Option<String>,
     },
     /// Sync the current pg-web app directory into a running Postgres.
     ///
@@ -139,14 +144,20 @@ fn main() -> ExitCode {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Init { name } => {
+        Command::Init { name, template } => {
             let path = PathBuf::from(&name);
-            pg_web_cli::init::init(&path, &name)?;
+            pg_web_cli::init::init(&path, &name, template.as_deref())?;
             println!("✓ scaffolded {}", path.display());
             println!();
             println!("Next steps:");
             println!("  cd {name}");
             println!("  pg-web up");
+            // The demo template needs a migrate before its handlers can
+            // run against public.todos; the minimal scaffold has an
+            // empty migrations/ and doesn't. Guide the user accordingly.
+            if matches!(template.as_deref(), Some("demo")) {
+                println!("  pg-web migrate apply");
+            }
             println!("  pg-web push");
             println!("  # then hit http://localhost:8080");
         }

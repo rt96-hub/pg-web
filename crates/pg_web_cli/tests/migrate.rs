@@ -26,7 +26,7 @@ fn refuses_when_migrations_dir_missing() {
 fn refuses_bad_connection_url() {
     let dir = tempdir().unwrap();
     let app = dir.path().join("app");
-    pg_web_cli::init::init(&app, "dummy").unwrap();
+    pg_web_cli::init::init(&app, "dummy", None).unwrap();
     // seed a migration file so we get past discovery to the connect step
     fs::write(app.join("migrations/0001_init.sql"), "SELECT 1;").unwrap();
 
@@ -39,7 +39,7 @@ fn discover_picks_up_init_scaffolded_gitkeep_without_treating_it_as_migration() 
     // `pg-web init` scaffolds `migrations/.gitkeep`. discover() should ignore it.
     let dir = tempdir().unwrap();
     let app = dir.path().join("app");
-    pg_web_cli::init::init(&app, "scaffold-test").unwrap();
+    pg_web_cli::init::init(&app, "scaffold-test", None).unwrap();
     let found = pg_web_cli::migrate::discover(&app.join("migrations")).unwrap();
     assert!(
         found.is_empty(),

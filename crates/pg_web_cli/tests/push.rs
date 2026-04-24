@@ -26,7 +26,7 @@ fn refuses_bad_connection_url() {
     let dir = tempdir().unwrap();
     // Give it a pages/ dir so we get past the filesystem check and onto connect
     let app = dir.path().join("app");
-    pg_web_cli::init::init(&app, "dummy").unwrap();
+    pg_web_cli::init::init(&app, "dummy", None).unwrap();
 
     // Bad host that should not resolve / connect
     let result = pg_web_cli::push::push(&app, "postgres://nobody@127.0.0.1:1/nope");

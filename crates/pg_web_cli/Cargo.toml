@@ -45,6 +45,12 @@ tera = "1"
 # (which we'd want anyway-blocked for BYTEA-backed text).
 mime_guess = "2"
 
+# init: bundle examples/<name>/ directory trees into the CLI binary so
+# `pg-web init --template <name>` works without assuming the repo layout
+# is present on the target filesystem. Trees are embedded at compile
+# time; runtime cost is ~zero, binary size grows by template total.
+include_dir = "0.7"
+
 [dev-dependencies]
 tempfile = "3"
 

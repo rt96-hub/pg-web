@@ -112,6 +112,103 @@ pub const GITIGNORE: &str = r#".env
 .DS_Store
 "#;
 
+pub const README_MINIMAL: &str = r#"# {APP}
+
+A pg-web app. Routes + templates + handlers live under `pages/`, schema under `migrations/`, static assets under `public/`.
+
+## Quick start
+
+```bash
+pg-web up          # boots Postgres + the HTTP server, resolves DATABASE_URL
+pg-web push        # syncs pages/ / public/ / pgweb.toml into the DB
+# visit http://localhost:8080
+```
+
+Iterate without re-pushing by hand:
+
+```bash
+pg-web dev         # watches pages/ + public/, auto-pushes on save
+```
+
+## Next steps
+
+- Edit `pages/index.html` + `pages/index.sql` to change the root page.
+- Add a route by creating `pages/<name>/index.sql` (+ optional `index.html`). Every directory is a URL; the filename stem picks the HTTP method — `index` = GET, `post` = POST.
+- Add a migration as a numbered file under `migrations/` (e.g. `0001_create_users.sql`), then `pg-web migrate apply`.
+- Store runtime settings / secrets in `pgweb.settings` via `pg-web env set/unset/list`; read them from handlers with `SELECT pgweb.setting('KEY')`.
+
+## A bigger starting point
+
+```bash
+pg-web init another-app --template demo
+```
+
+scaffolds a full HTMX todo list — dynamic routes, form validation, static assets, the works.
+
+## Configuration files
+
+- `pgweb.toml` — framework config (port, `env = "development"/"production"`, watch paths).
+- `docker-compose.yml` — dev stack. Uncomment the `caddy` service for prod TLS.
+- `Caddyfile` — TLS reverse-proxy config. Set your domain.
+"#;
+
+pub const README_DEMO: &str = r#"# {APP}
+
+A pg-web todo-list demo, scaffolded from `pg-web init --template demo`. HTMX + Postgres, server-rendered, no JavaScript build step.
+
+## Run it
+
+```bash
+pg-web up                  # Postgres + HTTP stack
+pg-web migrate apply       # creates public.todos
+pg-web push                # syncs routes / templates / handlers / assets
+
+# visit http://localhost:8080
+```
+
+Add a todo via the form; toggle or delete via the row buttons. Every click round-trips through Postgres and renders the reply fragment server-side.
+
+Iterate:
+
+```bash
+pg-web dev                 # watches pages/ + public/, auto-pushes on save
+```
+
+## Layout
+
+```
+{APP}/
+├── migrations/
+│   └── 0001_create_todos.sql
+├── pages/
+│   ├── index.html                  # GET /  — list + form
+│   ├── index.sql                   # GET /  — SELECT todos → JSON
+│   ├── _404.html                   # static 404 fallback
+│   └── todos/
+│       ├── post.html               # POST /todos — success <li> or OOB error
+│       ├── post.sql                # catches check_violation inline
+│       ├── toggle/post.{html,sql}  # outerHTML swap on toggle
+│       ├── delete/post.sql         # raw-text, empty body
+│       └── [id]/index.{html,sql}   # GET /todos/:id detail view
+└── public/
+    └── styles.css
+```
+
+Three handler dispatch modes exercised:
+
+- **Dynamic** (JSON → Tera): `GET /`, `POST /todos`, `POST /todos/toggle`, `GET /todos/:id`
+- **Static** (template, no SQL handler): `GET /_404`
+- **Raw text** (SQL only, no sibling template): `POST /todos/delete`
+
+## What to look at
+
+- `pages/todos/post.sql` + `post.html` — the `check_violation` → inline error pattern. Empty title triggers an HTMX OOB swap instead of a 500.
+- `migrations/0001_create_todos.sql` — the table `CHECK` is the validation rule; the handler just surfaces it.
+- `pages/todos/[id]/` — dynamic route capture, `req.path_params.id`.
+
+`docs/TUTORIAL.md` in the pg-web repo walks through building this from scratch.
+"#;
+
 /// Substitute the `{APP}` placeholder with the actual app name. The
 /// placeholder is deliberately chosen to never occur in valid template
 /// content (no brace + "APP" + brace in our templates except as markers).

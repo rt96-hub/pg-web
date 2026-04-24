@@ -224,7 +224,7 @@ Checked items are covered; unchecked are next. Grouped by milestone. This matrix
 | Secrets via `pgweb.settings` | `pg-web env set` + `pgweb.setting()` read in handler | M1.4 | ☑ |
 | Production 500 page | Dev error path flipped to prod mode | M1.4 | ☐ |
 | `pg-web check` lint | Offline project validator | M1.4 | ☐ |
-| `pg-web init --template todo-demo` | Scaffold the todo app straight from `examples/` | M1.4 | ☐ |
+| `pg-web init --template demo` | Scaffold the todo app straight from bundled `examples/demo/` | M1.4 | ☑ |
 | `pgweb.html_escape()` SQL helper | Raw-text handler with user content | M1.4 | ☑ |
 | **Phase 2** — auth | Login, logout, RLS-filtered todo list | P2 | ☐ |
 | **Phase 3** — async job | Email confirmation on signup | P3 | ☐ |

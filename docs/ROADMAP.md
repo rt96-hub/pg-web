@@ -63,8 +63,8 @@ Goal: close out Phase 1 for a releasable v0.1.
 - [x] User-facing validation UX: `check_violation` / `unique_violation` exceptions in handlers render inline via `hx-swap-oob`. Demo's POST `/todos` demonstrates the pattern; empty/whitespace-only title → 200 + inline error fragment, no 500. (Session 4 / Component B.)
 - [ ] Asset serving in the demo app with a large asset (image via `pg_largeobject`).
 - [ ] `pg-web push` polished for prod deploy (transaction-wrapped, migration-runner integrated).
-- [ ] CLI `pg-web init --template <name>` — fetches a named example (initially `todo-demo`) from this repo's `examples/` tree and drops it into the user's directory. Mirrors Next.js's `create-next-app --example <name>` pattern. Opt-in; plain `init` stays the minimal hello-world scaffold.
-- [ ] Init scaffold gets a `README.md` — small DX follow-up noted in Session 2.
+- [x] CLI `pg-web init --template <name>` — bundles `examples/<name>/` into the binary via `include_dir!` and extracts it into the user's directory on `init`. `--template demo` ships today (the HTMX todo list); adding new templates is one `include_dir!` call + one match arm. Plain `init` stays the minimal hello-world. (Session 4 / Component D.)
+- [x] Init scaffold (both paths) now writes a `README.md` with quickstart commands, a pointer to `docs/APP-DEVELOPER-GUIDE.md` + `docs/TUTORIAL.md`, and the `--template demo` hint for users who want more starting material. (Session 4 / Component D.)
 - [ ] CLI `pg-web check` — offline project validator (no IDE/LSP). Walks `pages/`, `migrations/`, `pgweb.toml`; reports:
   - Layout violations (flat `.html` under `pages/`, reserved stems, missing sibling files when required).
   - Tera template parse errors (compile templates, don't render).
