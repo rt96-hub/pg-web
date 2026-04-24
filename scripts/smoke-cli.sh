@@ -424,6 +424,58 @@ assert_contains "$body" "(unset)" "COALESCE fallback triggers after unset"
 unset_again=$("$BIN" env unset SMOKE_TOKEN)
 assert_contains "$unset_again" "no-op" "repeat unset is idempotent no-op"
 
+# --- 11. pg-web check — offline validator -----------------------------
+
+step "11. pg-web check on the live smoke app (clean state) → exit 0"
+# The scaffold went through init + up + push + a bunch of edits. The
+# minimal scaffold SHOULD check clean; this is also a regression guard
+# on section 1's `init` output.
+set +e
+check_out=$("$BIN" check 2>&1)
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "check should exit 0 on clean scaffold, got $rc; output:\n$check_out"
+assert_contains "$check_out" "no findings" "clean scaffold reports no findings"
+
+step "12. pg-web check catches a broken migration (SQL parse) → exit 1"
+# Drop a typo migration into migrations/ and confirm check flags it
+# with a diagnostic, non-zero exit, and does NOT touch the DB.
+mkdir -p "$SMOKE_DIR/migrations"
+cat > "$SMOKE_DIR/migrations/0999_typo.sql" <<'SQL'
+CRATE TABLE oops (id int);
+SQL
+
+set +e
+check_out=$("$BIN" check 2>&1)
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]] || fail "check should exit non-zero on bad migration, got 0; output:\n$check_out"
+assert_contains "$check_out" "0999_typo.sql" "finding names the offending file"
+assert_contains "$check_out" "CRATE" "diagnostic surfaces the parser's unexpected token"
+
+# Clean up so subsequent sections (if any) see a clean state.
+rm "$SMOKE_DIR/migrations/0999_typo.sql"
+
+step "13. pg-web check catches a broken Tera template → exit 1"
+mkdir -p "$SMOKE_DIR/pages/checktpl"
+cat > "$SMOKE_DIR/pages/checktpl/index.html" <<'HTML'
+{% if x %}unclosed block
+HTML
+cat > "$SMOKE_DIR/pages/checktpl/index.sql" <<'SQL'
+CREATE OR REPLACE FUNCTION pgweb.pages__checktpl__index(req json) RETURNS json AS $$
+    SELECT '{}'::json
+$$ LANGUAGE sql STABLE;
+SQL
+
+set +e
+check_out=$("$BIN" check 2>&1)
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]] || fail "check should exit non-zero on bad Tera, got 0; output:\n$check_out"
+assert_contains "$check_out" "checktpl/index.html" "finding names the offending template"
+
+rm -rf "$SMOKE_DIR/pages/checktpl"
+
 # --- done -----------------------------------------------------------
 
 printf "\n\033[1;32m✓ smoke-cli: all assertions passed\033[0m\n"

@@ -223,7 +223,7 @@ Checked items are covered; unchecked are next. Grouped by milestone. This matrix
 | Static asset (large, pg_largeobject) | `public/hero.jpg` banner image | M1.4 | ☐ |
 | Secrets via `pgweb.settings` | `pg-web env set` + `pgweb.setting()` read in handler | M1.4 | ☑ |
 | Production 500 page | Dev error path flipped to prod mode | M1.4 | ☐ |
-| `pg-web check` lint | Offline project validator | M1.4 | ☐ |
+| `pg-web check` lint | Offline project validator (sqlparser + Tera, pre-commit/CI gate) | M1.4 | ☑ |
 | `pg-web init --template todo` | Scaffold the todo app straight from bundled `examples/todo/` | M1.4 | ☑ |
 | `pgweb.html_escape()` SQL helper | Raw-text handler with user content | M1.4 | ☑ |
 | **Phase 2** — auth | Login, logout, RLS-filtered todo list | P2 | ☐ |

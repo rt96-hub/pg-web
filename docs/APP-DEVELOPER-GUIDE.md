@@ -401,6 +401,44 @@ $$ LANGUAGE sql;
 
 **What this is not.** The CLI writes values in cleartext; encrypted secrets / KMS integration are Phase 2. Don't store anything the DB admin shouldn't be able to `SELECT`. For TLS-at-rest, use a PG instance with disk encryption; for TLS-in-transit, use `sslmode=require` on the connection URL.
 
+## Pre-commit / CI: `pg-web check`
+
+`pg-web check` is an offline project validator — runs the same up-front checks that `pg-web push` does (layout, Tera parse, SQL syntax, migration filename rules) but without needing a DB. Drop it in a pre-commit hook or a CI gate; exit code is 0 clean, non-zero on any finding.
+
+```bash
+pg-web check
+```
+
+Passes when:
+- `pages/` conforms to the layout spec (directory-as-route, reserved stems, no flat HTML at root).
+- Every `.html` parses under Tera.
+- Every `.sql` (handlers + migrations) parses under a Postgres dialect SQL parser.
+- Migration filenames have unique numeric prefixes (`0001_x.sql` / `0002_y.sql`…). Duplicate prefixes are flagged because filesystem order isn't guaranteed at migrate time.
+
+Doesn't check:
+- Semantic SQL (column existence, type agreement, RLS). Runtime PG does that at push / request time; this is a pre-push syntax gate.
+- PL/pgSQL function bodies past the outer `CREATE FUNCTION` wrapper. Dollar-quoted bodies are opaque to the parser; `pg-web push` validates them when PG compiles the function.
+
+Opt-in DB check:
+
+```bash
+pg-web check --url "$DATABASE_URL"
+```
+
+adds a ledger-drift pass that compares local `migrations/*.sql` to `pgweb.migrations` in the DB. Flags files applied in the DB but deleted locally (historical record lost), and files present locally but not yet applied (push/migrate reminder). The default offline surface stays intact — everything above runs without `--url`.
+
+Sample output on a broken app:
+
+```
+Migrations:
+  ./migrations/0002_typo.sql: sql parser error: Expected: an SQL statement, found: CRATE at Line: 1, Column: 1
+
+Templates:
+  ./pages/broken/index.html: Failed to parse 'index.html' — unclosed tag {% if %}
+
+✗ 2 finding(s) — fix and re-run
+```
+
 ## What you DON'T have to do
 
 - Write Rust.
@@ -430,8 +468,8 @@ $$ LANGUAGE sql;
 | ~~`pgweb.html_escape()` SQL helper~~                            | M1.4 ✓   |
 | ~~User-facing form validation UX (inline error via `check_violation`)~~ | M1.4 ✓   |
 | ~~CLI `pg-web env set/unset/list` + `pgweb.setting()` helper~~  | M1.4 ✓   |
+| ~~CLI `pg-web check` (offline project validator)~~              | M1.4 ✓   |
 | Browser live-reload push (WS/SSE; auto-F5 on save)              | M1.4     |
-| CLI `pg-web check` (project validator)                          | M1.4     |
 | Declarative schema-diffing (`migrate create`)                   | Phase 2.5 |
 | Auth + sessions + RLS bridge                                    | Phase 2   |
 | Async job queue                                                 | Phase 3   |

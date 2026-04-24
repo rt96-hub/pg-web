@@ -85,6 +85,23 @@ enum Command {
         #[command(subcommand)]
         action: EnvAction,
     },
+    /// Offline project validator — layout, Tera templates, SQL syntax,
+    /// migration order. Designed for pre-commit hooks and CI: runs
+    /// without a DB connection by default. Pass `--url` to also check
+    /// migration-ledger drift against a running Postgres.
+    ///
+    /// Exit code 0 means no findings; non-zero means one or more groups
+    /// have findings (details printed to stdout).
+    Check {
+        /// App directory to validate (defaults to cwd).
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+        /// Optional Postgres URL. Supplying it enables the ledger-drift
+        /// pass (`pgweb.migrations` vs. `migrations/*.sql`). The rest
+        /// of the check stays offline regardless.
+        #[arg(long, env = "DATABASE_URL")]
+        url: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -133,7 +150,7 @@ enum EnvAction {
 
 fn main() -> ExitCode {
     match run() {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(e) => {
             eprintln!("pg-web: error: {e:#}");
             ExitCode::FAILURE
@@ -141,7 +158,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<()> {
+fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     match cli.command {
         Command::Init { name, template } => {
@@ -225,6 +242,13 @@ fn run() -> Result<()> {
         Command::Dev { dir, no_logs } => {
             pg_web_cli::dev::dev(&dir, !no_logs)?;
         }
+        Command::Check { dir, url } => {
+            let report = pg_web_cli::check::check(&dir, url.as_deref())?;
+            print_check_report(&report);
+            if !report.is_clean() {
+                return Ok(ExitCode::FAILURE);
+            }
+        }
         Command::Env { action } => match action {
             EnvAction::Set { pair, url, dir } => {
                 let (key, value) = pg_web_cli::env::parse_pair(&pair)?;
@@ -252,7 +276,38 @@ fn run() -> Result<()> {
             }
         },
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Pretty-print a `CheckReport` to stdout. Empty groups are skipped;
+/// all groups present show a header + per-finding lines in
+/// `path: message` form so IDE / editor jump-to-file features can pick
+/// the path out with a `file:line`-style regex. Final line summarizes
+/// the count so CI logs show the gate outcome at a glance.
+fn print_check_report(report: &pg_web_cli::check::CheckReport) {
+    let groups: &[(&str, &[pg_web_cli::check::Finding])] = &[
+        ("Layout", &report.layout),
+        ("Templates", &report.templates),
+        ("SQL", &report.sql),
+        ("Migrations", &report.migrations),
+        ("Ledger", &report.ledger),
+    ];
+
+    for (name, findings) in groups {
+        if findings.is_empty() {
+            continue;
+        }
+        println!("\n{name}:");
+        for f in *findings {
+            println!("  {}: {}", f.path.display(), f.message);
+        }
+    }
+
+    if report.is_clean() {
+        println!("✓ check passed — no findings");
+    } else {
+        println!("\n✗ {} finding(s) — fix and re-run", report.total());
+    }
 }
 
 /// Pick a DATABASE_URL for commands that need one. Explicit `--url` wins;

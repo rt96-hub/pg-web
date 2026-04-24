@@ -51,6 +51,15 @@ mime_guess = "2"
 # time; runtime cost is ~zero, binary size grows by template total.
 include_dir = "0.7"
 
+# check: offline SQL validator. sqlparser is a pure-Rust SQL parser
+# with a Postgres dialect — good enough for catching typos,
+# unbalanced parens, unclosed strings, malformed DDL. Less authoritative
+# than libpg_query (which IS Postgres's own parser) but needs zero
+# system build deps, so `cargo install pg-web-cli` and CI both stay
+# friction-free. Upgrade path: swap to pg_query if stricter parsing
+# becomes necessary (adds gcc + cmake requirements).
+sqlparser = "0.52"
+
 [dev-dependencies]
 tempfile = "3"
 

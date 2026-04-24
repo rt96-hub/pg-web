@@ -64,14 +64,8 @@ Goal: close out Phase 1 for a releasable v0.1.
 - [ ] Asset serving in the demo app with a large asset (image via `pg_largeobject`).
 - [ ] `pg-web push` polished for prod deploy (transaction-wrapped, migration-runner integrated).
 - [x] CLI `pg-web init --template <name>` — bundles `examples/<name>/` into the binary via `include_dir!` and extracts it into the user's directory on `init`. `--template demo` ships today (the HTMX todo list); adding new templates is one `include_dir!` call + one match arm. Plain `init` stays the minimal hello-world. (Session 4 / Component D.)
-- [x] Init scaffold (both paths) now writes a `README.md` with quickstart commands, a pointer to `docs/APP-DEVELOPER-GUIDE.md` + `docs/TUTORIAL.md`, and the `--template demo` hint for users who want more starting material. (Session 4 / Component D.)
-- [ ] CLI `pg-web check` — offline project validator (no IDE/LSP). Walks `pages/`, `migrations/`, `pgweb.toml`; reports:
-  - Layout violations (flat `.html` under `pages/`, reserved stems, missing sibling files when required).
-  - Tera template parse errors (compile templates, don't render).
-  - SQL parse errors (via `BEGIN; ...; ROLLBACK;` against a throwaway Postgres, or `pg_query` crate for parse-only checks — decide at implementation time).
-  - Return-type mismatches (handler declared `text` but template exists, or vice versa).
-  - Migration filename ordering + ledger drift against a configured DB.
-  Output: grouped diagnostics with file + line, exit non-zero if any found. Intended as a pre-push safety net and CI gate.
+- [x] Init scaffold (both paths) now writes a `README.md` with quickstart commands, a pointer to `docs/APP-DEVELOPER-GUIDE.md` + `docs/TUTORIAL.md`, and the `--template todo` hint for users who want more starting material. (Session 4 / Component D.)
+- [x] CLI `pg-web check` — offline project validator. Walks `pages/` + `migrations/`; flags layout violations, Tera parse errors, SQL parse errors (via pure-Rust `sqlparser` with Postgres dialect — no system build deps), and migration-prefix duplicates. Grouped diagnostics, non-zero exit on findings, zero otherwise. `--url` opt-in adds a ledger-drift pass vs `pgweb.migrations`. Return-type mismatch detection deferred to v0.2 (harder; SQL-AST walking past the CREATE FUNCTION wrapper). Ships as a pre-commit / CI gate. (Session 4 / Component E.)
 - [ ] Release pipeline: CI builds Docker image, runs full test matrix (PG 15/16/17), publishes `pgweb/postgres:latest` + `pgweb/postgres:0.1` to Docker Hub / GHCR on tag.
 - [ ] Docs pass: APP-DEVELOPER-GUIDE revised against the actual demo app; TUTORIAL.md gains a chapter covering `pg-web up` / `dev` / hot reload once M1.2 ships.
 - [ ] **Browser live-reload push (WebSocket or SSE).** M1.2 ships hot-reload as file-save → DB-updated only; the browser still requires manual F5. Target UX: editor save → backend re-sync → browser auto-refresh (Vite/Next `next dev` parity). Transport choice (WS vs SSE) pending M1.2 dogfooding. **User-flagged near-term priority, explicitly deferred to M1.4 only because we want M1.2 hot-reload in production use first to see which UX friction justifies the added transport.**
