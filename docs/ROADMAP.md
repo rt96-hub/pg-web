@@ -2,6 +2,97 @@
 
 Phased delivery. Each phase must be stable, shippable, and usable on its own — no half-shipped phases. The companion app at `examples/todo/` exercises every feature of every phase.
 
+## Feature matrix — where every planned capability lives
+
+Source of truth for "what ships when" across the full plan. Status legend: **✅ shipped** / **🎯 next** / **⬜ planned** / **⏸ deferred**.
+
+### Phase 1 — Synchronous Core (`v0.1.0` shipped, `v0.2.0` in flight)
+
+| Feature | Session | Status | Notes |
+|---|---|---|---|
+| Extension scaffolding + BGW on `:8080` | 1 (M1.1) | ✅ | `crates/pg_web_ext/`; single cdylib. |
+| `CREATE EXTENSION` installs `pgweb` schema + seeds `/` | 1 (M1.1) | ✅ | `schema.rs`'s `extension_sql!` block. |
+| CLI `pg-web init` | 1 (M1.1) | ✅ | Minimal scaffold, replaced by `--template` in Session 4. |
+| CLI `pg-web push` (route/template/handler sync) | 1 (M1.1) | ✅ | Fully reconciling (upsert + delete); transactional. |
+| Docker image `pgweb/postgres:latest` | 1 (M1.1) | ✅ | Base `postgres:17`; `scripts/build-image.sh`. |
+| Handler contract `(req json) RETURNS json\|text` | 2 (M1.3) | ✅ | Request-side JSON with `body`/`query`/`method`/`path`/`path_params`. |
+| Directory-as-route + filename-as-method layout | 2 (M1.3) | ✅ | `paths::scan`; reserved-stem enforcement. |
+| `_404.html` fallback (+ optional `_404.sql`) | 2 (M1.3) | ✅ | Default 404 body if user doesn't override. |
+| Raw-SQL migrations + `pg-web migrate apply` | 2 (M1.3) | ✅ | `pgweb.migrations` ledger. |
+| Demo app (`examples/todo/`) + docker E2E tier | 2 (M1.3) | ✅ | Renamed from `examples/demo/` in Session 4. |
+| `docs/TUTORIAL.md` walkthrough | 2 (M1.3) | ✅ | End-state matches `examples/todo/`. |
+| CLI `pg-web up` / `down` (docker compose wrappers) | 3 (M1.2) | ✅ | `DATABASE_URL` auto-resolution. |
+| CLI `pg-web dev` (file watcher + hot push) | 3 (M1.2) | ✅ | notify-debouncer + Blake3 dedupe + SQL preflight. |
+| Dynamic route patterns (`[id]` → `req.path_params`) | 3 (M1.2) | ✅ | Static beats capture on specificity. |
+| Dev-mode typed error page (PGWEB_E001-E999) | 3 (M1.2) | ✅ | SQLSTATE + MESSAGE + DETAIL + handler name. |
+| Production-mode generic 500 (no internals leaked) | 3 (M1.2) | ✅ | Env-gated via `pgweb.settings.env`. |
+| Static assets from `public/*` (BYTEA + ETag) | 3 (M1.2) | ✅ | 2 MiB per-file cap; 304 on `If-None-Match`. |
+| Push-time Tera template validation | 3 (M1.2) | ✅ | Parse errors caught pre-DB. |
+| Port-shadowing preflight on `pg-web up` | 3 | ✅ | Catches stray pgrx dev PG on `:8080`. |
+| `pgweb.html_escape(text)` SQL helper | 4 (M1.4 A) | ✅ | STRICT IMMUTABLE PARALLEL SAFE; raw-text handlers. |
+| Form-validation UX (`check_violation` → inline error) | 4 (M1.4 B) | ✅ | PL/pgSQL EXCEPTION → HTMX OOB swap. |
+| CLI `pg-web env set/unset/list` | 4 (M1.4 C) | ✅ | `pgweb.settings` CRUD; reserved-key guard. |
+| `pgweb.setting(key)` SQL helper | 4 (M1.4 C) | ✅ | `STABLE STRICT PARALLEL SAFE`; NULL on miss. |
+| CLI `pg-web init --template <name>` | 4 (M1.4 D) | ✅ | `include_dir!`-bundled; `--template todo` ships. |
+| Scaffolded `README.md` on every `init` | 4 (M1.4 D) | ✅ | App-facing; distinct from repo's `examples/todo/README.md`. |
+| CLI `pg-web check` (offline validator) | 4 (M1.4 E) | ✅ | Layout + Tera + SQL parse via `sqlparser`. `--url` ledger drift. |
+| `pg-web push --dry-run` | 4 (M1.4 F.1) | ✅ | Rolls back instead of committing; output tagged. |
+| `pg-web push --with-migrate` + pending-migration gate | 4 (M1.4 F.1) | ✅ | Apply-then-push; refuse without flag. |
+| `pgweb.deployments` ops ledger | 4 (M1.4 F.1) | ✅ | One append-only row per committed push. |
+| Browser live-reload via SSE + channel-aware LISTEN | 4 (M1.4 G) | ✅ | CSS cache-bust fast path; full reload fallback. |
+| CI workflow (`.github/workflows/ci.yml`) | 4 (M1.4 J) | ✅ | `scripts/test-all.sh` on push + PR. |
+| Release workflow (tag-driven image publish) | 4 (M1.4 J) | ✅ | Pending Docker Hub creds secret. |
+| `CHANGELOG.md` + `v0.1.0` tag | 4 (M1.4 J) | ✅ | Grouped by milestone. |
+| **Push retry on serialization conflict** | **5** | **🎯 L** | Tuple-concurrently-updated race (two devs on one DB). |
+| **`pg-web push --target <name>` (SSH tunnel)** | **5** | **🎯 F.2** | `openssh` crate; `[deploy.<name>]` in `pgweb.toml`. |
+| **CLI bundled in `pgweb/postgres:latest`** | **5** | **🎯 F.3** | Also standalone `pgweb/cli:<ver>` image. |
+| **Content-hash asset filenames + `immutable` cache** | **5** | **🎯 H** | Push-time HTML rewrite; prod-mode only. |
+| **`pg_largeobject` streaming for assets ≥ 1 MiB** | **5** | **🎯 I** | Risk-flagged; may fall back to buffered 20 MiB cap. |
+| Single-dev guard (file lock) | 5 | ⬜ M (stretch) | Skip if L retry proves sufficient. |
+
+### Phase 2 — Auth + realtime + declarative schema
+
+| Feature | Status | Notes |
+|---|---|---|
+| Cookie sessions + login/logout flow | ⬜ | Framework-provided or opt-in? Decision at Session 6 kickoff. |
+| `req.session` handler field | ⬜ | Server-signed; HTTP-only cookie. |
+| RLS bridge: handler's `SET LOCAL ROLE` from session | ⬜ | The big Phase-2 security primitive. |
+| CSRF double-submit cookie on non-GET HTMX | ⬜ | Automatic; opt-out per route. |
+| App-level realtime subscriptions via SSE | ⬜ | `<div hx-ext="sse" sse-connect="/_pgweb/subscribe/<ch>">` — reuses Session-4 G's channel-aware `ListenRouter`. |
+| Handler-side `NOTIFY pgweb_app_<ch>` helper | ⬜ | Payload cap 8 kB; signal-then-refetch for larger. |
+| Declarative schema diffing — `pg-web migrate create` | ⬜ | Phase 2.5; compares `schema.sql` to live DB. |
+| `pg-web init --template <name>` registry (beyond bundled) | ⬜ | Fetch templates from a Git URL / registry. |
+
+### Phase 3 — Async job queue
+
+| Feature | Status | Notes |
+|---|---|---|
+| `pgweb.jobs` table + `pg-web enqueue` | ⬜ | Row-level locking for worker contention. |
+| Worker pool in BGW | ⬜ | Separate tokio tasks, separate SPI sessions. |
+| Scheduled jobs (cron-like) | ⬜ | Leverages `pgweb.settings` for timing config. |
+| Retry + dead-letter | ⬜ | Exponential backoff; permanent-failure row. |
+
+### Phase 4 — Observability / dashboard
+
+| Feature | Status | Notes |
+|---|---|---|
+| In-browser dev dashboard at `/_pgweb/admin` | ⬜ | HTMX against the BGW; shows routes, templates, recent requests. |
+| Request log + slow-request capture | ⬜ | `pgweb.request_log` with sampling. |
+| Query plans for the last N handler invocations | ⬜ | `pg_stat_statements` integration. |
+| Live tail of background worker logs | ⬜ | SSE stream to admin UI. |
+
+### Parking lot / explicit non-goals
+
+| Item | Status | Notes |
+|---|---|---|
+| Managed-DB support (RDS / Cloud SQL / Supabase) | ⏸ | None accept custom extensions; Phase 1+ is BYO-server. |
+| JavaScript build integration (Vite / esbuild) | ⏸ | Framework stays HTML-first; users can run Vite alongside if needed. |
+| Declarative routes (annotations over filesystem) | ⏸ | Directory-as-route is the invariant — no second mechanism. |
+| GraphQL surface | ⏸ | Out of scope forever; REST/HTML is enough. |
+| ORM | ⏸ | You write SQL. That's the deal. |
+
+---
+
 ## Phase 1 — The Synchronous Core (current focus)
 
 **Goal:** a working framework that can serve a real HTMX app end-to-end. Broken into four milestones so we can validate each piece before layering the next.

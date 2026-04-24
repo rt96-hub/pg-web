@@ -352,7 +352,48 @@ Full commit table (rows match `git log --oneline main` in reverse order from Ses
 | 9 | `42b725d` | F.1 — Push polish | `--dry-run`, `--with-migrate`, `pgweb.deployments` ledger |
 | 10 | `537d909` | G — Browser live-reload | SSE + channel-aware LISTEN router; `--no-livereload` opt-out |
 | 11 | `6ad214b` | J — Release artifacts | CHANGELOG.md, version 0.1.0, CI + release workflows |
-| 12 | (K — this commit) | Docs sweep + close-out | OVERVIEW refresh, CLAUDE current-phase marker, session_4 close-out |
+| 12 | `5157c8e` | K — Docs sweep + close-out | OVERVIEW refresh, CLAUDE current-phase marker, session_4 close-out |
+| 13 | `6a2aeab` | chore | `test-all.sh` now auto-stops pgrx dev PG between tiers 3 and 4 (bake in what I was doing by hand every run) |
+| 14 | `09054fa` | fix | `pg-web dev` canonicalizes `app_dir` so relative `--dir .` actually sees file saves — the watcher silently ignored every edit with the default CLI invocation before this |
+
+## Retrospective
+
+### What went well
+
+- **11 components shipped** (A, B, C, D, E, F.1, G + J + K) against a plan that expected at most 11 named components from A through K. Everything except H (content-hash assets), F.2 + F.3 (remote-deploy track), and I (`pg_largeobject` streaming) landed. All four of those are pure feature deferrals, not capability gaps — `v0.1.0` is a usable framework.
+- **Zero changes to locked invariants.** Handler contract, directory-as-route layout, dispatch via `template_path` nullability, push-managed handler namespace, BGW-only async, `pgweb` schema ownership — every one of them is intact. Any user that read the Session 1/2 docs and built against them still works unchanged.
+- **Test coverage grew faster than features.** `#[pg_test]` 59 → 70, CLI tests 95 → 124, docker E2E 7 → 9, smoke sections 7 → 19. Each component shipped with its own tier coverage; no "we'll test it later."
+- **Channel-aware LISTEN router (Component G)** was designed for Phase-2 reuse from day one. The memory note about the realtime subscription primitive + the code structure lined up, so when Phase 2 wants `<div hx-ext="sse" sse-connect="/_pgweb/subscribe/<channel>">`, the server side is already built — Phase 2 just adds the endpoint + a NOTIFY helper, no rewrites.
+- **Deferral discipline.** H was a realistic Session 4 item that I talked out with the user and punted once the cost-to-validate math was clear. Same for F.2/F.3/I. Scope creep was deliberate and documented, not silent.
+- **Release artifacts landed.** CHANGELOG, Cargo.toml version bump, CI workflow, release workflow, all commit-grained. `git tag v0.1.0 && git push origin v0.1.0` would actually trigger a real release (pending Docker Hub creds).
+
+### What went wrong
+
+- **The watcher bug shipped** (commit `537d909` → fix `09054fa`). `pg-web dev` with the default `--dir .` silently ignored every file save — the watcher looked alive but the classifier returned `Ignore` for every event because `strip_prefix(".")` against absolute event paths fails. User caught this on the first real validation run. See DEVELOPER-GUIDE.md pitfall #15.
+- **Test-coverage gap that hid the watcher bug.** The `classify` unit tests all used hardcoded absolute paths (`fn cwd` built under `/app`). The tier-3 `dev_watcher_repushes_on_save` used `tempfile::tempdir()` — absolute. Nothing ever tested the default CLI invocation. Lesson: test matrices must cover the shape CLI flags actually produce at runtime, not just whatever the fixture hands in.
+- **Manual workaround repeated for 6+ components.** Every time I ran `test-all.sh`, tier 4 failed the port-shadowing preflight because tier 1 left the pgrx dev PG on `:8080`. I manually ran `pg_ctl -m immediate stop` each time instead of baking the fix into the script. It took a user showing me the same failure for me to finally commit the one-function fix to `test-all.sh` (`6a2aeab`). Lesson: a manual step I repeat twice is already overdue for automation.
+- **Git Bash `$?` trap** (DEVELOPER-GUIDE pitfall #14). Lost ~20 min in Component E chasing a phantom Rust `ExitCode` propagation bug when the real culprit was Git Bash expanding `$?` before the string ever reached WSL. The code was always right.
+- **Testing interference caused a user-visible error.** While reproducing the watcher bug for my fix, I left a stray `pg-web dev` process running. When the user started their own dev, two pushers on the same app raced → `tuple concurrently updated` in their log. Completely artifact of my sloppy cleanup, not a framework bug. Session 5 "push retry on serialization conflict" (Component L) will make the framework robust against this anyway.
+- **`pg_query` dep choice required mid-flight pivot.** I initially specified `pg_query` (Postgres's native parser) for `pg-web check` before noticing it requires `cmake` + `protobuf-compiler`. The pgweb user's WSL setup lacked cmake; installing needed sudo + password. Swapped to pure-Rust `sqlparser` and documented the upgrade path in Cargo.toml. Good pivot, but picking the dep carefully up-front (checking system build deps) would have saved the swap.
+
+### Lessons compiled
+
+1. **CLI invocation shape is part of the test matrix.** If the CLI's default is `--dir .`, every code path between argv-parsing and deep logic should be tested with that exact shape, not just abspath equivalents. Captured as pitfall #15.
+2. **Bake repeated workarounds into the script the second time.** "I remembered the dance" is a coverage failure dressed up as muscle memory.
+3. **Subagent / test process cleanup is explicit, not wishful.** `nohup` + `kill $DEVPID; wait` is unreliable when the shell bridge closes. Use `ps` verification before considering a cleanup done. In retrospect I should have used `pgrep` + `pkill` on a unique-flag pattern.
+4. **Shell-escape `$?` every time across Git Bash → WSL.** No exceptions, no "I think this case is safe." Captured as pitfall #14.
+5. **Picking a dep should include a quick check of its system build deps.** `cargo-tree` won't tell you about libclang or cmake; the Cargo.toml of the crate will. One `less Cargo.toml` saves a mid-component rewrite.
+6. **When I break the user's flow debugging, own it loudly.** The tuple-concurrently-updated error came from my stray process. I should have said so immediately instead of speculating about the user's workflow.
+
+### Metrics
+
+- **14 commits** across Session 4, all on `main` (local-only repo; no remote).
+- **Feature commits** (9): A, B, C, D, E, F.1, G, J, K.
+- **Doc/refactor/chore commits** (5): two dev-guide pitfall bumps via subagent (`eb69168`, `966a67f`), the `examples/demo/` → `examples/todo/` rename (`0e85ab3`), the test-all.sh auto-stop (`6a2aeab`), the post-release watcher fix (`09054fa`).
+- **203 Rust tests + 19-section black-box smoke**, all tiers green via `scripts/test-all.sh` at session close.
+- **Test growth:** pgrx +11 (59→70), CLI +29 (95→124), tier-3 +2 (7→9), smoke +12 (7→19).
+- **New crate deps:** extension gained `tokio-postgres`, `tokio-stream`, `futures-util` (for livereload LISTEN + SSE); CLI gained `include_dir`, `sqlparser`, `gethostname`.
+- **Binary size impact:** not measured systematically; should be a Session 5 K-track item.
 
 ## Deferred to Session 5
 

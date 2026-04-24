@@ -364,3 +364,19 @@ Running `wsl -d Ubuntu-22.04 -u pgweb -- bash -c 'cmd; echo $?'` from Git Bash d
 
 Hit in Session 4 Component E: spent ~20 min chasing why `pg-web check`'s `return Ok(ExitCode::FAILURE)` seemingly didn't propagate, even auditing Rust's `ExitCode`/`Termination` wiring. The code was correct — Git Bash was eating the `$?`. Narrower than #5 (which covers the broad path-translation / variable-eating class); this one is specifically about exit-code visibility so a future maintainer grepping for "exit code" lands here fast.
 
+### 15. Watcher code paths that `strip_prefix` `app_dir` must canonicalize first — or silently ignore every event
+
+`pg-web dev` runs with a default `--dir .` from clap. Inside `dev::watch`, the debouncer delivers `notify` events whose paths are **absolute** (the kernel joins the watched directory with the inotify event name, and that join produces an absolute path once the current working directory is resolved). `classify(path, app_dir)` then does `path.strip_prefix(app_dir)` to get the relative-under-app portion. With `app_dir = "."` and an event path of `/tmp/my-todos/pages/index.html`, `strip_prefix(".")` returns `Err` — the watcher classifies the event as `Action::Ignore`, no push fires, no NOTIFY fires, and to the user the dev loop looks alive (it prints `⟳ watching pages/ + public/`) while silently doing nothing on every save.
+
+**Fix:** canonicalize `app_dir` once at the `dev::dev` entry point, before anything else touches it:
+```rust
+let app_dir_buf = app_dir.canonicalize()
+    .with_context(|| format!("resolving app directory {}", app_dir.display()))?;
+let app_dir = app_dir_buf.as_path();
+```
+Absolute ↔ absolute `strip_prefix` just works after that.
+
+**Test-coverage lesson** (this is the bigger takeaway): the `classify` unit tests built paths under a hardcoded `/app` via `fn cwd(rel: &str) -> PathBuf { PathBuf::from("/app").join(rel) }` — every one of them fed an *absolute* `app_dir`. The tier-3 `dev_watcher_repushes_on_save` used `tempfile::tempdir()`, which returns an absolute path. Nothing exercised the shape the CLI actually produces at runtime (`PathBuf::from(".")`). Unit tests should cover the default CLI invocation, not just whatever the fixture happens to hand in; regression tests now pin this (`classify_ignores_absolute_event_when_app_dir_is_relative` + `classify_matches_under_canonical_app_dir`).
+
+Hit in Session 4 post-release: the user started `pg-web dev` from their project root, edited a file, got no push, no livereload, no visible dev-loop activity. The bug had been in every component's validation cycle but was invisible because I only ever tested the relative-path case via the test suite (which used absolute paths). Fixed in commit `09054fa`.
+
