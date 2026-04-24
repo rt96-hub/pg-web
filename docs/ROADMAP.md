@@ -58,7 +58,7 @@ Goal: a developer can run `pg-web dev`, save a `.sql` file, and see the change r
 
 Goal: close out Phase 1 for a releasable v0.1.
 
-- [ ] CLI `pg-web env set KEY=VAL` / `env list` / `env unset KEY` — GUC injection for secrets.
+- [x] CLI `pg-web env set KEY=VAL` / `env list` / `env unset KEY` + `pgweb.setting(key)` SQL helper. Values persist in `pgweb.settings` (same table as framework-synced `env`), readable from any handler via `SELECT pgweb.setting('KEY')`. Push-managed keys (`env`) rejected to prevent silent-overwrite loops. (Session 4 / Component C.)
 - [x] SQL helper `pgweb.html_escape(text) → text` shipped in the extension's install SQL for raw-text-return handlers that interpolate user content. (Session 4 / Component A.)
 - [x] User-facing validation UX: `check_violation` / `unique_violation` exceptions in handlers render inline via `hx-swap-oob`. Demo's POST `/todos` demonstrates the pattern; empty/whitespace-only title → 200 + inline error fragment, no 500. (Session 4 / Component B.)
 - [ ] Asset serving in the demo app with a large asset (image via `pg_largeobject`).

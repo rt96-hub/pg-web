@@ -366,6 +366,39 @@ $$ LANGUAGE sql;
 
 Escapes the five HTML-unsafe characters (`&`, `<`, `>`, `"`, `'`). `STRICT`, so NULL input → NULL output without extra ceremony. Handlers returning via a Tera template don't need this — Tera's default `{{ var }}` already escapes — but it's the right tool whenever you're concatenating strings into raw HTML.
 
+## Runtime settings & secrets
+
+Values that change per deploy (API keys, feature flags, environment markers) live in the `pgweb.settings` table, persisted in the database itself rather than in the image or a sidecar config file. The CLI manages them; handlers read them with one SQL call.
+
+```bash
+pg-web env set STRIPE_KEY=sk_test_abc_xyz
+pg-web env set FEATURE_NEW_ONBOARDING=1
+pg-web env list
+# STRIPE_KEY=sk_test_abc_xyz
+# FEATURE_NEW_ONBOARDING=1
+# env=development
+pg-web env unset STRIPE_KEY
+```
+
+Handlers read with `pgweb.setting(key)`:
+
+```sql
+CREATE OR REPLACE FUNCTION pgweb.pages__checkout__post(req json) RETURNS json AS $$
+  SELECT json_build_object(
+    'session', stripe_create_session(
+      COALESCE(pgweb.setting('STRIPE_KEY'),
+               pgweb.setting('STRIPE_KEY_FALLBACK'))
+    )
+  )
+$$ LANGUAGE sql;
+```
+
+`pgweb.setting(key)` is `STABLE STRICT PARALLEL SAFE` and returns NULL on miss — `COALESCE(pgweb.setting('FOO'), 'default')` is the idiomatic way to provide a fallback.
+
+**Reserved keys.** The `env` key is synced from `pgweb.toml [server].env` on every `pg-web push`, so `pg-web env set env=…` is rejected at the CLI — edit the toml and re-push instead. Everything else is free-form.
+
+**What this is not.** The CLI writes values in cleartext; encrypted secrets / KMS integration are Phase 2. Don't store anything the DB admin shouldn't be able to `SELECT`. For TLS-at-rest, use a PG instance with disk encryption; for TLS-in-transit, use `sslmode=require` on the connection URL.
+
 ## What you DON'T have to do
 
 - Write Rust.
@@ -394,8 +427,8 @@ Escapes the five HTML-unsafe characters (`&`, `<`, `>`, `"`, `'`). `STRICT`, so 
 | ~~Static asset serving (`public/*` → HTTP)~~                    | M1.2 ✓   |
 | ~~`pgweb.html_escape()` SQL helper~~                            | M1.4 ✓   |
 | ~~User-facing form validation UX (inline error via `check_violation`)~~ | M1.4 ✓   |
+| ~~CLI `pg-web env set/unset/list` + `pgweb.setting()` helper~~  | M1.4 ✓   |
 | Browser live-reload push (WS/SSE; auto-F5 on save)              | M1.4     |
-| CLI `pg-web env set/unset/list` (secrets via GUC)               | M1.4     |
 | CLI `pg-web check` (project validator)                          | M1.4     |
 | Declarative schema-diffing (`migrate create`)                   | Phase 2.5 |
 | Auth + sessions + RLS bridge                                    | Phase 2   |

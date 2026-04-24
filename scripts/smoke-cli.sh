@@ -366,6 +366,64 @@ assert_status "$code" "200" "POST /echoform with whitespace-only body"
 body=$(cat /tmp/smoke-echoform-ws)
 assert_contains "$body" "Body cannot be empty" "whitespace trimmed + caught"
 
+# --- 10. env set/list/unset + pgweb.setting() handler read -----------
+
+step "10. env set → list → handler reads via pgweb.setting() → unset"
+
+# Rejection of push-managed keys: setting `env` via CLI must error,
+# point at pgweb.toml, and NOT touch the DB.
+set +e
+err_out=$("$BIN" env set "env=production" 2>&1)
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]] || fail "env set env=production should have exited non-zero, got 0"
+assert_contains "$err_out" "pgweb.toml" "reserved-key error points at pgweb.toml"
+
+# Happy path: set a user key, verify list shows it, handler reads it.
+"$BIN" env set "SMOKE_TOKEN=sk_test_abc_xyz" >/dev/null
+ok "env set SMOKE_TOKEN"
+
+list_out=$("$BIN" env list)
+assert_contains "$list_out" "SMOKE_TOKEN=sk_test_abc_xyz" "env list shows the new key"
+# Existing `env=development` from section 7 teardown must still be there.
+assert_contains "$list_out" "env=development" "env list still shows framework-managed env"
+
+# Handler consumes it via pgweb.setting(). Raw-text route returns the
+# value verbatim so we can assert on it directly.
+mkdir -p "$SMOKE_DIR/pages/config"
+cat > "$SMOKE_DIR/pages/config/index.sql" <<'SQL'
+CREATE OR REPLACE FUNCTION pgweb.pages__config__index(req json) RETURNS text AS $$
+    SELECT COALESCE(pgweb.setting('SMOKE_TOKEN'), '(unset)')
+$$ LANGUAGE sql STABLE;
+SQL
+"$BIN" push >/dev/null
+ok "push accepted /config handler"
+
+http GET /config
+code="$SMOKE_CODE"; body="$SMOKE_BODY"
+assert_status "$code" "200" "GET /config"
+assert_contains "$body" "sk_test_abc_xyz" "handler read SMOKE_TOKEN via pgweb.setting()"
+assert_not_contains "$body" "(unset)" "COALESCE fallback NOT triggered"
+
+# Overwrite path: set overwrites existing value.
+"$BIN" env set "SMOKE_TOKEN=sk_live_updated" >/dev/null
+http GET /config
+body="$SMOKE_BODY"
+assert_contains "$body" "sk_live_updated" "env set overwrote prior value"
+assert_not_contains "$body" "sk_test_abc_xyz" "prior value absent after overwrite"
+
+# Unset: row gone, handler falls through COALESCE.
+"$BIN" env unset SMOKE_TOKEN >/dev/null
+list_out=$("$BIN" env list)
+assert_not_contains "$list_out" "SMOKE_TOKEN" "env list no longer shows unset key"
+http GET /config
+body="$SMOKE_BODY"
+assert_contains "$body" "(unset)" "COALESCE fallback triggers after unset"
+
+# Idempotent unset: second call reports no-op, still exits 0.
+unset_again=$("$BIN" env unset SMOKE_TOKEN)
+assert_contains "$unset_again" "no-op" "repeat unset is idempotent no-op"
+
 # --- done -----------------------------------------------------------
 
 printf "\n\033[1;32m✓ smoke-cli: all assertions passed\033[0m\n"

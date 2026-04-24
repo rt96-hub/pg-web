@@ -177,6 +177,27 @@ $$;
 COMMENT ON FUNCTION pgweb.html_escape(TEXT) IS
     'Escape HTML-unsafe characters (& < > " '') for safe embedding in response bodies. Returns NULL on NULL input.';
 
+-- Sugar helper for handlers reading runtime settings. Replaces the
+-- verbose SELECT value FROM pgweb.settings WHERE key = $1 with
+-- SELECT pgweb.setting('STRIPE_KEY'). NULL on miss (no row) — the
+-- STRICT guarantee covers NULL input too so handlers can safely chain
+-- COALESCE for defaults: COALESCE(pgweb.setting('foo'), 'default').
+--
+-- STABLE (not IMMUTABLE) because pgweb.settings values can change
+-- between calls via `pg-web env set`. STRICT for NULL pass-through.
+-- PARALLEL SAFE because reads are side-effect free.
+--
+-- Parameter named `p_key` (not `key`) to avoid colliding with the
+-- pgweb.settings.key column — `WHERE key = key` would be ambiguous
+-- between the column and the parameter.
+CREATE FUNCTION pgweb.setting(p_key TEXT) RETURNS TEXT
+LANGUAGE sql STABLE STRICT PARALLEL SAFE AS $$
+    SELECT value FROM pgweb.settings WHERE key = p_key
+$$;
+
+COMMENT ON FUNCTION pgweb.setting(TEXT) IS
+    'Look up a key in pgweb.settings. Returns NULL on miss or NULL input. Set values via `pg-web env set KEY=VALUE`.';
+
 COMMENT ON SCHEMA pgweb IS 'pg-web framework tables. Managed by the extension and CLI; do not modify directly.';
 "#,
     name = "framework_tables",
@@ -337,5 +358,47 @@ mod tests {
             .expect("query should not error")
             .expect("query should return a row");
         assert_eq!(out, "&amp;amp;");
+    }
+
+    #[pg_test]
+    fn setting_returns_null_on_missing_key() {
+        let is_null = Spi::get_one::<bool>("SELECT pgweb.setting('__nope__') IS NULL")
+            .expect("query should not error")
+            .expect("query should return a row");
+        assert!(is_null, "pgweb.setting('__nope__') should be NULL on miss");
+    }
+
+    #[pg_test]
+    fn setting_returns_null_on_null_input() {
+        // STRICT short-circuits NULL input without even reading the
+        // table, so this also documents the zero-table-scan property.
+        let is_null = Spi::get_one::<bool>("SELECT pgweb.setting(NULL::text) IS NULL")
+            .expect("query should not error")
+            .expect("query should return a row");
+        assert!(is_null, "pgweb.setting(NULL) should be NULL (STRICT)");
+    }
+
+    #[pg_test]
+    fn setting_reads_existing_seeded_env() {
+        // The schema seeds INSERT INTO pgweb.settings (key, value)
+        // VALUES ('env', 'development'), so pgweb.setting('env')
+        // should surface that at install time.
+        let value = Spi::get_one::<String>("SELECT pgweb.setting('env')")
+            .expect("query should not error")
+            .expect("query should return a row");
+        assert_eq!(value, "development");
+    }
+
+    #[pg_test]
+    fn setting_reads_freshly_inserted_key() {
+        Spi::run(
+            "INSERT INTO pgweb.settings (key, value) VALUES ('STRIPE_KEY', 'sk_test_abc')",
+        )
+        .expect("insert should succeed");
+
+        let value = Spi::get_one::<String>("SELECT pgweb.setting('STRIPE_KEY')")
+            .expect("query should not error")
+            .expect("query should return a row");
+        assert_eq!(value, "sk_test_abc");
     }
 }

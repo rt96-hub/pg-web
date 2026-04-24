@@ -221,7 +221,7 @@ Checked items are covered; unchecked are next. Grouped by milestone. This matrix
 | Static asset (small, BYTEA) | `public/styles.css` linked from the demo | M1.2 | ☐ |
 | Validation via `check_violation` | Empty-title CHECK surfaced to the user | M1.4 | ☑ |
 | Static asset (large, pg_largeobject) | `public/hero.jpg` banner image | M1.4 | ☐ |
-| Secrets via GUC | Dummy API key read in a handler | M1.4 | ☐ |
+| Secrets via `pgweb.settings` | `pg-web env set` + `pgweb.setting()` read in handler | M1.4 | ☑ |
 | Production 500 page | Dev error path flipped to prod mode | M1.4 | ☐ |
 | `pg-web check` lint | Offline project validator | M1.4 | ☐ |
 | `pg-web init --template todo-demo` | Scaffold the todo app straight from `examples/` | M1.4 | ☐ |

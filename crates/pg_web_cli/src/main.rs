@@ -70,6 +70,16 @@ enum Command {
         #[arg(long)]
         no_logs: bool,
     },
+    /// Manage key/value settings in `pgweb.settings` (secrets, runtime flags).
+    ///
+    /// Handlers read values via `SELECT pgweb.setting('KEY')` from SQL.
+    /// Values persist across container restarts (they live in the DB,
+    /// not in the image). Keys managed by `pgweb.toml` (currently `env`)
+    /// are rejected — edit the toml and re-push instead.
+    Env {
+        #[command(subcommand)]
+        action: EnvAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -80,6 +90,37 @@ enum MigrateAction {
         #[arg(long, env = "DATABASE_URL")]
         url: Option<String>,
         /// App directory containing `migrations/` (defaults to cwd).
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum EnvAction {
+    /// Upsert a KEY=VALUE pair into `pgweb.settings`.
+    Set {
+        /// KEY=VALUE. Split on first `=`; values can contain further `=`.
+        pair: String,
+        /// Postgres connection URL. Resolved like `pg-web push --url`.
+        #[arg(long, env = "DATABASE_URL")]
+        url: Option<String>,
+        /// App directory (defaults to cwd) — used for URL resolution.
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Delete a key from `pgweb.settings`. No-op if the key isn't there.
+    Unset {
+        /// Key to delete.
+        key: String,
+        #[arg(long, env = "DATABASE_URL")]
+        url: Option<String>,
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Print all keys and values from `pgweb.settings` as `KEY=VALUE` lines.
+    List {
+        #[arg(long, env = "DATABASE_URL")]
+        url: Option<String>,
         #[arg(long, default_value = ".")]
         dir: PathBuf,
     },
@@ -173,6 +214,32 @@ fn run() -> Result<()> {
         Command::Dev { dir, no_logs } => {
             pg_web_cli::dev::dev(&dir, !no_logs)?;
         }
+        Command::Env { action } => match action {
+            EnvAction::Set { pair, url, dir } => {
+                let (key, value) = pg_web_cli::env::parse_pair(&pair)?;
+                let url = resolve_url(url, &dir)?;
+                pg_web_cli::env::set(&url, &key, &value)?;
+                // Echo the key only — avoid leaking secret values into
+                // terminal history / logs. Use `env list` explicitly if
+                // you want to verify the stored value.
+                println!("✓ set {key}");
+            }
+            EnvAction::Unset { key, url, dir } => {
+                let url = resolve_url(url, &dir)?;
+                if pg_web_cli::env::unset(&url, &key)? {
+                    println!("✓ unset {key}");
+                } else {
+                    println!("— {key} not set (no-op)");
+                }
+            }
+            EnvAction::List { url, dir } => {
+                let url = resolve_url(url, &dir)?;
+                let entries = pg_web_cli::env::list(&url)?;
+                for e in entries {
+                    println!("{}={}", e.key, e.value);
+                }
+            }
+        },
     }
     Ok(())
 }
