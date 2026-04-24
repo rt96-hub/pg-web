@@ -337,4 +337,59 @@ If scope runs long, **punt I (large assets) to Session 5 + cut the release tag u
 
 ## Recap — what shipped
 
-(To be filled in at session close, mirroring `session_3.md`'s recap table format.)
+Full commit table (rows match `git log --oneline main` in reverse order from Session 4's first commit `e41b522` through the final docs-sweep commit):
+
+| # | Commit | Component | Summary |
+|---|---|---|---|
+| 1 | `e41b522` | A — `pgweb.html_escape` | SQL helper in install SQL; STRICT IMMUTABLE PARALLEL SAFE |
+| 2 | `2966864` | B — Form-validation UX | PL/pgSQL `EXCEPTION WHEN check_violation` → inline OOB error |
+| 3 | `eb69168` | dev-doc | DEVELOPER-GUIDE pitfalls #12/#13, sharpen #5/#8 |
+| 4 | `97bfaa2` | C — `pg-web env` + `pgweb.setting()` | Runtime settings CLI + SQL helper |
+| 5 | `1eb0cd0` | D — `pg-web init --template` + README | `include_dir!`-bundled template tree |
+| 6 | `0e85ab3` | rename | `examples/demo/` → `examples/todo/` for `--template` clarity |
+| 7 | `1b2afef` | E — `pg-web check` | Offline validator via `sqlparser` (no cmake / system deps) |
+| 8 | `966a67f` | dev-doc | DEVELOPER-GUIDE pitfall #14 — Git Bash `$?` expansion |
+| 9 | `42b725d` | F.1 — Push polish | `--dry-run`, `--with-migrate`, `pgweb.deployments` ledger |
+| 10 | `537d909` | G — Browser live-reload | SSE + channel-aware LISTEN router; `--no-livereload` opt-out |
+| 11 | `6ad214b` | J — Release artifacts | CHANGELOG.md, version 0.1.0, CI + release workflows |
+| 12 | (K — this commit) | Docs sweep + close-out | OVERVIEW refresh, CLAUDE current-phase marker, session_4 close-out |
+
+## Deferred to Session 5
+
+The realistic Session-4 scope was A–H; we shipped A–G + J + K. Session 5 picks up:
+
+- **H — Content-hash asset filenames.** Push-time template-rewrite pass that swaps `href="/styles.css"` for `href="/styles.<hash>.css"` in prod mode, plus the router's `immutable` cache-control branch. Plan intact in this file; punt rationale: H is a prod-perf refinement, 0.1's ETag revalidation is correct + bytes-cheap, and shipping H would have bloated the v0.1 validation surface without adding a capability.
+- **F.2 — SSH-tunneled `pg-web push --target`.** Remote deploys today require a manual `ssh -L` tunnel. The plan in this file + the `openssh` crate lean are still valid.
+- **F.3 — CLI bundled in `pgweb/postgres:latest`.** So `docker compose exec postgres pg-web push` works. Pairs naturally with F.2 (if you SSH in, the CLI is already there).
+- **I — `pg_largeobject` streaming for assets ≥ 1 MiB.** 2 MiB BYTEA cap holds at v0.1.
+
+## Gotchas hit this session
+
+1. **`pgweb.setting()` column/parameter ambiguity.** First draft named the parameter `key`, colliding with `pgweb.settings.key` — `WHERE key = key` is ambiguous in SQL functions. Renamed to `p_key`. Project convention going forward: prefix SQL-function parameters with `p_` when there's column collision risk. (Component C.)
+2. **`pg_query` needs cmake.** Initially picked `pg_query` for `pg-web check`'s SQL parser; discovered it pulls libpg_query + protobuf + cmake as system deps. `sudo apt install cmake` needed a password, which we can't prompt for mid-session. Swapped to pure-Rust `sqlparser`; documented the authoritative-vs-friction tradeoff in Cargo.toml for any future upgrade. (Component E.)
+3. **`ExitCode::FAILURE` looked like it wasn't propagating.** Spent time tracking a phantom bug where `pg-web check`'s exit code looked like 0 from the shell despite findings. Real cause: **Git Bash on Windows expands `$?` inside single-quoted `bash -c '...'` strings against the OUTER shell before passing to WSL.** Escape as `\$?`. Saved to memory + DEVELOPER-GUIDE.md entry #14. (Component E.)
+4. **`pg_ctl -m fast` hangs on the BGW.** During repeated smoke runs we needed to stop the pgrx dev PG; `-m fast` waits indefinitely because the BGW's tokio runtime doesn't drain cleanly. `-m immediate` works. Updated DEVELOPER-GUIDE entry #8. (Component A / ongoing.)
+5. **Docker image bakes install SQL.** Any extension-SQL change (`schema.rs`) requires `bash scripts/build-image.sh` before tier 3 or 4 run — the image carries a frozen snapshot. Documented as DEVELOPER-GUIDE entry #13. (Component A.)
+6. **Route rename wasn't in scope originally but clearer naming pays off.** Plan said `examples/todo-demo/` (keeping `demo` in the path for continuity). User picked cleaner `examples/todo/` for `--template todo` symmetry. Low churn if done as one dedicated commit — 32 files, all tier tests still green.
+7. **tokio current-thread runtime is SPI's hostage.** The BGW's runtime is `new_current_thread()` because SPI has thread affinity. Adding the livereload LISTEN task meant being deliberate about which task holds SPI vs which does pure network I/O. Documented as a DEVELOPER-GUIDE section (the "Tokio runtime constraint" paragraph). (Component G.)
+8. **Filename-rewrite scope discipline.** Component G's browser live-reload client intentionally ships as vanilla JS with `location.reload()` fallback — Idiomorph-based state-preserving swaps would have been a tempting scope creep but weren't on the roadmap. Defer, document, move on. (Component G.)
+
+## Handoff prompt for Session 5
+
+(Paste into a fresh Claude Code session to restart cleanly.)
+
+---
+
+> I'm resuming pg-web work on Session 5. v0.1.0 shipped at the end of Session 4; feature surface is A-G + release artifacts, all tiers green. This session's scope is the deferred polish: **H (content-hash asset filenames), F.2 (SSH-tunneled remote push), F.3 (CLI baked into image), I (`pg_largeobject` streaming)**.
+>
+> **Workspace lives in WSL2 Ubuntu-22.04 at `/home/pgweb/pg-web`, owned by user `pgweb`.** From Git Bash on Windows reach it via `wsl -d Ubuntu-22.04 -u pgweb -- bash -c '...'` with `MSYS_NO_PATHCONV=1` prefix and `\$?` escape for exit-code capture. All WSL gotchas numbered in `docs/DEVELOPER-GUIDE.md` § Common pitfalls (entries #1–#14).
+>
+> **Read these first, in this order:**
+> 1. `docs/OVERVIEW.md` — the 30-second picture + refreshed test counts at v0.1.0.
+> 2. `docs/sessions/session_4.md` — the full Session 4 shipping log (this file) + the "Deferred to Session 5" section with H / F.2 / F.3 / I scope.
+> 3. `CHANGELOG.md` — the v0.1.0 release notes.
+> 4. `docs/ROADMAP.md` § Milestone 1.4 — original plan for H, F.2, F.3, I still valid.
+>
+> **First task for this session:** pick one of H / F.2 / F.3 / I based on user priority. Discuss open design questions from the session_4 plan for the chosen item before coding.
+
+---

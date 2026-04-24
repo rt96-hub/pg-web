@@ -2,7 +2,7 @@
 
 Snapshot of what's implemented right now and what's next. Re-generated at milestone boundaries. Read this first; chase into `APP-DEVELOPER-GUIDE.md`, `APP-LAYOUT.md`, `ARCHITECTURE.md`, `ROADMAP.md` for depth.
 
-> **Last updated:** 2026-04-18, end of Session 2. M1.1 walking-skeleton shipped in Session 1 (`5a64daa`). Session 2 completes M1.3 (interactive todo demo) — five components A–E shipped (`c3960a3`, `21cc831`, `af50911`, `7fed892`, `c2c4985`). Next session targets M1.2 (interactive dev loop). See `docs/sessions/session_3.md`.
+> **Last updated:** 2026-04-24, end of Session 4. Phase 1 (`v0.1.0`) feature surface is complete: M1.1 skeleton (Session 1) + M1.3 demo + contracts (Session 2) + M1.2 dev loop (Session 3) + M1.4 closeout (Session 4). Content-hash asset filenames (Component H), SSH-tunneled remote push (F.2), CLI-in-image (F.3), and `pg_largeobject` streaming (I) deferred to 0.2. See `docs/sessions/session_4.md` for the full Session 4 shipping log and `CHANGELOG.md` for the release notes.
 
 ---
 
@@ -21,16 +21,16 @@ Everything a browser sees comes out of a single OS process tree rooted at the Po
 
 ---
 
-## Phase 1 — Synchronous Core (current focus)
+## Phase 1 — Synchronous Core (complete, `v0.1.0`)
 
 | Milestone | Status | Deliverable |
 |---|---|---|
 | M1.1 Walking Skeleton       | ✅ shipped Session 1 | Framework schema + BGW + Axum + SPI→Tera + CLI `init`/`push` + Docker image |
 | M1.3 Interactive demo + spec | ✅ shipped Session 2 | Migrations, directory-as-route layout, `(req json)` contract, `_404` fallback, demo todo app, Docker E2E |
-| M1.2 Interactive Dev Loop   | ⬜ Session 3 next    | `pg-web up`/`down`/`dev`, hot reload, dynamic routes, dev error page, static assets |
-| M1.4 Closeout               | ⬜ planned           | Secrets (GUC), `pg-web check` lint, `pg-web init --template`, release pipeline |
+| M1.2 Interactive Dev Loop   | ✅ shipped Session 3 | `pg-web up`/`down`/`dev`, hot reload, dynamic routes, dev error page, static assets |
+| M1.4 Closeout               | ✅ shipped Session 4 | `html_escape`, validation UX, `env`/`check`, `init --template`, push `--dry-run`/`--with-migrate`, `pgweb.deployments` ledger, browser live-reload, release pipeline |
 
-(Session 2 did M1.3 before M1.2 because the interactive-contract decisions — request-JSON shape, POST return dispatch, 404 fallback — had to be locked before the file-watcher would know what to re-sync. M1.2 inherits the stable spec.)
+(Session 2 did M1.3 before M1.2 because the interactive-contract decisions — request-JSON shape, POST return dispatch, 404 fallback — had to be locked before the file-watcher would know what to re-sync.)
 
 Later phases (2 auth/RLS, 3 async jobs, 4 observability) are tracked in `docs/ROADMAP.md`.
 
@@ -40,6 +40,28 @@ Later phases (2 auth/RLS, 3 async jobs, 4 observability) are tracked in `docs/RO
 - **C** ✅ Router `(req json)` + text-return dispatch + `_404` fallback (`af50911`)
 - **D** ✅ `examples/todo/` todo app + `docs/TUTORIAL.md` (`7fed892`)
 - **E** ✅ Docker E2E tier against `pgweb/postgres:latest` (`c2c4985`)
+
+**Session 3 — M1.2 components** (see `docs/sessions/session_3.md` for the recap table):
+- `pg-web up` / `pg-web down` + port-shadowing preflight
+- `pg-web dev` file watcher (200 ms debounce + Blake3 dedupe + shift-left SQL preflight)
+- Dynamic route patterns (`[id]` → `:id` + `req.path_params`)
+- Dev error page (PGWEB_E001–E999 typed catalog) + generic prod 500
+- Static assets under `public/*` with Blake3 ETag + `If-None-Match`
+- Push-time Tera template validation
+
+**Session 4 — M1.4 components** (full shipping log in `docs/sessions/session_4.md`):
+- **A** ✅ `pgweb.html_escape()` SQL helper (`e41b522`)
+- **B** ✅ Form-validation UX — `check_violation` → inline OOB error (`2966864`)
+- **C** ✅ `pg-web env set/unset/list` + `pgweb.setting()` helper (`97bfaa2`)
+- **D** ✅ `pg-web init --template todo` + scaffolded README (`1eb0cd0`)
+- **E** ✅ `pg-web check` — offline project validator (`1b2afef`)
+- **F.1** ✅ Push polish: `--dry-run`, `--with-migrate`, `pgweb.deployments` ledger (`42b725d`)
+- **G** ✅ Browser live-reload via SSE + channel-aware LISTEN router (`537d909`)
+- **J** ✅ v0.1.0 release artifacts: CHANGELOG, version bump, CI/release workflows (`6ad214b`)
+- **K** (this commit) — final docs sweep
+- **H** ⬜ deferred to 0.2 — content-hash asset filenames
+- **F.2 / F.3** ⬜ deferred to 0.2 — SSH-tunneled remote push, CLI baked into image
+- **I** ⬜ deferred to 0.2 — `pg_largeobject` streaming for assets > 2 MiB
 
 ---
 
@@ -119,15 +141,15 @@ One command:
 scripts/test-all.sh
 ```
 
-| Tier | Command | Tests (today) |
+| Tier | Command | Tests at `v0.1.0` |
 |---|---|---|
-| 1. SQL / pgrx  | `cargo pgrx test pg17`                              | 49 — 21 `#[pg_test]` (schema, seed, migrations ledger, `(req json)` contract, dynamic-route capture lookup, static-beats-dynamic, handler-missing classification, runtime SQL exception classification, settings env default + override, **asset lookup miss / BYTEA round-trip / SVG bytes verbatim**) + 28 pure-Rust (pattern parse/match/sort, error catalog codes + HTML escape + dev page, Env parsing, Tera parse vs render classification) |
+| 1. SQL / pgrx  | `cargo pgrx test pg17`                              | **70** — schema / seed / migrations / deployments ledger / settings helper / html_escape; ListenRouter fan-out + livereload injection; router `(req json)` contract + dynamic captures + asset lookup; error-catalog + dev-page formatting; Tera parse-vs-render classification |
 | 2a. HTTP smoke | `scripts/test-http.sh`                              | 2 `#[test]` — `GET /` renders seeded template, unknown path returns default 404 body |
-| 2b. CLI        | `cargo test -p pg_web_cli`                          | 95 — path scanner + `[id]` capture, migrate apply, push + reconcile, push template-parse validation, init, demo-layout, stack, dev, push safe-proname guard, **public/ scan + Blake3 ETag sanity + 2 MiB cap** |
-| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` | 7 — todo CRUD with dynamic `/todos/:id`; watcher saves re-push; push reconciles deleted files; push rejects missing handler function; push rejects broken Tera template; dev error page surfaces PGWEB_E003 + SQLSTATE + handler name + remedy, flips to generic 500 under env=production; **static asset 200 with ETag + Cache-Control, `If-None-Match` → 304 no body, delete+push reconciles → 404** |
-| 4. CLI smoke   | `scripts/smoke-cli.sh`                              | Black-box end-to-end: scaffold → up/push → GET / → 404 fallback → SQL exception dev page → broken template rejected → prod-mode hides internals → **static CSS served with ETag, revalidates to 304, reconciles away on delete**. Catches gotchas Rust tests miss (stale docker image, stray pgrx dev PG on `:8080`, wrong compose service name). |
+| 2b. CLI        | `cargo test -p pg_web_cli`                          | **124** — path scanner, migrate, push + reconcile + F.1 flags, init (including `--template todo`), dev classifier, env parser, check validator, stack |
+| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` | **9** — todo CRUD + dynamic routes; watcher re-push; reconcile; push rejects missing handler / broken template; dev error page + prod 500; static asset ETag / 304 / reconcile; F.1 migration-gate + ledger; livereload SSE end-to-end |
+| 4. CLI smoke   | `scripts/smoke-cli.sh`                              | **19 sections** — scaffold → up → push → 404 fallback → SQL exception dev page → broken template rejected → prod-mode hides internals → static CSS + ETag + 304 + reconcile → `pgweb.html_escape` end-to-end → `check_violation` inline error → `env set/list/unset` + `pgweb.setting()` round-trip → deployments ledger + `--dry-run` rollback + `--with-migrate` gate → `pg-web check` clean + bad migration + bad Tera → livereload injection + prod-404 |
 
-**153 Rust tests + 1 black-box smoke all green via `scripts/test-all.sh`.**
+**203+ Rust tests + 19-section black-box smoke, all five tiers green via `scripts/test-all.sh`.**
 
 Feature matrix in `docs/TESTING.md` tracks which deliverables are demo-covered.
 
@@ -182,19 +204,22 @@ Daily iteration is `scripts/test-all.sh` and editing code.
 
 ---
 
-## What's NOT wired yet
+## Not in `v0.1.0`
 
-- ~~**Hot reload**~~ — `pg-web dev` watches `pages/` + `public/`, re-pushes on save after a 200ms debounce + Blake3 content-hash dedupe + shift-left SQL preflight. Shipped **Session 3 Component B**. Browser-push (auto F5 via WS/SSE) is the remaining deferred-but-near-term piece → M1.4.
-- ~~**CLI stack management**~~ — `pg-web up` / `pg-web down` land **Session 3 Component A**. `pg-web dev` (file watcher) is still pending in Component B. `migrate apply` / `push` now auto-resolve `DATABASE_URL` from `pgweb.toml` + env, so `--url` is optional.
-- ~~**Dynamic routes**~~ — `[id]` captures ship **Session 3 Component C**. `pages/posts/[id]/index.{html,sql}` → `GET /posts/:id` with `req.path_params.id` threaded in; captures are raw strings so `/posts/42` and `/posts/all` both match, handler decides. Static routes still beat dynamic on specificity. Naïve scan router, reevaluate at >1000 routes per app.
-- ~~**Dev error page**~~ — typed `ServeError` catalog (9 variants, PGWEB_E001–E999) surfaces SQLSTATE / MESSAGE / DETAIL / HINT + handler name + `req` dump + remedy hint when `pgweb.settings.env='development'`; generic 500 (no internals leaked) in production. Push-time Tera validation catches broken templates before the DB transaction. Shipped **Session 3 Component D**.
-- ~~**Static assets**~~ — `public/**` served from the DB (`pgweb.assets` BYTEA, 2 MiB cap per file). `pg-web push` walks the tree, computes Blake3 ETags, upserts + reconciles. HTTP responses include `ETag` + `Cache-Control` headers; `If-None-Match` returns 304 with no body. Page routes beat assets at the same path. Shipped **Session 3 Component E**. Larger-file streaming via `pg_largeobject` deferred to M1.4 alongside content-hash filenames.
-- **Secrets** — `pg-web env set KEY=VAL` doesn't exist. **M1.4.**
-- **Project validator** — `pg-web check` for offline lint. **M1.4.**
-- **`pg-web init --template <name>`** — scaffold a prebuilt example. **M1.4.**
-- **HTML-escape SQL helper** (`pgweb.html_escape()`) — recommended for raw-text handlers that interpolate user content. Until then, prefer the `.html` + `.sql` mode whenever dynamic values are involved. **M1.4.**
-- **Published Docker image** — build locally with `scripts/build-image.sh`. Publishing to Docker Hub / GHCR is a v0.1 release task (M1.4).
-- **Declarative migrations** — `pg-web migrate create` doesn't exist; raw SQL migrations via `migrate apply` (which does exist, Session 2 A). **Phase 2.5.**
+Deferred to **0.2** (Phase 1 polish that didn't make the release cut):
+
+- **Content-hash asset filenames + `immutable` cache-control** — stable URLs with ETag revalidation ship in 0.1 (cheap 304 round-trip); fingerprinted `/styles.<hash>.css` with long-cache is 0.2.
+- **`pg-web push --target <name>`** — SSH-tunneled remote push. Local-loopback push works; remote push today requires a manual SSH tunnel.
+- **CLI bundled into `pgweb/postgres:latest`** — so `docker exec` can run `pg-web push` from inside the container. 0.2.
+- **`pg_largeobject`-backed streaming** — BYTEA 2 MiB per-file cap is firm at 0.1; bigger assets → CDN until 0.2.
+
+Deferred to **Phase 2+** (explicit non-goals for Phase 1):
+
+- **Declarative migrations** — `pg-web migrate create` doesn't exist; raw SQL migrations via `migrate apply` is the 0.1 story. **Phase 2.5.**
+- **Auth / sessions / RLS bridge.** Write your own RLS policies today. **Phase 2.**
+- **App-level realtime subscriptions** — `<div hx-ext="sse" sse-connect="/_pgweb/subscribe/...">` for live data push. The channel-aware `ListenRouter` primitive shipped in 0.1 Component G; Phase 2 adds the app-facing SSE endpoint + NOTIFY helper on top.
+- **Async job queue.** **Phase 3.**
+- **In-browser dev dashboard.** **Phase 4.**
 
 ---
 

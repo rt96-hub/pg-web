@@ -64,12 +64,14 @@ pg-web/
 
 ## Current phase & milestones
 
-**Phase 1 — Synchronous Core.** Four milestones (see `docs/ROADMAP.md`):
+**Phase 1 — Synchronous Core.** All four milestones shipped; `v0.1.0` tagged 2026-04-24 (see `CHANGELOG.md`).
 
 1. **M1.1 Walking Skeleton** ✅ shipped Session 1 — extension + CLI + Docker Compose + `pg-web push` produces a working `GET /` → Tera-from-DB render.
 2. **M1.3 Interactive Contracts + Real Demo** ✅ shipped Session 2 — `(req json)` handler contract, directory-as-route layout, `_404` fallback, `examples/todo/` todo app, tier 3 Docker E2E.
-3. **M1.2 Interactive Dev Loop** ⬜ Session 3 next — `pg-web up`/`down`/`dev` (file watcher + hot reload), dynamic routes (`[id]` captures), dev error page, static asset serving.
-4. **M1.4 Closeout** ⬜ — secrets, `pg-web check` lint, `pg-web init --template`, release pipeline, html_escape helper, validation UX.
+3. **M1.2 Interactive Dev Loop** ✅ shipped Session 3 — `pg-web up`/`down`/`dev` (file watcher + hot reload), dynamic routes (`[id]` captures), dev error page, static asset serving.
+4. **M1.4 Closeout** ✅ shipped Session 4 — `pgweb.html_escape()`, inline-error validation UX, `pg-web env` + `pgweb.setting()`, `pg-web init --template`, `pg-web check` offline validator, push `--dry-run` + `--with-migrate` + `pgweb.deployments` ledger, browser live-reload via SSE + channel-aware LISTEN router, CHANGELOG + CI workflow.
+
+Session 5 picks up the deferred polish: H (content-hash assets), F.2 (SSH-tunneled remote push), F.3 (CLI in image), I (pg_largeobject streaming).
 
 (Session 2 did M1.3 before M1.2 because the interactive contracts had to settle before the watcher would know what to re-sync.)
 
