@@ -95,6 +95,25 @@ impl Default for DevOptions {
 /// `pg-web dev` entry point. Brings the stack up, installs a Ctrl-C
 /// handler, optionally tails logs, then drops into [`watch`] until stop.
 pub fn dev(app_dir: &Path, opts: DevOptions) -> Result<()> {
+    // Canonicalize app_dir up front. `notify` emits filesystem event
+    // paths that are absolute (kernel joins watched-dir with event
+    // name under inotify); `classify()` below treats app_dir as a
+    // path prefix and strips it to get the relative-under-app part.
+    // If app_dir stays relative (e.g., the CLI's default `--dir .`),
+    // `strip_prefix(".")` against an absolute event path fails and
+    // every event silently classifies as Ignore — the watcher looks
+    // alive (prints `⟳ watching ...`) but never prints `⟳ pushed`.
+    //
+    // Caught manually when running `pg-web dev` from a project
+    // directory post-release. My earlier tests (classify's `fn cwd`
+    // helper, the tier-3 `dev_watcher_repushes_on_save`) all used
+    // absolute paths and missed the real CLI invocation shape.
+    // Regression test in `classify_matches_under_canonical_app_dir`.
+    let app_dir_buf = app_dir.canonicalize().with_context(|| {
+        format!("resolving app directory {}", app_dir.display())
+    })?;
+    let app_dir = app_dir_buf.as_path();
+
     // `stack::up` is idempotent — `docker compose up -d` against an
     // already-running stack is a ~1s no-op. Simpler than pre-checking.
     let url = stack::up(app_dir)?;
@@ -662,6 +681,37 @@ mod tests {
             livereload_kind(&paths, Path::new("/app")),
             LivereloadKind::Full
         );
+    }
+
+    #[test]
+    fn classify_ignores_absolute_event_when_app_dir_is_relative() {
+        // This is the shape that bit a user running `pg-web dev` from
+        // a project root (default --dir `.`). notify emits absolute
+        // paths; strip_prefix(".") against an absolute doesn't match,
+        // so classify returns Ignore and the watcher is silently dead.
+        //
+        // `dev::dev` now canonicalizes app_dir up front precisely to
+        // prevent this — this test documents the OLD broken path so
+        // anyone tempted to pass a relative app_dir into watch()
+        // (e.g. in a future caller) gets an immediate signal here.
+        let abs_event = PathBuf::from("/tmp/my-todos/pages/index.html");
+        let relative_app_dir = Path::new(".");
+        assert_eq!(
+            classify(&abs_event, relative_app_dir),
+            Action::Ignore,
+            "relative app_dir must not match an absolute event path — \
+             callers must canonicalize before reaching classify"
+        );
+    }
+
+    #[test]
+    fn classify_matches_under_canonical_app_dir() {
+        // Happy path: both paths absolute, strip_prefix works, event
+        // classifies as Push. This is what `dev::dev` sees after its
+        // up-front canonicalize().
+        let app_dir = Path::new("/tmp/my-todos");
+        let event = PathBuf::from("/tmp/my-todos/pages/index.html");
+        assert_eq!(classify(&event, app_dir), Action::Push);
     }
 
     #[test]
