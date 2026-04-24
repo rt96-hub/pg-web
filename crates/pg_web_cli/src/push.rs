@@ -31,6 +31,7 @@ use postgres::{Client, NoTls, Transaction};
 use serde::Deserialize;
 
 use crate::paths::{self, RouteEntry};
+use crate::migrate;
 
 /// Slice of `pgweb.toml` push cares about. Extra sections in the file
 /// are ignored silently so the user can add their own without push
@@ -64,6 +65,35 @@ pub struct PushSummary {
     pub env_synced: Option<String>,
     pub assets_upserted: usize,
     pub assets_deleted: usize,
+    /// Number of migration files that were applied during this push.
+    /// Always 0 unless `PushOptions::with_migrate` was set AND there
+    /// were pending migrations; under `dry_run` reports what WOULD be
+    /// applied but doesn't run them.
+    pub migrations_applied: usize,
+    /// Names of migrations actually applied (or, under dry-run, that
+    /// would be). Useful for the CLI to echo file-by-file.
+    pub migrations_applied_names: Vec<String>,
+    /// True when push was invoked with `--dry-run`. Callers render
+    /// their summary with a "[dry-run]" prefix; the DB transaction
+    /// was rolled back so nothing here persisted.
+    pub dry_run: bool,
+}
+
+/// Knobs for `push_with_options`. Defaults match the historic `push()`
+/// behavior exactly (no dry-run, no migrate), so existing callers that
+/// use `push()` see no change.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PushOptions {
+    /// When true, do every normal step inside the transaction but
+    /// ROLLBACK at the end instead of COMMIT. No DB-side effect, no
+    /// `pgweb.deployments` row, no migrations applied. The summary
+    /// still reports what WOULD have happened.
+    pub dry_run: bool,
+    /// When true, any pending migrations get applied before push
+    /// starts. Without this flag, push refuses to run if migrations
+    /// are pending — the `column does not exist` class of failure is
+    /// almost always "push preceded its migration."
+    pub with_migrate: bool,
 }
 
 /// Hard cap on per-asset size. Matches the `CHECK` in schema.rs so the
@@ -94,6 +124,18 @@ const MAX_ASSET_BYTES: u64 = 2 * 1024 * 1024;
 /// plumbing — is tracked as Session 4 Component F.2. Until it ships,
 /// users handle the tunnel themselves. See `docs/DEPLOYMENT.md`.
 pub fn push(app_dir: &Path, url: &str) -> Result<PushSummary> {
+    push_with_options(app_dir, url, PushOptions::default())
+}
+
+/// Full-featured variant. Behavior with `PushOptions::default()` is
+/// identical to `push(app_dir, url)` — `push` is a thin wrapper around
+/// this. New callers wanting dry-run / with-migrate semantics should
+/// call this directly.
+pub fn push_with_options(
+    app_dir: &Path,
+    url: &str,
+    opts: PushOptions,
+) -> Result<PushSummary> {
     let pages_dir = app_dir.join("pages");
     if !pages_dir.is_dir() {
         bail!(
@@ -134,9 +176,43 @@ pub fn push(app_dir: &Path, url: &str) -> Result<PushSummary> {
 
     let mut client =
         Client::connect(url, NoTls).with_context(|| format!("connecting to {url}"))?;
+
+    // --- Migration gate (F.1) -----------------------------------------
+    // Check for pending migrations BEFORE push's own transaction opens.
+    // If pending and !with_migrate: bail, push would likely fail later
+    // against a schema that hasn't caught up. If pending and with_migrate
+    // and !dry_run: apply them now (migrate::apply opens + commits its
+    // own transactions per file). If dry_run: report what would apply
+    // but don't touch the DB.
+    let pending = pending_migrations(&mut client, app_dir)?;
+    let mut migrations_applied = 0usize;
+    let mut migrations_applied_names: Vec<String> = Vec::new();
+    if !pending.is_empty() {
+        if !opts.with_migrate {
+            bail!(
+                "pending migrations: {}. \
+                 Run `pg-web migrate apply` first, or re-run with `pg-web push --with-migrate`.",
+                pending.join(", ")
+            );
+        }
+        if opts.dry_run {
+            // Don't apply. Report as "would apply".
+            migrations_applied = pending.len();
+            migrations_applied_names = pending.clone();
+        } else {
+            let applied = migrate::apply(app_dir, url)
+                .context("applying pending migrations before push")?;
+            migrations_applied = applied.applied.len();
+            migrations_applied_names = applied.applied;
+        }
+    }
+
     let mut tx = client.transaction()?;
 
     let mut summary = PushSummary::default();
+    summary.dry_run = opts.dry_run;
+    summary.migrations_applied = migrations_applied;
+    summary.migrations_applied_names = migrations_applied_names;
 
     // Phase 1 — apply desired state from the filesystem.
     for entry in &entries {
@@ -176,9 +252,65 @@ pub fn push(app_dir: &Path, url: &str) -> Result<PushSummary> {
         summary.env_synced = Some(env.to_string());
     }
 
-    tx.commit()?;
+    // Phase 5 — deployments ledger (F.1). One row per successful push
+    // with a snapshot of what we just shipped. Under dry_run we still
+    // insert (so the row is visible to any in-tx SELECT below), but
+    // the tx then rolls back, so the row never persists.
+    //
+    // file_count counts FILES FROM DISK touched by this push (routes
+    // from pages/ + static assets from public/), not DB-side upserts.
+    // That's the signal ops actually want: "how many files did this
+    // deploy bring across?"
+    let file_count: i32 = (entries.len() + assets.len()).try_into().unwrap_or(i32::MAX);
+    let migrations_applied_i32: i32 =
+        summary.migrations_applied.try_into().unwrap_or(i32::MAX);
+    let host = gethostname::gethostname().to_string_lossy().into_owned();
+    let host_opt: Option<&str> = if host.is_empty() { None } else { Some(&host) };
+    tx.execute(
+        "INSERT INTO pgweb.deployments (from_host, file_count, migrations_applied) \
+         VALUES ($1, $2, $3)",
+        &[&host_opt, &file_count, &migrations_applied_i32],
+    )
+    .context("inserting pgweb.deployments ledger row")?;
+
+    if opts.dry_run {
+        // Rollback explicitly. Drop would implicitly roll back too, but
+        // being explicit makes intent visible to future maintainers.
+        tx.rollback()
+            .context("rolling back dry-run transaction")?;
+    } else {
+        tx.commit().context("committing push transaction")?;
+    }
 
     Ok(summary)
+}
+
+/// Compute which `migrations/*.sql` files exist locally but aren't yet
+/// in `pgweb.migrations`. Used by `push_with_options` to decide whether
+/// to bail, apply, or (under dry-run) report.
+fn pending_migrations(client: &mut Client, app_dir: &Path) -> Result<Vec<String>> {
+    let migrations_dir = app_dir.join("migrations");
+    if !migrations_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let local = migrate::discover(&migrations_dir)?;
+    if local.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Use a short-lived read-only query. Running outside push's main tx
+    // so a NoSuchTable situation (pre-extension-install DB) would fail
+    // here with a clearer error than deep inside push.
+    let rows = client
+        .query("SELECT name FROM pgweb.migrations", &[])
+        .context("reading pgweb.migrations (is pg_web_ext installed?)")?;
+    let applied: HashSet<String> = rows.into_iter().map(|r| r.get::<_, String>(0)).collect();
+
+    Ok(local
+        .into_iter()
+        .filter_map(|(name, _sql)| if applied.contains(&name) { None } else { Some(name) })
+        .collect())
 }
 
 /// Parse every `.html` under `pages/` as a Tera template. Syntax errors

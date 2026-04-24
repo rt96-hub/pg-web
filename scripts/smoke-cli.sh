@@ -424,9 +424,91 @@ assert_contains "$body" "(unset)" "COALESCE fallback triggers after unset"
 unset_again=$("$BIN" env unset SMOKE_TOKEN)
 assert_contains "$unset_again" "no-op" "repeat unset is idempotent no-op"
 
-# --- 11. pg-web check — offline validator -----------------------------
+# --- 11. push --dry-run + pgweb.deployments ledger (F.1) -------------
 
-step "11. pg-web check on the live smoke app (clean state) → exit 0"
+# Helper: count rows in pgweb.deployments via docker compose exec. -tAc
+# gives a bare numeric line (no header, no padding) so the shell can
+# compare it directly.
+count_deployments() {
+    ( cd "$SMOKE_DIR" && docker compose exec -T postgres \
+        psql -U postgres -d app -tAc \
+        "SELECT COUNT(*) FROM pgweb.deployments" )
+}
+
+step "11. pgweb.deployments ledger records each committed push"
+before_deploys=$(count_deployments)
+# All prior sections did real pushes — ledger should be populated.
+[[ "$before_deploys" -gt 0 ]] && ok "deployments ledger has $before_deploys row(s) from prior pushes" \
+    || fail "deployments ledger empty after many pushes — schema or insert path broken?"
+
+step "12. push --dry-run: output tagged, transaction rolled back"
+dry_out=$("$BIN" push --dry-run 2>&1)
+assert_contains "$dry_out" "[dry-run]" "dry-run output carries the tag"
+assert_contains "$dry_out" "rolled back" "explicit rollback message present"
+assert_contains "$dry_out" "would push" "verb is conditional, not past-tense"
+
+after_dry=$(count_deployments)
+[[ "$after_dry" == "$before_deploys" ]] && ok "dry-run did NOT insert a deployments row ($after_dry unchanged)" \
+    || fail "dry-run inserted a row ($before_deploys → $after_dry) — rollback broken"
+
+step "13. push without --with-migrate refuses pending migrations"
+# Drop a trivial, valid migration into the scaffold. Without
+# --with-migrate, push must refuse and NOT run the migration.
+mkdir -p "$SMOKE_DIR/migrations"
+cat > "$SMOKE_DIR/migrations/0001_smoke_test.sql" <<'SQL'
+CREATE TABLE IF NOT EXISTS public.smoke_test (id int);
+SQL
+
+set +e
+err_out=$("$BIN" push 2>&1)
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]] || fail "push should refuse pending migrations, got exit $rc"
+assert_contains "$err_out" "pending migrations" "error identifies the class"
+assert_contains "$err_out" "0001_smoke_test.sql" "error names the offending file"
+assert_contains "$err_out" "--with-migrate" "error points at the fix flag"
+
+# pgweb.migrations must be untouched.
+mig_count=$( ( cd "$SMOKE_DIR" && docker compose exec -T postgres \
+    psql -U postgres -d app -tAc \
+    "SELECT COUNT(*) FROM pgweb.migrations WHERE name = '0001_smoke_test.sql'" ) )
+[[ "$mig_count" == "0" ]] && ok "migrations ledger untouched by refused push" \
+    || fail "refused push ran the migration anyway ($mig_count rows)"
+
+step "14. push --with-migrate applies + pushes + logs a ledger row"
+before_mig=$( ( cd "$SMOKE_DIR" && docker compose exec -T postgres \
+    psql -U postgres -d app -tAc "SELECT COUNT(*) FROM pgweb.migrations" ) )
+before_deploys=$(count_deployments)
+
+push_out=$("$BIN" push --with-migrate 2>&1)
+assert_contains "$push_out" "applied 1 migration" "summary reports the migration"
+assert_contains "$push_out" "0001_smoke_test.sql" "summary names it"
+
+after_mig=$( ( cd "$SMOKE_DIR" && docker compose exec -T postgres \
+    psql -U postgres -d app -tAc "SELECT COUNT(*) FROM pgweb.migrations" ) )
+after_deploys=$(count_deployments)
+
+[[ "$after_mig" -eq $((before_mig + 1)) ]] && ok "migrations ledger gained exactly 1 row" \
+    || fail "migrations ledger: expected $((before_mig + 1)), got $after_mig"
+[[ "$after_deploys" -eq $((before_deploys + 1)) ]] && ok "deployments ledger gained exactly 1 row" \
+    || fail "deployments ledger: expected $((before_deploys + 1)), got $after_deploys"
+
+# Verify the latest deployment row has the expected shape.
+last_row=$( ( cd "$SMOKE_DIR" && docker compose exec -T postgres \
+    psql -U postgres -d app -tAc \
+    "SELECT migrations_applied, (from_host IS NOT NULL)::text, (file_count > 0)::text \
+     FROM pgweb.deployments ORDER BY id DESC LIMIT 1" ) )
+# Expected shape: "1|true|true" — 1 migration applied, from_host populated,
+# file_count > 0. (boolean::text renders as 'true'/'false', not 't'/'f'.)
+[[ "$last_row" == "1|true|true" ]] && ok "latest row: migrations_applied, from_host, file_count all populated" \
+    || fail "latest row shape unexpected: $last_row"
+
+# Clean up the test migration so subsequent sections see a clean state.
+rm "$SMOKE_DIR/migrations/0001_smoke_test.sql"
+
+# --- 15. pg-web check — offline validator -----------------------------
+
+step "15. pg-web check on the live smoke app (clean state) → exit 0"
 # The scaffold went through init + up + push + a bunch of edits. The
 # minimal scaffold SHOULD check clean; this is also a regression guard
 # on section 1's `init` output.
@@ -437,7 +519,7 @@ set -e
 [[ "$rc" -eq 0 ]] || fail "check should exit 0 on clean scaffold, got $rc; output:\n$check_out"
 assert_contains "$check_out" "no findings" "clean scaffold reports no findings"
 
-step "12. pg-web check catches a broken migration (SQL parse) → exit 1"
+step "16. pg-web check catches a broken migration (SQL parse) → exit 1"
 # Drop a typo migration into migrations/ and confirm check flags it
 # with a diagnostic, non-zero exit, and does NOT touch the DB.
 mkdir -p "$SMOKE_DIR/migrations"
@@ -456,7 +538,7 @@ assert_contains "$check_out" "CRATE" "diagnostic surfaces the parser's unexpecte
 # Clean up so subsequent sections (if any) see a clean state.
 rm "$SMOKE_DIR/migrations/0999_typo.sql"
 
-step "13. pg-web check catches a broken Tera template → exit 1"
+step "17. pg-web check catches a broken Tera template → exit 1"
 mkdir -p "$SMOKE_DIR/pages/checktpl"
 cat > "$SMOKE_DIR/pages/checktpl/index.html" <<'HTML'
 {% if x %}unclosed block

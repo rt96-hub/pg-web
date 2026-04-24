@@ -35,6 +35,30 @@ CREATE TABLE pgweb.migrations (
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Ops-visibility ledger of every `pg-web push` that commits. Answers
+-- "when did we last deploy, from where, how big?" with a single SELECT.
+-- Intentionally append-only: no updates, no deletes; one row per
+-- successful push. Dry-runs do NOT insert (they roll back everything,
+-- including this row).
+--
+-- `file_count` sums every DB-side touch this push performed: route
+-- upserts + template upserts + handler upserts + asset upserts. A
+-- deployment with 0 files means push ran but found nothing changed
+-- on disk — useful signal on its own.
+--
+-- `from_host` is the hostname of whoever ran the CLI. Cheap to record
+-- and surprisingly useful when tracking down "who pushed this?" on
+-- a shared staging DB.
+CREATE TABLE pgweb.deployments (
+    id                   BIGSERIAL PRIMARY KEY,
+    pushed_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    from_host            TEXT,
+    file_count           INTEGER NOT NULL DEFAULT 0,
+    migrations_applied   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX deployments_pushed_at_idx ON pgweb.deployments (pushed_at DESC);
+
 -- Framework-owned key/value settings. The database is the source of
 -- truth for runtime configuration so a container restart doesn't lose
 -- state and no separate config file lives inside the image. `pg-web push`
@@ -400,5 +424,53 @@ mod tests {
             .expect("query should not error")
             .expect("query should return a row");
         assert_eq!(value, "sk_test_abc");
+    }
+
+    #[pg_test]
+    fn deployments_table_exists_and_is_empty_on_install() {
+        let count = Spi::get_one::<i64>("SELECT COUNT(*) FROM pgweb.deployments")
+            .expect("query should not error")
+            .expect("row should be returned");
+        assert_eq!(count, 0, "deployments ledger should be empty on fresh install");
+    }
+
+    #[pg_test]
+    fn deployments_accepts_insert_with_defaults() {
+        // Minimal insert: only file_count required (has default 0 too,
+        // but let's exercise a realistic value). from_host left NULL —
+        // column is nullable on purpose, since some CI contexts don't
+        // usefully resolve a hostname.
+        Spi::run(
+            "INSERT INTO pgweb.deployments (file_count, migrations_applied) \
+             VALUES (7, 2)",
+        )
+        .expect("insert should succeed");
+
+        let row = Spi::get_one::<i32>(
+            "SELECT file_count FROM pgweb.deployments ORDER BY id DESC LIMIT 1",
+        )
+        .expect("query should not error")
+        .expect("row should exist");
+        assert_eq!(row, 7);
+    }
+
+    #[pg_test]
+    fn deployments_pushed_at_defaults_to_now() {
+        Spi::run(
+            "INSERT INTO pgweb.deployments (from_host, file_count) \
+             VALUES ('smoke-host', 1)",
+        )
+        .expect("insert should succeed");
+
+        let within = Spi::get_one::<bool>(
+            "SELECT pushed_at >= now() - interval '5 seconds' \
+             FROM pgweb.deployments ORDER BY id DESC LIMIT 1",
+        )
+        .expect("query should not error")
+        .expect("row should exist");
+        assert!(
+            within,
+            "pushed_at should default to the current transaction's now()"
+        );
     }
 }

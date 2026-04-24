@@ -401,6 +401,46 @@ $$ LANGUAGE sql;
 
 **What this is not.** The CLI writes values in cleartext; encrypted secrets / KMS integration are Phase 2. Don't store anything the DB admin shouldn't be able to `SELECT`. For TLS-at-rest, use a PG instance with disk encryption; for TLS-in-transit, use `sslmode=require` on the connection URL.
 
+## Pushing: `--dry-run`, `--with-migrate`, deployments ledger
+
+`pg-web push` is transactional: it either commits every change together or leaves the live extension's state exactly as it was. Two flags shape when and how that commit happens.
+
+**`pg-web push --dry-run`** runs every step — validation, upserts, reconciliation — inside the transaction, then rolls back instead of committing. The summary is tagged `[dry-run]` on every line so it's impossible to misread as a real push. Useful for CI pre-flight checks (does my branch push cleanly against staging?) and for "show me the plan" before a big deploy.
+
+**`pg-web push --with-migrate`** detects any pending migrations in `migrations/` (compared against `pgweb.migrations`) and applies them before pushing. Without this flag, push refuses to run when migrations are pending — the "handler references a column that doesn't exist yet" class of bug is almost always "push preceded its migration." The error message names the pending files and points at `--with-migrate`.
+
+```bash
+# Normal local workflow — migrations and pushes are separate:
+pg-web migrate apply
+pg-web push
+
+# Combined, for scripts / CI:
+pg-web push --with-migrate
+
+# Preview only — see what WOULD happen without touching anything:
+pg-web push --with-migrate --dry-run
+```
+
+Every **committed** push appends a row to the `pgweb.deployments` ledger:
+
+| column              | meaning                                                     |
+|---------------------|-------------------------------------------------------------|
+| `id`                | BIGSERIAL                                                   |
+| `pushed_at`         | timestamptz; commit time (default `now()`)                  |
+| `from_host`         | hostname of the machine running the CLI                     |
+| `file_count`        | files from disk this push handled (routes + assets)         |
+| `migrations_applied`| count applied in this push (0 if nothing pending)           |
+
+Dry-run pushes do NOT append — the insert happens inside the rolled-back transaction. Ops queries:
+
+```sql
+-- When + from where did we last deploy?
+SELECT pushed_at, from_host, file_count, migrations_applied
+FROM pgweb.deployments
+ORDER BY pushed_at DESC
+LIMIT 5;
+```
+
 ## Pre-commit / CI: `pg-web check`
 
 `pg-web check` is an offline project validator — runs the same up-front checks that `pg-web push` does (layout, Tera parse, SQL syntax, migration filename rules) but without needing a DB. Drop it in a pre-commit hook or a CI gate; exit code is 0 clean, non-zero on any finding.

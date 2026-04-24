@@ -45,6 +45,20 @@ enum Command {
         /// App directory to push (defaults to cwd).
         #[arg(long, default_value = ".")]
         dir: PathBuf,
+        /// Plan-only mode: run every step inside a transaction, then
+        /// ROLLBACK instead of COMMIT. The DB sees no changes, no
+        /// `pgweb.deployments` row is recorded, and pending migrations
+        /// are reported but not applied. Useful in CI to verify a
+        /// branch would push cleanly.
+        #[arg(long)]
+        dry_run: bool,
+        /// Apply any pending migrations from `migrations/` before
+        /// pushing. Without this flag, push refuses to run when
+        /// migrations are pending — the "handler references a column
+        /// that doesn't exist yet" class of failure is almost always
+        /// "push preceded its migration."
+        #[arg(long)]
+        with_migrate: bool,
     },
     /// Manage raw-SQL migrations.
     Migrate {
@@ -178,11 +192,34 @@ fn run() -> Result<ExitCode> {
             println!("  pg-web push");
             println!("  # then hit http://localhost:8080");
         }
-        Command::Push { url, dir } => {
+        Command::Push {
+            url,
+            dir,
+            dry_run,
+            with_migrate,
+        } => {
             let url = resolve_url(url, &dir)?;
-            let summary = pg_web_cli::push::push(&dir, &url)?;
+            let opts = pg_web_cli::push::PushOptions { dry_run, with_migrate };
+            let summary = pg_web_cli::push::push_with_options(&dir, &url, opts)?;
+
+            // Dry-run gets a visible marker on every line so it's
+            // impossible to misread stdout as "push committed." For
+            // real pushes the marker is omitted; the ✓ carries the
+            // signal on its own.
+            let tag = if summary.dry_run { "[dry-run] " } else { "" };
+            let verb = if summary.dry_run { "would push" } else { "pushed" };
+
+            if summary.migrations_applied > 0 {
+                let action = if summary.dry_run { "would apply" } else { "applied" };
+                println!(
+                    "{tag}{action} {} migration(s): {}",
+                    summary.migrations_applied,
+                    summary.migrations_applied_names.join(", "),
+                );
+            }
+
             println!(
-                "✓ pushed — {} routes, {} templates, {} SQL files",
+                "{tag}✓ {verb} — {} routes, {} templates, {} SQL files",
                 summary.routes_upserted,
                 summary.templates_upserted,
                 summary.sql_files_executed
@@ -192,7 +229,7 @@ fn run() -> Result<ExitCode> {
                 || summary.handlers_dropped > 0
             {
                 println!(
-                    "  reconciled — dropped {} route(s), {} template(s), {} handler(s) no longer on disk",
+                    "{tag}  reconciled — dropped {} route(s), {} template(s), {} handler(s) no longer on disk",
                     summary.routes_deleted,
                     summary.templates_deleted,
                     summary.handlers_dropped,
@@ -200,12 +237,15 @@ fn run() -> Result<ExitCode> {
             }
             if summary.assets_upserted > 0 || summary.assets_deleted > 0 {
                 println!(
-                    "  assets — {} upserted, {} removed",
+                    "{tag}  assets — {} upserted, {} removed",
                     summary.assets_upserted, summary.assets_deleted
                 );
             }
             if let Some(env) = &summary.env_synced {
-                println!("  env → {env} (synced from pgweb.toml → pgweb.settings)");
+                println!("{tag}  env → {env} (synced from pgweb.toml → pgweb.settings)");
+            }
+            if summary.dry_run {
+                println!("[dry-run] transaction rolled back — no changes committed");
             }
         }
         Command::Migrate { action } => match action {

@@ -302,6 +302,191 @@ fn post_form(client: &reqwest::blocking::Client, base: &str, path: &str, body: &
     resp.text().unwrap()
 }
 
+/// Tier 3 F.1 coverage: migration gate, `--with-migrate`, `--dry-run`,
+/// and the `pgweb.deployments` ledger. One container, multiple pushes,
+/// asserts DB-side state between each. Kept as one test to amortize the
+/// container spin-up cost; the assertions still make each F.1 invariant
+/// explicit.
+#[test]
+#[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            --test docker_e2e -- --ignored`."]
+fn push_f1_dry_run_with_migrate_and_deployments() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start pgweb/postgres container");
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    copy_tree(&todo_app_dir(), tmp.path());
+    let app_dir = tmp.path();
+
+    let mut pg = postgres::Client::connect(&db_url, postgres::NoTls).unwrap();
+
+    // Assert fresh install has an empty deployments ledger.
+    let row: i64 = pg
+        .query_one("SELECT COUNT(*) FROM pgweb.deployments", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(row, 0, "deployments ledger should be empty on fresh DB");
+
+    // --- 1. Plain push() refuses when migrations are pending. ----------
+    let err = pg_web_cli::push::push(app_dir, &db_url)
+        .expect_err("plain push should refuse pending migrations");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("pending migrations"),
+        "error should name the situation: {msg}"
+    );
+    assert!(
+        msg.contains("0001_create_todos.sql"),
+        "error should list the pending filename(s): {msg}"
+    );
+    assert!(
+        msg.contains("--with-migrate"),
+        "error should point at the fix flag: {msg}"
+    );
+
+    // Nothing was inserted — ledger still empty.
+    let row: i64 = pg
+        .query_one("SELECT COUNT(*) FROM pgweb.deployments", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(row, 0, "failed push must not insert a deployments row");
+
+    // --- 2. push --with-migrate applies + pushes in one call. ----------
+    let summary = pg_web_cli::push::push_with_options(
+        app_dir,
+        &db_url,
+        pg_web_cli::push::PushOptions {
+            with_migrate: true,
+            dry_run: false,
+        },
+    )
+    .expect("push --with-migrate");
+    assert_eq!(summary.migrations_applied, 1);
+    assert_eq!(
+        summary.migrations_applied_names,
+        vec!["0001_create_todos.sql".to_string()]
+    );
+    assert!(!summary.dry_run);
+    assert!(summary.routes_upserted >= 1);
+
+    // Ledger has exactly one row with sane values.
+    let row = pg
+        .query_one(
+            "SELECT file_count, migrations_applied, from_host \
+             FROM pgweb.deployments ORDER BY id DESC LIMIT 1",
+            &[],
+        )
+        .unwrap();
+    let file_count: i32 = row.get(0);
+    let migrations_applied: i32 = row.get(1);
+    let from_host: Option<String> = row.get(2);
+    assert!(file_count > 0, "file_count should include demo files");
+    assert_eq!(migrations_applied, 1);
+    assert!(from_host.is_some(), "from_host should be captured");
+
+    // --- 3. Second real push logs a second ledger row. -----------------
+    let summary = pg_web_cli::push::push(app_dir, &db_url).expect("second push");
+    assert_eq!(summary.migrations_applied, 0, "no pending migrations now");
+    let count: i64 = pg
+        .query_one("SELECT COUNT(*) FROM pgweb.deployments", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 2, "second push inserts a second ledger row");
+
+    // --- 4. Dry-run push rolls back the ledger insert too. --------------
+    let summary = pg_web_cli::push::push_with_options(
+        app_dir,
+        &db_url,
+        pg_web_cli::push::PushOptions {
+            dry_run: true,
+            with_migrate: false,
+        },
+    )
+    .expect("dry-run push");
+    assert!(summary.dry_run);
+    let count: i64 = pg
+        .query_one("SELECT COUNT(*) FROM pgweb.deployments", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        count, 2,
+        "dry-run must NOT add a deployments row — transaction rolled back"
+    );
+
+    // --- 5. Dry-run with pending migrations reports without applying. ---
+    // Add a fake second migration to disk. Dry-run + with-migrate
+    // should say "would apply" and not touch pgweb.migrations.
+    let new_mig = app_dir
+        .join("migrations")
+        .join("0002_add_column.sql");
+    fs::write(
+        &new_mig,
+        "ALTER TABLE public.todos ADD COLUMN description text;",
+    )
+    .unwrap();
+
+    let summary = pg_web_cli::push::push_with_options(
+        app_dir,
+        &db_url,
+        pg_web_cli::push::PushOptions {
+            with_migrate: true,
+            dry_run: true,
+        },
+    )
+    .expect("dry-run with_migrate push");
+    assert!(summary.dry_run);
+    assert_eq!(summary.migrations_applied, 1, "reports the would-apply");
+    assert_eq!(
+        summary.migrations_applied_names,
+        vec!["0002_add_column.sql".to_string()]
+    );
+
+    // pgweb.migrations should still have only 0001 — 0002 was NOT applied.
+    let rows = pg
+        .query("SELECT name FROM pgweb.migrations ORDER BY name", &[])
+        .unwrap();
+    let names: Vec<String> = rows.iter().map(|r| r.get::<_, String>(0)).collect();
+    assert_eq!(
+        names,
+        vec!["0001_create_todos.sql".to_string()],
+        "dry-run + with-migrate must NOT actually apply migrations"
+    );
+
+    // And the todos table still doesn't have a description column.
+    let col: Option<String> = pg
+        .query_opt(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_schema = 'public' AND table_name = 'todos' \
+               AND column_name = 'description'",
+            &[],
+        )
+        .unwrap()
+        .map(|r| r.get(0));
+    assert!(
+        col.is_none(),
+        "dry-run must leave the target schema untouched"
+    );
+}
+
 /// Recursively copy a directory tree, preserving structure. Keeps the
 /// watcher test self-contained — we copy `examples/todo` into a tempdir
 /// so mutations during the test never touch the checked-in source.

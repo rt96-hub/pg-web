@@ -60,6 +60,13 @@ include_dir = "0.7"
 # becomes necessary (adds gcc + cmake requirements).
 sqlparser = "0.52"
 
+# push: capture the hostname of whoever ran `pg-web push` for the
+# pgweb.deployments ledger ("who deployed this to staging?"). Tiny
+# crate, no deps — just a cross-platform wrapper over gethostname(2)
+# / GetComputerNameW. Returns None on failure; column is nullable,
+# so we don't care.
+gethostname = "0.5"
+
 [dev-dependencies]
 tempfile = "3"
 
