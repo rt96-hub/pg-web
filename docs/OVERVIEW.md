@@ -38,7 +38,7 @@ Later phases (2 auth/RLS, 3 async jobs, 4 observability) are tracked in `docs/RO
 - **A** ✅ `pgweb.migrations` ledger + `pg-web migrate apply` CLI (`c3960a3`)
 - **B** ✅ Directory-as-route layout: `paths::scan()` + `push.rs` walker (`21cc831`)
 - **C** ✅ Router `(req json)` + text-return dispatch + `_404` fallback (`af50911`)
-- **D** ✅ `examples/demo/` todo app + `docs/TUTORIAL.md` (`7fed892`)
+- **D** ✅ `examples/todo/` todo app + `docs/TUTORIAL.md` (`7fed892`)
 - **E** ✅ Docker E2E tier against `pgweb/postgres:latest` (`c2c4985`)
 
 ---

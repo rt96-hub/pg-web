@@ -77,7 +77,7 @@ fn minimal_init_scaffolds_readme_with_app_name() {
         "README should point at the dev workflow: {readme}"
     );
     assert!(
-        readme.contains("--template demo"),
+        readme.contains("--template todo"),
         "README should mention the richer template as a next step: {readme}"
     );
     assert!(
@@ -87,15 +87,15 @@ fn minimal_init_scaffolds_readme_with_app_name() {
 }
 
 #[test]
-fn template_demo_extracts_expected_tree() {
-    // `--template demo` should materialize the full todo-list tree —
-    // same files the demo_layout tests + docker_e2e flow expect to
-    // find. If a new file gets added to examples/demo/, this test's
+fn template_todo_extracts_expected_tree() {
+    // `--template todo` should materialize the full todo-list tree —
+    // same files the todo_layout tests + docker_e2e flow expect to
+    // find. If a new file gets added to examples/todo/, this test's
     // keeper list will start flagging it as missing, which is a
     // feature: the scaffold and the repo's reference app stay in lockstep.
     let dir = tempdir().unwrap();
     let app = dir.path().join("my-todos");
-    pg_web_cli::init::init(&app, "my-todos", Some("demo")).expect("template init");
+    pg_web_cli::init::init(&app, "my-todos", Some("todo")).expect("template init");
 
     for rel in [
         "pages/index.html",
@@ -124,14 +124,14 @@ fn template_demo_extracts_expected_tree() {
 }
 
 #[test]
-fn template_demo_readme_is_app_facing_not_repo_facing() {
-    // The bundled examples/demo/README.md targets pg-web repo
+fn template_todo_readme_is_app_facing_not_repo_facing() {
+    // The bundled examples/todo/README.md targets pg-web repo
     // maintainers — it references `../../target/debug/pg-web` etc.
     // That's useless at an app root. init_from_template skips the
-    // bundled README and writes templates::README_DEMO in its place.
+    // bundled README and writes templates::README_TODO in its place.
     let dir = tempdir().unwrap();
     let app = dir.path().join("readme-swap");
-    pg_web_cli::init::init(&app, "readme-swap", Some("demo")).unwrap();
+    pg_web_cli::init::init(&app, "readme-swap", Some("todo")).unwrap();
     let readme = fs::read_to_string(app.join("README.md")).unwrap();
     assert!(
         readme.starts_with("# readme-swap"),
@@ -148,12 +148,12 @@ fn template_demo_readme_is_app_facing_not_repo_facing() {
 }
 
 #[test]
-fn template_demo_includes_validation_handler() {
+fn template_todo_includes_validation_handler() {
     // Component B's post.sql catches check_violation — the scaffolded
     // tree must carry that live, not a pre-Component-B snapshot.
     let dir = tempdir().unwrap();
     let app = dir.path().join("validation-check");
-    pg_web_cli::init::init(&app, "validation-check", Some("demo")).unwrap();
+    pg_web_cli::init::init(&app, "validation-check", Some("todo")).unwrap();
     let post_sql = fs::read_to_string(app.join("pages/todos/post.sql")).unwrap();
     assert!(
         post_sql.contains("EXCEPTION WHEN check_violation"),
@@ -171,7 +171,7 @@ fn unknown_template_errors_with_available_list() {
     assert!(msg.contains("unknown template"), "err = {msg}");
     assert!(msg.contains("nonexistent"), "err should echo the bad name: {msg}");
     assert!(
-        msg.contains("demo"),
+        msg.contains("todo"),
         "err should list available templates: {msg}"
     );
     assert!(
@@ -181,7 +181,7 @@ fn unknown_template_errors_with_available_list() {
 }
 
 #[test]
-fn available_templates_lists_demo() {
+fn available_templates_lists_todo() {
     let list = pg_web_cli::init::available_templates();
-    assert!(list.contains(&"demo"), "demo should be available: {list:?}");
+    assert!(list.contains(&"todo"), "todo should be available: {list:?}");
 }

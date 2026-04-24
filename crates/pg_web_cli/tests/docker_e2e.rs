@@ -1,5 +1,5 @@
 //! Tier 3 end-to-end test. Boots `pgweb/postgres:latest` in a container,
-//! runs `migrate apply` + `push` against `examples/demo/`, exercises the
+//! runs `migrate apply` + `push` against `examples/todo/`, exercises the
 //! full CRUD flow over HTTP.
 //!
 //! Gated with `#[ignore]` so the default `cargo test` stays fast. The
@@ -77,10 +77,10 @@ fn wait_for_http(base_url: &str, deadline: Instant) {
     }
 }
 
-fn demo_dir() -> PathBuf {
+fn todo_app_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join("examples/demo")
+        .join("examples/todo")
 }
 
 #[test]
@@ -120,9 +120,9 @@ fn full_todo_crud_flow() {
     wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
 
     // Apply migrations then push the demo app into the fresh DB.
-    let demo = demo_dir();
-    pg_web_cli::migrate::apply(&demo, &db_url).expect("migrate apply");
-    pg_web_cli::push::push(&demo, &db_url).expect("push");
+    let todo_app = todo_app_dir();
+    pg_web_cli::migrate::apply(&todo_app, &db_url).expect("migrate apply");
+    pg_web_cli::push::push(&todo_app, &db_url).expect("push");
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -303,7 +303,7 @@ fn post_form(client: &reqwest::blocking::Client, base: &str, path: &str, body: &
 }
 
 /// Recursively copy a directory tree, preserving structure. Keeps the
-/// watcher test self-contained — we copy `examples/demo` into a tempdir
+/// watcher test self-contained — we copy `examples/todo` into a tempdir
 /// so mutations during the test never touch the checked-in source.
 fn copy_tree(src: &Path, dst: &Path) {
     fs::create_dir_all(dst).unwrap();
@@ -353,9 +353,9 @@ fn dev_watcher_repushes_on_save() {
     let base_url = format!("http://127.0.0.1:{http_host_port}");
     wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
 
-    // Copy examples/demo to a tempdir so edits don't touch the checked-in source.
+    // Copy examples/todo to a tempdir so edits don't touch the checked-in source.
     let tmp = tempfile::tempdir().expect("tempdir");
-    copy_tree(&demo_dir(), tmp.path());
+    copy_tree(&todo_app_dir(), tmp.path());
 
     // Initial schema + push — matches the normal `pg-web migrate apply && pg-web push` flow.
     pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
@@ -448,7 +448,7 @@ fn push_reconciles_deleted_files() {
 
     // Copy the demo and add an extra route we can later delete.
     let tmp = tempfile::tempdir().expect("tempdir");
-    copy_tree(&demo_dir(), tmp.path());
+    copy_tree(&todo_app_dir(), tmp.path());
 
     let extra_dir = tmp.path().join("pages/extra");
     fs::create_dir_all(&extra_dir).unwrap();
@@ -554,7 +554,7 @@ fn push_rejects_broken_tera_template() {
     wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
 
     let tmp = tempfile::tempdir().expect("tempdir");
-    copy_tree(&demo_dir(), tmp.path());
+    copy_tree(&todo_app_dir(), tmp.path());
 
     // Prime: apply migrations + initial good push so there's live state.
     pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
@@ -629,7 +629,7 @@ fn dev_error_page_surfaces_sql_exception_detail() {
     wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
 
     let tmp = tempfile::tempdir().expect("tempdir");
-    copy_tree(&demo_dir(), tmp.path());
+    copy_tree(&todo_app_dir(), tmp.path());
 
     // Stamp a deliberately-exploding handler onto a fresh route. Full-mode
     // (.html + .sql) so we go through the JSON → Tera pipeline — proving
@@ -745,7 +745,7 @@ fn static_asset_serves_with_etag_and_revalidates() {
     wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
 
     let tmp = tempfile::tempdir().expect("tempdir");
-    copy_tree(&demo_dir(), tmp.path());
+    copy_tree(&todo_app_dir(), tmp.path());
 
     pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
     let summary = pg_web_cli::push::push(tmp.path(), &db_url).expect("push");
@@ -862,7 +862,7 @@ fn push_rejects_missing_handler_function() {
     wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
 
     let tmp = tempfile::tempdir().expect("tempdir");
-    copy_tree(&demo_dir(), tmp.path());
+    copy_tree(&todo_app_dir(), tmp.path());
 
     // Apply migrations + push the good demo so there's live state to protect.
     pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");

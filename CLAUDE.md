@@ -47,7 +47,7 @@ pg-web/
 - **Tests next to code.** Extension tests use `#[pg_test]` and run via `cargo pgrx test pg17`. Don't mock Postgres — run against the real compiled instances under `~/.pgrx/`.
 - **No premature abstraction.** Three duplicated lines beats the wrong trait. The extension is small; keep modules flat until patterns genuinely emerge.
 - **Error handling on the request path.** No `unwrap()` / `expect()` in the HTTP handler. Fatal SQL exceptions → generic 500 in prod, rich debug page in dev (mode from the `pgweb.env` GUC).
-- **Every feature ships with a companion-app flow.** If a feature isn't exercised in `examples/demo/`, it isn't done. See `docs/TESTING.md`.
+- **Every feature ships with a companion-app flow.** If a feature isn't exercised in `examples/todo/`, it isn't done. See `docs/TESTING.md`.
 - **Phase discipline.** We are in **Phase 1** (Synchronous Core). Do not add Phase 2+ features (auth/RLS, job queues, dashboard) into Phase 1 code paths. Stage them properly.
 
 ## Commit style
@@ -59,7 +59,7 @@ pg-web/
 ## Session rituals
 
 - **Before writing non-trivial code** — read the relevant `docs/*.md` section first. If your change touches an invariant above, raise a flag and wait for human confirmation.
-- **Before finishing a feature** — confirm the demo app in `examples/demo/` exercises it. If not, add the flow.
+- **Before finishing a feature** — confirm the demo app in `examples/todo/` exercises it. If not, add the flow.
 - **Before committing** — run `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and the relevant `cargo pgrx test pgXX` for whichever Postgres version is current.
 
 ## Current phase & milestones
@@ -67,7 +67,7 @@ pg-web/
 **Phase 1 — Synchronous Core.** Four milestones (see `docs/ROADMAP.md`):
 
 1. **M1.1 Walking Skeleton** ✅ shipped Session 1 — extension + CLI + Docker Compose + `pg-web push` produces a working `GET /` → Tera-from-DB render.
-2. **M1.3 Interactive Contracts + Real Demo** ✅ shipped Session 2 — `(req json)` handler contract, directory-as-route layout, `_404` fallback, `examples/demo/` todo app, tier 3 Docker E2E.
+2. **M1.3 Interactive Contracts + Real Demo** ✅ shipped Session 2 — `(req json)` handler contract, directory-as-route layout, `_404` fallback, `examples/todo/` todo app, tier 3 Docker E2E.
 3. **M1.2 Interactive Dev Loop** ⬜ Session 3 next — `pg-web up`/`down`/`dev` (file watcher + hot reload), dynamic routes (`[id]` captures), dev error page, static asset serving.
 4. **M1.4 Closeout** ⬜ — secrets, `pg-web check` lint, `pg-web init --template`, release pipeline, html_escape helper, validation UX.
 

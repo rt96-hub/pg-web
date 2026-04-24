@@ -1,6 +1,6 @@
 # pg-web — Roadmap
 
-Phased delivery. Each phase must be stable, shippable, and usable on its own — no half-shipped phases. The companion app at `examples/demo/` exercises every feature of every phase.
+Phased delivery. Each phase must be stable, shippable, and usable on its own — no half-shipped phases. The companion app at `examples/todo/` exercises every feature of every phase.
 
 ## Phase 1 — The Synchronous Core (current focus)
 
@@ -26,15 +26,15 @@ Goal: `pg-web init` a project, `docker compose up -d`, `pg-web push`, `curl loca
 
 ### Milestone 1.3 — Interactive Contracts + First Real Demo (shipped Session 2)
 
-Goal: `examples/demo/` is a fully functional todo list with real DB interactions, not a toy. Lock the interactive-handler contracts (request JSON, return-type dispatch, 404 fallback) that M1.2's watcher will re-sync against.
+Goal: `examples/todo/` is a fully functional todo list with real DB interactions, not a toy. Lock the interactive-handler contracts (request JSON, return-type dispatch, 404 fallback) that M1.2's watcher will re-sync against.
 
 - [x] Directory-as-route, filename-as-method app layout. Full spec in `docs/APP-LAYOUT.md`.
 - [x] Uniform handler contract: `(req json) RETURNS <json|text>` with `req = { body, query, method, path }`.
 - [x] Router dispatches on `pgweb.routes.template_path` nullability — non-NULL → Tera render, NULL → raw text.
 - [x] Custom 404 fallback via `pages/_404.html` (+ optional `_404.sql`). Default body served when no user template.
 - [x] Extension installs `pgweb.migrations` ledger; CLI `pg-web migrate apply` runs raw-SQL migrations in filename order. (No `migrate create` / diffing — Phase 2.5.)
-- [x] Companion app at `examples/demo/` — full todo CRUD with HTMX form (create / append), toggle (outerHTML swap), delete (empty-body swap), custom 404 page.
-- [x] `README.md` in `examples/demo/` + `docs/TUTORIAL.md` walking through building the same app from `pg-web init`.
+- [x] Companion app at `examples/todo/` — full todo CRUD with HTMX form (create / append), toggle (outerHTML swap), delete (empty-body swap), custom 404 page.
+- [x] `README.md` in `examples/todo/` + `docs/TUTORIAL.md` walking through building the same app from `pg-web init`.
 - [x] Tier 3 Docker E2E test — `testcontainers` boots `pgweb/postgres:latest`, runs `migrate apply` + `push` against the demo, exercises CRUD over HTTP.
 - [x] **Deferred to M1.4, shipped Session 4:** user-facing validation UX (`check_violation` caught in a PL/pgSQL `EXCEPTION` block, rendered inline via `hx-swap-oob`), `pgweb.html_escape()` helper. Demo's POST `/todos` now returns an inline error fragment for empty/whitespace titles instead of a 500.
 - [ ] **Deferred to M1.2:** `public/` static asset serving (the demo ships with inline CSS for now; `public/` exists empty).
@@ -52,7 +52,7 @@ Goal: a developer can run `pg-web dev`, save a `.sql` file, and see the change r
 - [ ] Production-mode generic 500 page.
 - [ ] Structured JSON logging: NOTICE/LOG capture → stdout.
 - [ ] Static asset serving (BYTEA for < 1 MiB, `pg_largeobject` with streaming for ≥ 1 MiB).
-- [ ] Demo enhancement: swap the inline `<style>` in `examples/demo/pages/index.html` for `public/styles.css` once static asset serving ships.
+- [ ] Demo enhancement: swap the inline `<style>` in `examples/todo/pages/index.html` for `public/styles.css` once static asset serving ships.
 
 ### Milestone 1.4 — Remaining Phase 1 Feature Surface (closeout)
 

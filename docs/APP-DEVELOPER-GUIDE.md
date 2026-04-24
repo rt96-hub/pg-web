@@ -34,7 +34,7 @@ open http://localhost:8080     # or `curl localhost:8080/`
 
 Four commands and you're serving. Edit `pages/index.html`, refresh — live (if `pg-web dev` is running; otherwise rerun `pg-web push` first).
 
-Want more code to poke at? `pg-web init my-todos --template demo` scaffolds the full HTMX todo list instead of the minimal shell — dynamic routes, migrations, static assets, form validation. Available templates: `demo`. The scaffolded `README.md` in either path has the quickstart commands and pointers to the docs.
+Want more code to poke at? `pg-web init my-todos --template todo` scaffolds the full HTMX todo list instead of the minimal shell — dynamic routes, migrations, static assets, form validation. Available templates: `todo`. The scaffolded `README.md` in either path has the quickstart commands and pointers to the docs.
 
 `pg-web up` / `pg-web down` are thin wrappers over `docker compose up -d` / `down`. `up` polls Postgres + the HTTP server until both accept connections, and resolves `DATABASE_URL` from `pgweb.toml`'s `[database].url_env` (default `DATABASE_URL`), falling back to the dev-scaffold default baked into `docker-compose.yml`. `pg-web down --volumes` also drops the `pgdata` volume (destructive).
 
@@ -354,7 +354,7 @@ $$ LANGUAGE plpgsql;
 
 Your `pages/signup/post.html` template branches on `{% if success %}` vs `{% else %}`. HTMX's `hx-swap-oob="true"` lets you update a separate region (e.g. a `<div id="form-error">` next to the form) from the same response, so the main target still receives the success fragment on happy path and the error lands beside the form on failure.
 
-**Live reference:** `examples/demo/pages/todos/post.sql` + `pages/todos/post.html` + `pages/index.html` exercise this pattern end-to-end. The table's `CHECK (length(trim(title)) > 0)` on `public.todos` is the validation rule; the handler catches `check_violation` and the template dispatches between an appended `<li>` (success) and an OOB `#form-error` fragment (failure).
+**Live reference:** `examples/todo/pages/todos/post.sql` + `pages/todos/post.html` + `pages/index.html` exercise this pattern end-to-end. The table's `CHECK (length(trim(title)) > 0)` on `public.todos` is the validation rule; the handler catches `check_violation` and the template dispatches between an appended `<li>` (success) and an OOB `#form-error` fragment (failure).
 
 ### Escaping user input in raw-text handlers
 
@@ -444,4 +444,4 @@ Check `docs/ROADMAP.md` before building against a "not yet" feature.
 - **`docs/APP-LAYOUT.md`** — the exhaustive, spec-level reference for routing and file conventions. Use this when you want the rule on an edge case.
 - **`docs/ARCHITECTURE.md`** — how the framework actually works under the hood.
 - **`docs/ROADMAP.md`** — what's shipping when, and what's deliberately out of scope.
-- **`examples/demo/`** — the companion todo app. Runs end-to-end; read it to see every Phase 1 feature exercised together. (Lands as M1.3.)
+- **`examples/todo/`** — the companion todo app. Runs end-to-end; read it to see every Phase 1 feature exercised together. (Lands as M1.3.)

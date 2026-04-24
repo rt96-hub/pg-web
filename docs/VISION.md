@@ -52,6 +52,6 @@ That's the whole dev loop. No Node install. No ORM learning curve. No build step
 ## Success criteria (for v1.0)
 
 - A developer can go from `pg-web init` to serving real HTMX traffic in under 5 minutes on a fresh Linux VPS.
-- The demo companion app at `examples/demo/` runs the full feature surface on every commit to `main`.
+- The demo companion app at `examples/todo/` runs the full feature surface on every commit to `main`.
 - A 1-vCPU / 2 GiB VPS can sustain 1,000 req/s of "fetch and render" traffic against the demo app. (Target — to be benchmarked.)
 - The entire app framework is deployable with `docker compose up` and a 20-line `Caddyfile`.

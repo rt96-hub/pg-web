@@ -60,7 +60,7 @@ To tear down:
 ## What's in here
 
 ```
-examples/demo/
+examples/todo/
 ├── migrations/
 │   └── 0001_create_todos.sql           # public.todos schema
 └── pages/

@@ -16,8 +16,8 @@ It exits non-zero on any failure and prints `All tests passed.` on success. Four
 |---|---|---|
 | 1. SQL / pgrx  | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | 8 `#[pg_test]` — schema existence, seed row round-trips, migrations ledger, `(req json)` handler contract |
 | 2a. HTTP smoke | `scripts/test-http.sh` (starts PG, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — seeded `GET /` renders, unknown path returns default 404 body |
-| 2b. CLI        | `cargo test -p pg_web_cli` | 47 — 23 path scanner + reserved-stem tests, 6 migrate unit + 3 hermetic, 6 init integration + 2 push hermetic, 3 `examples/demo/` regression tests, 4 other |
-| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` (requires Docker + `pgweb/postgres:latest`) | 1 — boots the image via testcontainers, migrates + pushes `examples/demo/`, drives full todo CRUD + toggle + delete + custom 404 via HTTP |
+| 2b. CLI        | `cargo test -p pg_web_cli` | 47 — 23 path scanner + reserved-stem tests, 6 migrate unit + 3 hermetic, 6 init integration + 2 push hermetic, 3 `examples/todo/` regression tests, 4 other |
+| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` (requires Docker + `pgweb/postgres:latest`) | 1 — boots the image via testcontainers, migrates + pushes `examples/todo/`, drives full todo CRUD + toggle + delete + custom 404 via HTTP |
 
 **58 tests all green via `scripts/test-all.sh`.**
 
@@ -170,24 +170,24 @@ Start a Postgres container per test module (cached via `testcontainers`), seed i
 
 ## Tier 3 — End-to-end (the companion app)
 
-**Tool:** `examples/demo/` — a real pg-web app that exercises every framework feature.
+**Tool:** `examples/todo/` — a real pg-web app that exercises every framework feature.
 **Runs:** CI spins up `pgweb/postgres:latest`, runs `pg-web dev` pointing at the demo app, hits HTTP endpoints with `reqwest`, asserts on response bodies and status codes.
 **Scope:** product behavior from the app developer's POV.
 
 ### The companion app IS the acceptance test
 
-If a feature isn't exercised in `examples/demo/`, it isn't done. New features land with three things:
+If a feature isn't exercised in `examples/todo/`, it isn't done. New features land with three things:
 
 1. Implementation (in `pg_web_ext` or `pg_web_cli`).
 2. Tier 1 or Tier 2 tests.
-3. A new page/flow/migration in `examples/demo/` that uses the feature.
+3. A new page/flow/migration in `examples/todo/` that uses the feature.
 
 ### Demo app trajectory
 
 The demo app grows in lockstep with the framework:
 
-- **Milestone 1.1 (Walking Skeleton):** `examples/demo/` is a single hello-world page. One route, one template, no DB tables beyond framework-owned ones. Purpose: prove the `init → compose up → push → HTTP 200` loop works end-to-end.
-- **Milestone 1.3 (First Real Demo):** `examples/demo/` becomes a **todo list** app. Full CRUD, raw-SQL migrations, HTMX forms, validation, static CSS. This is the first honest demonstration of the framework's value.
+- **Milestone 1.1 (Walking Skeleton):** `examples/todo/` is a single hello-world page. One route, one template, no DB tables beyond framework-owned ones. Purpose: prove the `init → compose up → push → HTTP 200` loop works end-to-end.
+- **Milestone 1.3 (First Real Demo):** `examples/todo/` becomes a **todo list** app. Full CRUD, raw-SQL migrations, HTMX forms, validation, static CSS. This is the first honest demonstration of the framework's value.
 - **Phase 2+:** demo extends with auth + per-user todos via RLS.
 - **Phase 3+:** demo adds email confirmation via the async job queue.
 - **Phase 4+:** demo README includes a dashboard walkthrough.
@@ -224,7 +224,7 @@ Checked items are covered; unchecked are next. Grouped by milestone. This matrix
 | Secrets via `pgweb.settings` | `pg-web env set` + `pgweb.setting()` read in handler | M1.4 | ☑ |
 | Production 500 page | Dev error path flipped to prod mode | M1.4 | ☐ |
 | `pg-web check` lint | Offline project validator | M1.4 | ☐ |
-| `pg-web init --template demo` | Scaffold the todo app straight from bundled `examples/demo/` | M1.4 | ☑ |
+| `pg-web init --template todo` | Scaffold the todo app straight from bundled `examples/todo/` | M1.4 | ☑ |
 | `pgweb.html_escape()` SQL helper | Raw-text handler with user content | M1.4 | ☑ |
 | **Phase 2** — auth | Login, logout, RLS-filtered todo list | P2 | ☐ |
 | **Phase 3** — async job | Email confirmation on signup | P3 | ☐ |
@@ -233,7 +233,7 @@ Checked items are covered; unchecked are next. Grouped by milestone. This matrix
 ### E2E test harness
 
 ```rust
-// examples/demo/tests/e2e.rs
+// examples/todo/tests/e2e.rs
 #[test]
 fn home_renders_greeting() {
     let app = start_demo_app();
@@ -262,13 +262,13 @@ Breaking any of these blocks merge.
 
 - Tier 1: inline seed data inside each `#[pg_test]`. No shared fixtures (tests must be independent).
 - Tier 2: per-test `testcontainers` Postgres. Seed in the test's setup.
-- Tier 3: `examples/demo/migrations/` contains the demo app's canonical seed data. Checked into repo.
+- Tier 3: `examples/todo/migrations/` contains the demo app's canonical seed data. Checked into repo.
 
 ## Debugging failing tests
 
 - **Tier 1 flaky:** add `println!()` in the test and re-run with `cargo pgrx test pg17 -- --nocapture`.
 - **Tier 2 flaky from testcontainers:** bump Postgres start timeout (`POSTGRES_START_TIMEOUT=60`).
-- **Tier 3 flaky:** run locally with `docker compose -f examples/demo/docker-compose.yml up` and hit endpoints by hand with `curl -v`.
+- **Tier 3 flaky:** run locally with `docker compose -f examples/todo/docker-compose.yml up` and hit endpoints by hand with `curl -v`.
 
 ## Performance benchmarks (Phase 1+)
 

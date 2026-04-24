@@ -21,7 +21,7 @@ enum Command {
         name: String,
         /// Scaffold from a bundled example instead of the minimal hello-world.
         /// Run without the flag first to see what the minimal scaffold looks
-        /// like; run with `--template demo` for the full HTMX todo list.
+        /// like; run with `--template todo` for the full HTMX todo list.
         #[arg(long, value_name = "NAME")]
         template: Option<String>,
     },
@@ -155,7 +155,7 @@ fn run() -> Result<()> {
             // The demo template needs a migrate before its handlers can
             // run against public.todos; the minimal scaffold has an
             // empty migrations/ and doesn't. Guide the user accordingly.
-            if matches!(template.as_deref(), Some("demo")) {
+            if matches!(template.as_deref(), Some("todo")) {
                 println!("  pg-web migrate apply");
             }
             println!("  pg-web push");

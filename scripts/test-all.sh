@@ -4,7 +4,7 @@
 #   2a) HTTP smoke against a running extension
 #   2b) CLI unit + hermetic integration tests
 #   3)  Docker E2E — boots pgweb/postgres:latest in a container and drives
-#       the full CRUD flow against examples/demo
+#       the full CRUD flow against examples/todo
 #   4)  CLI black-box smoke — init → up → push → break 3 ways → down,
 #       exercising the user-visible CLI stdout and HTTP bodies
 #
@@ -32,7 +32,7 @@ echo "== Tier 2b — CLI tests (cargo test -p pg_web_cli) =="
 cargo test -p pg_web_cli
 
 echo
-echo "== Tier 3 — Docker E2E (pgweb/postgres:latest + examples/demo) =="
+echo "== Tier 3 — Docker E2E (pgweb/postgres:latest + examples/todo) =="
 cargo test -p pg_web_cli --test docker_e2e -- --ignored
 
 echo

@@ -2,18 +2,18 @@
 //!
 //! Two modes:
 //! - **Minimal** (default) — a tiny hello-world app plus a `README.md`
-//!   pointing at the docs and at the richer `--template demo` starting
+//!   pointing at the docs and at the richer `--template todo` starting
 //!   point. The long-standing default since M1.1.
 //! - **Template** (`--template <name>`) — extract a full example tree
 //!   bundled into the binary at compile time via `include_dir!`. Current
-//!   set: `demo` (the HTMX todo list in `examples/demo/`). Adding a
-//!   future template is one `include_dir!` + one match arm in
-//!   `lookup_template`.
+//!   set: `todo` (the HTMX todo list in `examples/todo/`). Adding a
+//!   future template (e.g. `blog`) is one `include_dir!` + one match
+//!   arm in `lookup_template`.
 //!
-//! The template README inside `examples/demo/README.md` is repo-facing
+//! The template README inside `examples/todo/README.md` is repo-facing
 //! (references `../../target/debug/pg-web` etc.) and makes no sense at
 //! an app's root. We skip that file during extraction and write the
-//! app-facing `README_DEMO` template instead.
+//! app-facing `README_TODO` template instead.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ use crate::templates;
 /// The HTMX todo-list demo — same directory `cargo test` + smoke tests
 /// drive, baked into the binary so users without a local checkout of
 /// the pg-web repo can scaffold it.
-static DEMO_TEMPLATE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../examples/demo");
+static TODO_TEMPLATE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../examples/todo");
 
 /// Names of files inside a bundled template that `init --template` will
 /// NOT copy verbatim. We re-generate an app-facing replacement for each.
@@ -100,7 +100,7 @@ fn init_from_template(path: &Path, app_name: &str, name: &str) -> Result<()> {
     // Write the app-facing README after extraction so it replaces any
     // repo-facing one skipped by TEMPLATE_SKIP.
     let readme = match name {
-        "demo" => templates::README_DEMO,
+        "todo" => templates::README_TODO,
         _ => templates::README_MINIMAL,
     };
     write(path, "README.md", &templates::render(readme, app_name))?;
@@ -144,7 +144,7 @@ fn extract_dir(src: &Dir<'_>, dest: &Path) -> Result<()> {
 /// `None` for unknown names — caller formats the error.
 fn lookup_template(name: &str) -> Option<&'static Dir<'static>> {
     match name {
-        "demo" => Some(&DEMO_TEMPLATE),
+        "todo" => Some(&TODO_TEMPLATE),
         _ => None,
     }
 }
@@ -152,7 +152,7 @@ fn lookup_template(name: &str) -> Option<&'static Dir<'static>> {
 /// The list of template names `--template` accepts today. Exposed so
 /// the CLI's error messages + future help text stay in one place.
 pub fn available_templates() -> Vec<&'static str> {
-    vec!["demo"]
+    vec!["todo"]
 }
 
 /// Return the list of paths (relative to the project root) that plain

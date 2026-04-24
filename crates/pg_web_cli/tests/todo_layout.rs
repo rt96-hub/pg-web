@@ -1,20 +1,20 @@
-//! Parses the bundled `examples/demo/pages/` tree through `paths::scan`
-//! to keep the demo honest: any future accidental rename, flat `.html`,
-//! reserved stem, or orphaned template fails this test instead of
-//! surprising someone at `pg-web push` time.
+//! Parses the bundled `examples/todo/pages/` tree through `paths::scan`
+//! to keep the reference app honest: any future accidental rename,
+//! flat `.html`, reserved stem, or orphaned template fails this test
+//! instead of surprising someone at `pg-web push` time.
 
 use std::path::PathBuf;
 
-fn demo_pages() -> PathBuf {
+fn todo_pages() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join("examples/demo/pages")
+        .join("examples/todo/pages")
 }
 
 #[test]
-fn demo_pages_scans_cleanly() {
-    let entries = pg_web_cli::paths::scan(&demo_pages())
-        .expect("examples/demo/pages should parse under the current layout spec");
+fn todo_pages_scans_cleanly() {
+    let entries = pg_web_cli::paths::scan(&todo_pages())
+        .expect("examples/todo/pages should parse under the current layout spec");
 
     // Collect as (method, route) for assertion — order-agnostic beyond that.
     let mut pairs: Vec<(String, String)> = entries
@@ -39,8 +39,8 @@ fn demo_pages_scans_cleanly() {
 }
 
 #[test]
-fn demo_pages_modes_are_as_documented() {
-    let entries = pg_web_cli::paths::scan(&demo_pages()).unwrap();
+fn todo_pages_modes_are_as_documented() {
+    let entries = pg_web_cli::paths::scan(&todo_pages()).unwrap();
 
     let by_key = |method: &str, route: &str| {
         entries
@@ -64,8 +64,8 @@ fn demo_pages_modes_are_as_documented() {
 }
 
 #[test]
-fn demo_handler_names_match_spec() {
-    let entries = pg_web_cli::paths::scan(&demo_pages()).unwrap();
+fn todo_handler_names_match_spec() {
+    let entries = pg_web_cli::paths::scan(&todo_pages()).unwrap();
     for e in &entries {
         let expected = match (e.method.as_str(), e.route.as_str()) {
             ("GET", "/") => "pgweb.pages__index",

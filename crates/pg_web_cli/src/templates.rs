@@ -140,7 +140,7 @@ pg-web dev         # watches pages/ + public/, auto-pushes on save
 ## A bigger starting point
 
 ```bash
-pg-web init another-app --template demo
+pg-web init another-app --template todo
 ```
 
 scaffolds a full HTMX todo list — dynamic routes, form validation, static assets, the works.
@@ -152,9 +152,9 @@ scaffolds a full HTMX todo list — dynamic routes, form validation, static asse
 - `Caddyfile` — TLS reverse-proxy config. Set your domain.
 "#;
 
-pub const README_DEMO: &str = r#"# {APP}
+pub const README_TODO: &str = r#"# {APP}
 
-A pg-web todo-list demo, scaffolded from `pg-web init --template demo`. HTMX + Postgres, server-rendered, no JavaScript build step.
+A pg-web todo-list app, scaffolded from `pg-web init --template todo`. HTMX + Postgres, server-rendered, no JavaScript build step.
 
 ## Run it
 

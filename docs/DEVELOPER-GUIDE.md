@@ -110,7 +110,7 @@ See `TESTING.md` for full strategy. Maintainer tl;dr:
 
 - **Rust code inside the extension** → `#[pg_test]` + `cargo pgrx test pgXX`.
 - **CLI code** → `#[test]` + optional `testcontainers::postgres::Postgres` fixtures.
-- **Product behavior** → add a flow in `examples/demo/` (the companion app is THE acceptance gate).
+- **Product behavior** → add a flow in `examples/todo/` (the companion app is THE acceptance gate).
 
 ## Workspace conventions
 
@@ -184,7 +184,7 @@ Before tagging a release:
 1. All phases' deliverables for this version are implemented.
 2. `cargo pgrx test pg15`, `cargo pgrx test pg16`, `cargo pgrx test pg17` all green.
 3. `cargo test -p pg_web_cli` green.
-4. Companion app at `examples/demo/` runs end-to-end in CI against the Docker image.
+4. Companion app at `examples/todo/` runs end-to-end in CI against the Docker image.
 5. `docs/ROADMAP.md` updated — deliverables checked off; new phase's "open questions" resolved if entering that phase.
 6. `docs/ARCHITECTURE.md` updated if any public interface changed.
 7. Migration SQL added if schema changed.

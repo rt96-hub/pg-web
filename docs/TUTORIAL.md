@@ -2,7 +2,7 @@
 
 You'll build a working HTMX-driven todo app from scratch. Add, toggle, and delete todos with no full-page reloads. Every click round-trips through Postgres and renders server-side.
 
-**What you're going to end up with:** the same app that lives at `examples/demo/` in this repo. If you get stuck, that's your reference.
+**What you're going to end up with:** the same app that lives at `examples/todo/` in this repo. If you get stuck, that's your reference.
 
 **Time:** 20–40 minutes.
 
@@ -414,7 +414,7 @@ Recap:
 
 ## Where to go next
 
-- **[`examples/demo/`](../examples/demo/)** — the reference version of what you just built. Exact file-for-file match if you followed along. Clone + diff if you got stuck.
+- **[`examples/todo/`](../examples/todo/)** — the reference version of what you just built. Exact file-for-file match if you followed along. Clone + diff if you got stuck.
 - **[`docs/APP-LAYOUT.md`](./APP-LAYOUT.md)** — the exhaustive spec. Edge cases, reserved stems, the naming derivation rules.
 - **[`docs/APP-DEVELOPER-GUIDE.md`](./APP-DEVELOPER-GUIDE.md)** — the narrative app-dev reference you can skim for patterns (forms with validation, HTMX conventions, configuration).
 - **[`docs/ROADMAP.md`](./ROADMAP.md)** — what's coming. Hot reload, dynamic routes (`[id]` captures), auth, async jobs.
