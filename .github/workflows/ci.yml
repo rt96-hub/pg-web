@@ -1,0 +1,89 @@
+# CI — runs the full 5-tier test suite on every push + PR.
+#
+# Why this exists at v0.1:
+# - Proves scripts/test-all.sh works on a clean Ubuntu runner (not just
+#   the author's WSL box). Every workstation-specific assumption that
+#   leaks into the test pipeline fails here loudly.
+# - Gate for merges into `main`. A change that breaks any tier is
+#   caught before it hits a branch anyone else pulls.
+#
+# Runner platform: ubuntu-latest — matches the pgweb/postgres:latest
+# image's base (postgres:17 on Debian). pgrx needs build-essential +
+# libclang + the Postgres source deps; we install them up-front.
+#
+# Caching: the Rust target dir is cached per-branch so incremental
+# builds on a re-run stay fast. pgrx's compiled PG installations
+# (~/.pgrx/) are cached too — the first run is slow (20-60 min cold),
+# subsequent runs are ~2-3 min.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel older runs of the same PR when a new commit lands — don't
+# waste CI minutes on a stale build.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-all:
+    name: test-all (PG 17)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libclang-dev libreadline-dev zlib1g-dev \
+            flex bison libxml2-dev libxslt1-dev libssl-dev \
+            pkg-config ccache
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache pgrx PG installations
+        id: pgrx-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.pgrx
+          # Key on cargo-pgrx version so a pgrx bump invalidates.
+          key: pgrx-0.18-pg17-${{ runner.os }}
+
+      - name: Install cargo-pgrx
+        run: cargo install --locked cargo-pgrx --version ~0.18
+
+      - name: pgrx init (PG 17)
+        if: steps.pgrx-cache.outputs.cache-hit != 'true'
+        run: cargo pgrx init --pg17 download
+
+      # pg_web_ext's install SQL is baked into the Docker image — build
+      # it before test-all.sh so tier 3 (testcontainers) has an image
+      # to boot. scripts/build-image.sh is the canonical build.
+      - name: Build pgweb/postgres image
+        run: bash scripts/build-image.sh
+
+      - name: Run scripts/test-all.sh
+        run: bash scripts/test-all.sh
+
+      # Collect Postgres logs from any failed tier-3 container so
+      # debugging doesn't require reproducing the failure locally.
+      - name: Capture container logs on failure
+        if: failure()
+        run: |
+          docker ps -a
+          for c in $(docker ps -aq --filter "ancestor=pgweb/postgres:latest"); do
+            echo "=== container $c ==="
+            docker logs "$c" || true
+          done
