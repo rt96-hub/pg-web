@@ -252,6 +252,13 @@ MSYS_NO_PATHCONV=1 wsl -d Ubuntu-22.04 -u pgweb -- bash -c 'cd $HOME/pg-web && c
 ```
 For anything non-trivial, write a shell script file to `\\wsl$\Ubuntu-22.04\home\pgweb\...` and invoke it with `MSYS_NO_PATHCONV=1 wsl ... -- bash /home/pgweb/<script>.sh`.
 
+**Related trap: do not interpolate `$PATH` into the inner command.** A tempting "fix up PATH inside WSL" approach — `bash -c "export PATH=$HOME/.cargo/bin:$PATH && cargo test"` — fails because the outer Git-Bash shell expands `$PATH` (and `$HOME`) **before** the inner WSL bash ever sees the string. The Windows PATH that ends up embedded contains entries like `/mnt/c/Program Files (x86)/Common Files/Oracle/...`; the parentheses then parse as subshell syntax inside the inner bash, which dies with `syntax error near unexpected token '('`. Either use absolute binary paths (see pitfall #12) or set a fresh, static PATH with no `$PATH` reference at all:
+```bash
+wsl -d Ubuntu-22.04 -u pgweb -- bash -c \
+  'PATH=/home/pgweb/.cargo/bin:/usr/local/bin:/usr/bin:/bin cargo test'
+```
+Hit in Session 4 Component A.
+
 ### 6. `cargo pgrx run` doesn't auto-run `CREATE EXTENSION`
 
 `cargo pgrx run pg17` installs the `.so` + `.control` and opens psql, but the extension is **not yet created** in that database. Schema/tables won't exist until you type:
@@ -273,16 +280,16 @@ Both the pgrx dev Postgres (via `cargo pgrx run` / `pg_ctl start`) and the scaff
 **Manual fix** if you end up in the broken state anyway:
 
 ```bash
-# Stop dev PG
-/home/pgweb/.pgrx/17.9/pgrx-install/bin/pg_ctl -D ~/.pgrx/data-17 -m fast stop
+/home/pgweb/.pgrx/17.9/pgrx-install/bin/pg_ctl -D ~/.pgrx/data-17 -m immediate stop
 # or:
 cargo pgrx stop pg17
 
-# Check that nothing's still on :8080
 ss -tlnp sport = :8080
 
 # Then: pg-web up (or docker compose up -d)
 ```
+
+Use `-m immediate`, not `-m fast`. Session 4 Component A found that fast-stop hangs indefinitely against our BGW — `pg_ctl` prints dots for ~30 s and then gives up with `server does not shut down`. The tokio runtime inside `pg_web_ext`'s worker doesn't cleanly unwind when the postmaster sends SIGINT, so fast mode never drains. Immediate mode is the equivalent of SIGQUIT — crash-stop the cluster, skip the shutdown checkpoint. In dev that's fine: the pgrx data dir holds no data worth preserving, and the next `cargo pgrx run` will run recovery on startup.
 
 Diagnose by running `ss -tlnp sport = :8080` — whichever `users:(...)` it prints tells you who owns the port. `docker-proxy` is fine (that's us); `postgres` or anything else is the culprit.
 
@@ -302,4 +309,27 @@ use notify_debouncer_full::notify::{EventKind, RecursiveMode, Watcher};
 ### 11. `pgweb.pages__*(json) RETURNS json|text` is the reserved push-managed namespace
 
 `push::push` owns every Postgres function matching `pgweb.pages__<name>(req json) RETURNS <json|text>` — both the ones it creates from user `.sql` files and the ones it synthesizes for static routes. Phase 3 of push (reconcile) **drops any such function not in the expected set** computed from the current filesystem walk. Framework maintainers and app authors alike must avoid that namespace for helpers. Safe helper patterns: `pgweb.helper_<name>(...)`, `pgweb.util_<name>(...)`, or any function whose argument list isn't exactly `(req json)`. The safety gate in `reconcile_handlers` also filters to functions returning `json` or `text`, so a function like `pgweb.pages_util(json) RETURNS int` would survive even inside the prefix — but that's not a guarantee to rely on.
+
+### 12. `cargo` is not in PATH for non-interactive WSL shells under `pgweb`
+
+`wsl -d Ubuntu-22.04 -u pgweb -- bash -c 'cargo test ...'` fails with `bash: line 1: cargo: command not found`. The `pgweb` user's `~/.bashrc` sources `~/.cargo/env` (which adds `~/.cargo/bin` to PATH), but `bash -c '...'` is a non-interactive non-login shell and does not source `.bashrc` at all. Swapping to `bash -lc '...'` isn't a reliable fix either: the login-shell startup path looks at `~/.profile`, and on a vanilla rustup install `.profile` may or may not end up sourcing `~/.cargo/env` depending on how `rustup-init` was answered.
+
+**Fix:** use the absolute binary path. Every Rust toolchain binary lives at `/home/pgweb/.cargo/bin/<name>`:
+```bash
+wsl -d Ubuntu-22.04 -u pgweb -- bash -c \
+  '/home/pgweb/.cargo/bin/cargo test -p pg_web_cli'
+wsl -d Ubuntu-22.04 -u pgweb -- bash -c \
+  'cd /home/pgweb/pg-web/crates/pg_web_ext && /home/pgweb/.cargo/bin/cargo-pgrx pgrx test pg17'
+```
+Same applies to `rustc`, `cargo-pgrx`, `rustup`, and anything else under `~/.cargo/bin`. Hit on every session's first tool invocation; Session 4 Component A finally wrote it down.
+
+### 13. Docker image bakes in the install SQL — rebuild after every extension change
+
+The repo-root `Dockerfile` (built by `scripts/build-image.sh`) runs `cargo pgrx install --release` inside the build stage, which compiles the extension AND copies the generated `pg_web_ext--<ver>.sql` into `/usr/share/postgresql/17/extension/` in the final image. Once baked, changes to `crates/pg_web_ext/src/schema.rs`, to any `sql/` file, or to anything else that alters install SQL do **not** invalidate the image — tier 3 (docker E2E via testcontainers) and tier 4 (smoke against the compose stack that `pg-web up` boots) will both happily run against the previous image and return green while exercising the *old* schema.
+
+**Fix:** after any extension-crate change, rebuild the image before running tier 3 or tier 4:
+```bash
+bash scripts/build-image.sh
+```
+`scripts/test-all.sh` deliberately does **not** rebuild — a couple of minutes of image build on every test run would wreck the dev loop, so rebuild is on the author's conscience when the touched tier crosses the Docker boundary. Tier 1 (`cargo pgrx test`) and tier 2 (CLI unit/integration) test the current source tree directly and are immune. Hit in Session 4 Component A: the new `pgweb.html_escape` function passed tier 1 and tier 2b, then tier 3 ran against a pre-Component-A image where the function didn't exist, producing a baffling "the test calls it but the DB doesn't know it" until the build-image step was re-run.
 
