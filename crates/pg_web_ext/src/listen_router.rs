@@ -88,13 +88,26 @@ impl ListenRouter {
         }
     }
 
-    /// List every channel that has ever been subscribed to. Used by
-    /// `spawn_listen_task` to decide which PG channels to issue
-    /// `LISTEN` for.
+    /// List every channel that has ever been subscribed to.
     ///
-    /// v0.1 pre-registers the only channel we care about
-    /// (`pgweb_livereload`) at worker startup, so this is mostly for
-    /// Phase-2 dynamic-channel use cases and for diagnostics.
+    /// **Intentional dead code at v0.1** — cargo emits a `dead_code`
+    /// warning on this method and that's expected. Here's why it
+    /// stays:
+    ///
+    /// v0.1 only ever needs one channel (`pgweb_livereload`), which
+    /// `worker.rs` pre-registers at startup before the LISTEN task
+    /// spawns. Nothing at v0.1 needs to enumerate the channel set.
+    ///
+    /// Phase 2 — app-level realtime subscriptions via
+    /// `/_pgweb/subscribe/<channel>` — will call this to figure out
+    /// which PG channels the LISTEN connection already covers vs.
+    /// which need a fresh `LISTEN <ch>` issued (so a second browser
+    /// tab hitting the same channel doesn't double-LISTEN). The API
+    /// shape is right, just not wired yet.
+    ///
+    /// Deleting it and re-adding it when Phase 2 starts would churn
+    /// git history for no benefit. Live with the warning; it's a
+    /// marker that Phase 2 has a hook here.
     pub fn registered_channels(&self) -> Vec<String> {
         let map = self.channels.lock().expect("listen_router mutex");
         map.keys().cloned().collect()
