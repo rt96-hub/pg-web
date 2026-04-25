@@ -114,6 +114,89 @@ If the racing process's `application_name` came in unrecognized format
 
 ---
 
-## F.2 / F.3 / H / I / N — TBD
+## F.3. CLI bundled in `pgweb/postgres:latest`
+
+### What changed
+
+- `Dockerfile` builder stage now runs `cargo build --release -p pg_web_cli`
+  after `cargo pgrx install`, and the runtime stage copies the binary
+  to `/usr/local/bin/pg-web`.
+- `.dockerignore` excludes `examples/*` by default but un-ignores
+  `examples/todo/` because the CLI's `init.rs` baked it in via
+  `include_dir!`. Without it, the CLI build's proc-macro panics at
+  build time.
+
+### Verify the binary is in the image
+
+```bash
+docker run --rm --entrypoint=/bin/bash pgweb/postgres:latest \
+    -c 'pg-web --version'
+```
+
+Expected: `pg-web 0.1.0`.
+
+### Verify a push from inside the container
+
+Set up a fresh container with the demo bind-mounted:
+
+```bash
+cd ~/pg-web
+docker run --rm \
+    --name pgw-f3 \
+    -e POSTGRES_PASSWORD=testpw \
+    -e POSTGRES_DB=app \
+    -v $(realpath examples/todo):/app:ro \
+    -p 8080:8080 -p 5432:5432 \
+    pgweb/postgres:latest &
+```
+
+Wait for it to boot (`docker logs pgw-f3 | grep ready`), then run the
+deploy from inside:
+
+```bash
+docker exec pgw-f3 pg-web migrate apply --dir /app \
+    --url postgres://postgres:testpw@127.0.0.1:5432/app
+docker exec pgw-f3 pg-web push --dir /app \
+    --url postgres://postgres:testpw@127.0.0.1:5432/app
+curl -s http://localhost:8080/ | grep -c "No todos yet"
+```
+
+Expected: each `docker exec` exits 0; the curl returns 1 (matches the
+empty-state line).
+
+### Verify the in-image push lands a sensible deployment ledger row
+
+```bash
+docker exec pgw-f3 psql -U postgres -d app \
+    -c "SELECT from_host, file_count, migrations_applied FROM pgweb.deployments ORDER BY pushed_at DESC LIMIT 1"
+```
+
+Expected: `from_host` is the container's hostname (a 12-character hex
+prefix matching `docker inspect pgw-f3 --format '{{.Config.Hostname}}'`),
+NOT the dev box's hostname. That's the F.3 value prop in action: the
+push ran inside the compose network without the dev box being involved.
+
+Cleanup:
+
+```bash
+docker rm -f pgw-f3
+```
+
+### Sanity: the CLI from the host still works against the same container
+
+After the in-image push above, run from your normal shell:
+
+```bash
+~/pg-web/target/debug/pg-web push --dir ~/pg-web/examples/todo \
+    --url postgres://postgres:testpw@127.0.0.1:5432/app
+```
+
+Expected: succeeds, lands a second ledger row whose `from_host` IS your
+dev box's hostname. The container and host pushers coexist; both work
+against the same DB.
+
+---
+
+## F.2 / H / I / N — TBD
 
 Sections will land as each component ships.

@@ -7,7 +7,10 @@
 
 | Component | Commit | Notes |
 |---|---|---|
-| L. Push retry on serialization conflict | (this commit) | `retry::with_retry` wrapper, sibling-pusher diag via `pg_stat_activity`, `db::connect` helper tags every CLI connection so the diag can extract OS PID + host |
+| L. Push retry on serialization conflict | `ed55de4` | `retry::with_retry` wrapper, sibling-pusher diag via `pg_stat_activity`, `db::connect` helper tags every CLI connection so the diag can extract OS PID + host |
+| (docs) | `8ff0c5a` | ROADMAP backup story — operational, code-only, source-tree-in-DB tracks |
+| F.3. CLI bundled in image | (this commit) | `cargo build --release -p pg_web_cli` in builder stage, binary at `/usr/local/bin/pg-web` in runtime; `.dockerignore` un-ignores `examples/todo/` so `include_dir!` works in the image bake |
+| F.2 (deferred) | — | Skipped this session — implementation cost is large for a feature only validatable end-to-end against a real remote target. Picks back up when remote infra is available. |
 
 Unlike Session 4 — which had to finish a feature surface on a deadline — Session 5 is polish + robustness. The `v0.1.0` app works; nothing here is blocking new use cases, every component is upgrading an existing capability or removing a known rough edge.
 

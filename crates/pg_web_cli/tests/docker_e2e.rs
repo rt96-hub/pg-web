@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use testcontainers::core::{IntoContainerPort, WaitFor};
+use testcontainers::core::{ExecCommand, IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::SyncRunner;
 use testcontainers::{GenericImage, ImageExt};
 
@@ -1309,5 +1309,144 @@ fn concurrent_pushes_all_commit() {
         post - pre,
         PUSHERS as i64,
         "every successful push lands a pgweb.deployments row"
+    );
+}
+
+/// Tier 3 image-bundle test (Component F.3). The CLI is built into
+/// `pgweb/postgres:latest` at `/usr/local/bin/pg-web`, so users can
+/// `docker compose exec postgres pg-web push --dir /app` from inside
+/// the compose network without publishing :5432 to the host. Two
+/// asserts: (1) `pg-web --version` succeeds with the expected version
+/// string, (2) `pg-web push` against a bind-mounted demo + the
+/// in-container `127.0.0.1:5432` results in a working HTTP response.
+#[test]
+#[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            --test docker_e2e -- --ignored`."]
+fn cli_in_image_can_push_from_inside() {
+    preflight_or_panic();
+
+    let host_app = todo_app_dir().canonicalize().expect("canonical app path");
+    let host_app_str = host_app.to_string_lossy().into_owned();
+    let mount = Mount::bind_mount(host_app_str, "/app".to_string())
+        .with_access_mode(testcontainers::core::AccessMode::ReadOnly);
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .with_mount(mount)
+        .start()
+        .expect("start pgweb/postgres container");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+
+    // 1. Bare --version invocation. Proves the binary is on PATH and
+    //    runs cleanly. clap's auto-generated --version emits
+    //    "pg-web <version>" — assert both halves.
+    let mut version_res = container
+        .exec(ExecCommand::new(vec![
+            "pg-web".to_string(),
+            "--version".to_string(),
+        ]))
+        .expect("exec pg-web --version");
+    let version_stdout = version_res.stdout_to_vec().expect("--version stdout");
+    let version_text = String::from_utf8_lossy(&version_stdout);
+    assert!(
+        version_text.contains("pg-web") && version_text.contains("0."),
+        "expected pg-web <version> on stdout, got: {version_text:?}"
+    );
+    assert_eq!(
+        version_res.exit_code().expect("--version exit"),
+        Some(0),
+        "pg-web --version must exit 0; stdout: {version_text:?}"
+    );
+
+    // 2. Push the demo from inside the container against the
+    //    in-network 127.0.0.1:5432. This is the F.3 value prop:
+    //    deploys can run from inside the compose network without ever
+    //    exposing PG to the host network.
+    //
+    //    POSTGRES_DB and POSTGRES_PASSWORD are set above; default
+    //    user `postgres` matches the base image's behavior.
+    let in_db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:5432/{POSTGRES_DB}"
+    );
+    let mut migrate_res = container
+        .exec(ExecCommand::new(vec![
+            "pg-web".to_string(),
+            "migrate".to_string(),
+            "apply".to_string(),
+            "--dir".to_string(),
+            "/app".to_string(),
+            "--url".to_string(),
+            in_db_url.clone(),
+        ]))
+        .expect("exec migrate apply");
+    let migrate_err = String::from_utf8_lossy(
+        &migrate_res.stderr_to_vec().expect("migrate stderr"),
+    )
+    .into_owned();
+    assert_eq!(
+        migrate_res.exit_code().expect("migrate exit"),
+        Some(0),
+        "in-image migrate apply must exit 0; stderr: {migrate_err}"
+    );
+
+    let mut push_res = container
+        .exec(ExecCommand::new(vec![
+            "pg-web".to_string(),
+            "push".to_string(),
+            "--dir".to_string(),
+            "/app".to_string(),
+            "--url".to_string(),
+            in_db_url.clone(),
+        ]))
+        .expect("exec push");
+    let push_err = String::from_utf8_lossy(&push_res.stderr_to_vec().expect("push stderr"))
+        .into_owned();
+    assert_eq!(
+        push_res.exit_code().expect("push exit"),
+        Some(0),
+        "in-image push must exit 0; stderr: {push_err}"
+    );
+
+    // 3. HTTP probe — the demo's index renders.
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let body = get(&client, &base_url, "/");
+    assert!(
+        body.contains("No todos yet"),
+        "in-image push should serve the demo's empty state, got: {body}"
+    );
+
+    // 4. Sanity: the deployment ledger should record this push as
+    //    coming from inside the container — `from_host` is the
+    //    container's hostname, NOT the dev box's hostname.
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let host_db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let mut pg = postgres::Client::connect(&host_db_url, postgres::NoTls).unwrap();
+    let from_host: Option<String> = pg
+        .query_one(
+            "SELECT from_host FROM pgweb.deployments ORDER BY pushed_at DESC LIMIT 1",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    let local_host = gethostname::gethostname().to_string_lossy().into_owned();
+    let from_host = from_host.expect("from_host populated for in-image push");
+    assert_ne!(
+        from_host, local_host,
+        "from_host should be the container's hostname, not the dev box's: {from_host} vs {local_host}"
     );
 }

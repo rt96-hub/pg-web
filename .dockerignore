@@ -5,7 +5,12 @@
 /.idea
 /.vscode
 /docs
-/examples
+# Keep examples/ out by default to keep the build context small, but
+# un-ignore examples/todo/ — the CLI's `init.rs` bundles it via
+# `include_dir!` for `pg-web init --template todo`. Without it, the
+# CLI build's proc-macro panics during F.3's image bake.
+/examples/*
+!/examples/todo
 /scripts
 /LICENSE-*
 Cargo.lock.bak
