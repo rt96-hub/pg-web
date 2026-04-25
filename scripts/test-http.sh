@@ -63,5 +63,38 @@ while ! curl -sf http://localhost:8080/ >/dev/null 2>&1; do
     sleep 0.2
 done
 
+# Port-shadow preflight: confirm whoever's on :8080 is actually our BGW.
+# A leftover `pg-web up` Docker container would happily serve HTTP on
+# :8080, the curl above would have gotten a 200, and the smoke would
+# fail with "wrong template body" — pointing at a code bug when the
+# real cause is environmental contamination.
+#
+# `ss` shows the listener's comm field as `postgres` (the binary name),
+# not the cmdline rewrite. So we extract the PID, then peek `ps -o args=`
+# which DOES include the rewritten "postgres: pg_web_worker" form. If
+# the rewrite isn't there, something else is on :8080. See
+# DEVELOPER-GUIDE.md pitfall #18 for the failure mode this catches.
+ss_line=$(ss -tlnp 'sport = :8080' 2>/dev/null | tail -n +2 | head -1)
+listener_pid=$(echo "$ss_line" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+if [ -z "$listener_pid" ]; then
+    # Listener exists (curl above succeeded) but ss couldn't read its
+    # PID — cross-user case (docker-proxy is typically root-owned and
+    # invisible to non-root ss).
+    echo "ERROR: :8080 has a listener but its process is invisible to this user (likely root-owned, e.g. docker-proxy)." >&2
+    echo "Diagnose: sudo ss -tlnp 'sport = :8080'  OR  docker ps --format 'table {{.Names}}\t{{.Ports}}' | grep 8080" >&2
+    echo "Fix: docker stop <container-name>  (or \`pg-web down\` from the original app dir)" >&2
+    exit 1
+fi
+if ! ps -p "$listener_pid" -o args= 2>/dev/null | grep -q 'pg_web_worker'; then
+    holder=$(ps -p "$listener_pid" -o args= 2>/dev/null | head -1 || echo "<gone>")
+    echo "ERROR: :8080 is held by PID $listener_pid (\`$holder\`), not the dev PG's pg_web_worker BGW." >&2
+    echo "This is usually a leftover \`pg-web up\` Docker container shadowing the port." >&2
+    echo "Diagnose:" >&2
+    echo "    ss -tlnp 'sport = :8080'" >&2
+    echo "    docker ps --format 'table {{.Names}}\t{{.Ports}}' | grep 8080" >&2
+    echo "Fix: docker stop <container-name>  (or \`pg-web down\` from the original app dir)" >&2
+    exit 1
+fi
+
 cd "$REPO_ROOT"
 cargo test --test http_smoke -p pg_web_ext --features "pg$PG_MAJOR" --no-default-features

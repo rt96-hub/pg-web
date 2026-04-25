@@ -413,5 +413,7 @@ Symptom: tier-2a HTTP smoke fails with a body that doesn't match the seeded temp
 
 **Fix:** `docker ps` to spot leftover containers; `docker stop <name>` (or `pg-web down` from the original app dir) to free `:8080`; rerun the smoke. The pgrx-dev-PG-vs-Docker port conflict is also covered by pitfall #8 from the other angle (the Docker side losing); this entry covers the dev-PG-loses-silently variant.
 
-The Session 4 G `application_name` tagging from pitfall N/A — Component L of Session 5 — makes this easier to spot now: `SELECT pid, application_name FROM pg_stat_activity` shows the in-container BGW connection alongside any host pg-web clients. If you see backends with `application_name = ''` or `'pg-web *'` from a `client_addr` you didn't expect, you've found a shadow.
+The Session 4 G `application_name` tagging from Component L of Session 5 makes this easier to spot now: `SELECT pid, application_name FROM pg_stat_activity` shows the in-container BGW connection alongside any host pg-web clients. If you see backends with `application_name = ''` or `'pg-web *'` from a `client_addr` you didn't expect, you've found a shadow.
+
+**Tier 2a now catches this automatically.** `scripts/test-http.sh` runs a port-shadow preflight after `pg_ctl start` — it extracts the listener PID via `ss -tlnp 'sport = :8080'`, verifies the cmdline (`ps -p $pid -o args=`) contains `pg_web_worker`, and bails loud with a `docker stop <name>` suggestion if not. Same idea would help if applied to `pg-web up`'s preflight too (see pitfall #8).
 

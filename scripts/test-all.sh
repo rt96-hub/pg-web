@@ -52,12 +52,55 @@ stop_pgrx_dev_pg() {
     "$pg_ctl" -D "$data_dir" -m immediate stop >/dev/null
 }
 
+# Auto-rebuild `pgweb/postgres:latest` when extension source / Dockerfile /
+# init scripts are newer than the image. The bake-into-image install SQL
+# (and the .so) means stale images silently pass tests against last-build
+# behavior — fixed in v0.2 by making the staleness check explicit. Caller
+# can force a rebuild with `REBUILD_IMAGE=1` or skip the check entirely
+# (bring-your-own-image case) with `SKIP_IMAGE_CHECK=1`.
+ensure_image_fresh() {
+    if [[ "${SKIP_IMAGE_CHECK:-}" == "1" ]]; then
+        return 0
+    fi
+    if [[ "${REBUILD_IMAGE:-}" == "1" ]]; then
+        echo "  REBUILD_IMAGE=1 set — rebuilding pgweb/postgres:latest"
+        bash "$REPO_ROOT/scripts/build-image.sh" >/dev/null
+        return 0
+    fi
+    local image_iso image_epoch newest_src
+    image_iso=$(docker image inspect pgweb/postgres:latest --format '{{.Created}}' 2>/dev/null) || {
+        echo "  pgweb/postgres:latest not present — building"
+        bash "$REPO_ROOT/scripts/build-image.sh" >/dev/null
+        return 0
+    }
+    image_epoch=$(date -d "$image_iso" +%s 2>/dev/null || echo 0)
+    # Anything that affects the image's product: extension Rust source,
+    # the Dockerfile + .dockerignore, the entrypoint init script, and the
+    # workspace Cargo.toml/Cargo.lock (CLI binary baked at /usr/local/bin/pg-web).
+    newest_src=$(find \
+        crates/pg_web_ext/src \
+        crates/pg_web_cli/src \
+        Dockerfile .dockerignore \
+        docker/init-pgweb.sh \
+        Cargo.toml Cargo.lock \
+        -type f -printf '%T@\n' 2>/dev/null \
+        | sort -nr | head -1 | cut -d. -f1)
+    if [[ -n "$newest_src" && "$newest_src" -gt "$image_epoch" ]]; then
+        echo "  source newer than image (image=$image_iso) — rebuilding pgweb/postgres:latest"
+        bash "$REPO_ROOT/scripts/build-image.sh" >/dev/null
+    fi
+}
+
 echo "== Tier 1 — SQL tests (cargo pgrx test pg$PG_MAJOR) =="
 ( cd crates/pg_web_ext && cargo pgrx test "pg$PG_MAJOR" )
 
 echo
 echo "== Tier 2a — HTTP smoke (scripts/test-http.sh) =="
-"$REPO_ROOT/scripts/test-http.sh"
+# Invoked via `bash` (not direct exec) so the script doesn't need the
+# +x bit. Edit-via-UNC-mount writes from Claude tools land as 0644
+# root-owned, dropping +x; using `bash <script>` sidesteps that
+# without needing manual chmod after every doc-touching commit.
+bash "$REPO_ROOT/scripts/test-http.sh"
 
 echo
 echo "== Tier 2b — CLI tests (cargo test -p pg_web_cli) =="
@@ -65,6 +108,7 @@ cargo test -p pg_web_cli
 
 echo
 echo "== Tier 3 — Docker E2E (pgweb/postgres:latest + examples/todo) =="
+ensure_image_fresh
 cargo test -p pg_web_cli --test docker_e2e -- --ignored
 
 # Reclaim :8080 from the pgrx dev PG before tier 4's docker stack
