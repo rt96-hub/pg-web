@@ -60,7 +60,7 @@ Source of truth for "what ships when" across the full plan. Status legend: **✅
 | CSRF double-submit cookie on non-GET HTMX | ⬜ | Automatic; opt-out per route. |
 | App-level realtime subscriptions via SSE | ⬜ | `<div hx-ext="sse" sse-connect="/_pgweb/subscribe/<ch>">` — reuses Session-4 G's channel-aware `ListenRouter`. |
 | Handler-side `NOTIFY pgweb_app_<ch>` helper | ⬜ | Payload cap 8 kB; signal-then-refetch for larger. |
-| Declarative schema diffing — `pg-web migrate create` | ⬜ | Phase 2.5; compares `schema.sql` to live DB. |
+| Declarative schema diffing — `pg-web migrate create` | ⬜ | Phase 2.5; **approach locked 2026-04-25** — native-Rust SQL diff against `schema/*.sql` as desired state. No Prisma / DBML / migra shell-out. Implementation punted to a dedicated future session. |
 | `pg-web init --template <name>` registry (beyond bundled) | ⬜ | Fetch templates from a Git URL / registry. |
 
 ### Phase 3 — Async job queue
@@ -200,15 +200,28 @@ Goal: close out Phase 1 for a releasable v0.1.
 
 ## Phase 2.5 — Schema Tooling (floating between Phase 2 and 3)
 
-**Goal:** `pg-web migrate create` generates SQL migrations from a declarative schema source. Deferred from Phase 1 to avoid front-loading complexity.
+**Goal:** `pg-web migrate create` generates SQL migrations from a declarative schema source. Deferred from Phase 1 to avoid front-loading complexity. **Approach decided 2026-04-25 (post-v0.2); implementation punted.**
 
-### Options to evaluate
+### Decision: native-Rust SQL diff against `schema/*.sql`
 
-- Parse a `schema.prisma` file (adds a Prisma-parser dep).
-- Parse DBML (simpler grammar, less familiar to most devs).
-- Stay on raw SQL + `pg_dump --schema-only` diffing against the live DB (no new parser needed).
+- **Source of truth is plain Postgres SQL DDL** in a `schema/` directory next to `migrations/`. Users write `schema/01_users.sql`, `schema/02_todos.sql`, etc. as the *desired* end-state schema (`CREATE TABLE`, indexes, constraints, etc.).
+- `pg-web migrate create [name]` runs the desired schema and the current schema (post-applied-migrations) against two ephemeral PG instances (testcontainers or schemas-in-the-dev-PG), reads `pg_catalog`, and emits the delta as `migrations/NNNN_<name>.sql`.
+- Diff engine is **native Rust** — walks `pg_catalog.pg_class`, `pg_attribute`, `pg_index`, `pg_constraint` between the two states. No `migra` shell-out, no Prisma parser, no DBML.
 
-Decision can wait until we have the Phase 1 demo running and can see which pain is real.
+### Why not Prisma / DBML
+
+- **Tonal mismatch.** pg-web's pitch is "you write SQL." Bolting Prisma on top is a different framework's vibe — same reason there's no ORM.
+- **Mapping layer is its own spec.** Prisma's `@id` / `@@index` / `@@unique` syntax maps imperfectly to Postgres-specific features (partial indexes, CHECK constraints, generated columns, exclusion constraints, foreign-data wrappers). Every Postgres feature would need a Prisma-side annotation, and we'd be inventing a parallel schema language to cover the gaps.
+- **Existing `prisma-schema` Rust crate is unmaintained.** Rolling our own parser to stay current with Prisma's spec is ongoing cost for a feature we'd rather not have shipped.
+- **DBML has the same drawbacks** in a smaller community — same mapping-layer problem, less ecosystem support, no win.
+
+### Why native Rust over `migra`
+
+`migra` (the Python tool) does well-known schema-diff work, but shelling to it adds a Python runtime dep to a "one Rust binary" CLI. Native Rust diff is one-time work and keeps `cargo install pg-web-cli` friction-free. `migra`'s algorithm is well-documented; reimplementing in Rust is straightforward — walk `pg_catalog`, compare, emit ALTER. ~1 week of focused work.
+
+### Implementation status: punted
+
+Locked the approach in Session 5; **no implementation this cycle**. The diff engine is the heaviest single feature on the roadmap below Phase 2 and deserves its own dedicated session. Picks back up after Phase 2 (auth/RLS/realtime) ships, OR earlier if schema-write fatigue starts hurting before then.
 
 ## Phase 3 — Async & Scale
 
