@@ -380,3 +380,38 @@ Absolute ↔ absolute `strip_prefix` just works after that.
 
 Hit in Session 4 post-release: the user started `pg-web dev` from their project root, edited a file, got no push, no livereload, no visible dev-loop activity. The bug had been in every component's validation cycle but was invisible because I only ever tested the relative-path case via the test suite (which used absolute paths). Fixed in commit `09054fa`.
 
+### 16. `tee` masks pipeline exit codes — background script runs look green when they failed
+
+When running a `set -e` script in the background and piping its output through `tee` for log capture, the wrapping shell reports `tee`'s exit (always `0`) instead of the script's. The script can fail loud — `cargo: command not found`, build error, `set -e` triggered — and the supervising tool will be told the run "completed (exit code 0)". This bit twice in Session 5: once when `cargo` wasn't on the non-interactive WSL PATH at tier 1, once when the Docker builder failed at the `examples/todo/` `include_dir!` step.
+
+**Fix — never put `tee` at the end of a pipeline whose exit code matters.** Either:
+
+```bash
+# A. Capture exit code explicitly, then read the log.
+bash scripts/test-all.sh > /tmp/test-all.log 2>&1; echo "EXIT=$?"; tail /tmp/test-all.log
+
+# B. Set pipefail and use `tee` (works in interactive bash, but the
+#    Bash tool's outer shell doesn't always honor it — option A is
+#    safer for unattended runs).
+set -o pipefail
+bash scripts/test-all.sh 2>&1 | tee /tmp/test-all.log
+```
+
+Hit in Session 5 while running `test-all.sh` and `build-image.sh` via background subagents. The Monitor tool's filter passed because no failure tokens appeared on stdout (the tee saw the partial output before the script bailed); only verification via tail-of-log + explicit exit-code check caught the real state.
+
+### 17. rustc 1.95 ICE in `mir_borrowck` is usually a missed `let mut`
+
+A panic stack trace ending in `mir_borrowck` and `query stack during panic` looks like an ICE on the surface, but in at least one case (Session 5 F.3 docker test) the underlying error was the ordinary "cannot borrow immutable binding as mutable" diagnostic — swallowed by the panic instead of printed. If you hit this on test code, look for `let foo = container.exec(...)` (or any value bound `let foo = ...`) where you then call a `&mut self` method on `foo` (`foo.stdout_to_vec()`, `foo.stderr_to_vec()`). Add `let mut` and the ICE goes away.
+
+Different from pitfall #2's similar-looking macro-expansion ICE on `[DatumWithOid; 2]` shapes — that one needed the `format!`-then-Rust-side-escape workaround. This one is a binding-mutability miss that the compiler should have shown as a friendly error.
+
+### 18. Stale `pg-web up` containers shadow `:8080` and silently break the pgrx dev PG's BGW
+
+The pgrx dev PG runs on port `28817` for SQL but its BGW binds `:8080` for HTTP — same port the Docker stack publishes. If a previous `pg-web up` left a container running, it holds `:8080`, the dev PG starts cleanly but the BGW silently fails to bind (only logged, no abort), and `scripts/test-http.sh` sees the *container's* HTTP responses instead of the pgrx PG's seeded template.
+
+Symptom: tier-2a HTTP smoke fails with a body that doesn't match the seeded template — the container is serving something else (a previously-pushed app) over `:8080`.
+
+**Fix:** `docker ps` to spot leftover containers; `docker stop <name>` (or `pg-web down` from the original app dir) to free `:8080`; rerun the smoke. The pgrx-dev-PG-vs-Docker port conflict is also covered by pitfall #8 from the other angle (the Docker side losing); this entry covers the dev-PG-loses-silently variant.
+
+The Session 4 G `application_name` tagging from pitfall N/A — Component L of Session 5 — makes this easier to spot now: `SELECT pid, application_name FROM pg_stat_activity` shows the in-container BGW connection alongside any host pg-web clients. If you see backends with `application_name = ''` or `'pg-web *'` from a `client_addr` you didn't expect, you've found a shadow.
+
