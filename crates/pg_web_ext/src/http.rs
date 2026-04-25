@@ -31,6 +31,23 @@ use crate::settings::{self, Env};
 /// (not supported in Phase 1).
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+/// True when `url`'s last segment matches `*.<hex>.<ext>` with the hex run
+/// at least 8 chars — the fingerprint shape `pg-web push` emits in
+/// production-mode pushes (Component H). The pattern is strict so a
+/// canonical `/styles.minified.css` doesn't accidentally tip into the
+/// `Cache-Control: immutable` branch. A duplicate of `push::is_fingerprinted_url`
+/// in the CLI; small enough that workspace-shared utility crates would be
+/// over-engineering.
+fn is_fingerprinted_url(url: &str) -> bool {
+    let file = url.rsplit_once('/').map(|(_, f)| f).unwrap_or(url);
+    let parts: Vec<&str> = file.split('.').collect();
+    if parts.len() < 3 {
+        return false;
+    }
+    let hash_part = parts[parts.len() - 2];
+    hash_part.len() >= 8 && hash_part.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 pub fn app(listen_router: Arc<ListenRouter>) -> Router {
     // Framework-reserved `/_pgweb/*` routes sit above the fallback so
     // a user's own GET /_pgweb/foo handler (unusual but legal) can
@@ -120,7 +137,7 @@ async fn handle(req: Request) -> Response {
             body,
             content_type,
             etag,
-        } => render_asset(body, content_type, etag, if_none_match.as_deref()),
+        } => render_asset(&path, body, content_type, etag, if_none_match.as_deref()),
         ServeOutcome::Error(err) => render_error(err, &method, &path, &req_for_dev_page),
     }
 }
@@ -132,21 +149,25 @@ async fn handle(req: Request) -> Response {
 /// Cache-Control policy:
 /// - dev:  `no-cache` — browser always revalidates via ETag, so a
 ///         saved file shows up on refresh without hard-reload gymnastics.
-/// - prod: `public, max-age=0, must-revalidate` — same revalidate-every-
-///         time behavior, but explicit about cacheability. Upgrading to
-///         true long-cache (immutable) requires content-hash filenames
-///         which is deferred to M1.4; `max-age=0, must-revalidate` is
-///         the conservative default in the meantime.
+/// - prod, canonical URL (e.g. `/styles.css`): `public, max-age=0,
+///         must-revalidate` — ETag round-trip on every page load.
+/// - prod, fingerprinted URL (e.g. `/styles.<hex>.css`): `public,
+///         max-age=31536000, immutable` — content-addressed URL means
+///         the bytes never change for that URL, so the browser can
+///         cache forever without revalidation. Component H.
 fn render_asset(
+    request_path: &str,
     body: Vec<u8>,
     content_type: String,
     etag: String,
     if_none_match: Option<&str>,
 ) -> Response {
     let env = BackgroundWorker::transaction(settings::current_env);
-    let cache_control = match env {
-        Env::Development => "no-cache",
-        Env::Production => "public, max-age=0, must-revalidate",
+    let fingerprinted = is_fingerprinted_url(request_path);
+    let cache_control = match (env, fingerprinted) {
+        (Env::Development, _) => "no-cache",
+        (Env::Production, true) => "public, max-age=31536000, immutable",
+        (Env::Production, false) => "public, max-age=0, must-revalidate",
     };
 
     if if_none_match.map(|v| v == etag).unwrap_or(false) {
@@ -204,6 +225,30 @@ fn status_plain(status: StatusCode, body: &'static str) -> Response {
         Body::from(body),
     )
         .into_response()
+}
+
+#[cfg(any(test, feature = "pg_test"))]
+mod tests {
+    use super::is_fingerprinted_url;
+
+    #[test]
+    fn fingerprinted_when_last_segment_has_hex_subextension() {
+        assert!(is_fingerprinted_url("/styles.abcd1234.css"));
+        assert!(is_fingerprinted_url("/img/logo.deadbeef.png"));
+        assert!(is_fingerprinted_url("/js/app.min.12345678.js"));
+    }
+
+    #[test]
+    fn not_fingerprinted_for_canonical_paths() {
+        assert!(!is_fingerprinted_url("/styles.css"));
+        assert!(!is_fingerprinted_url("/img/logo.png"));
+        // Non-hex middle segment.
+        assert!(!is_fingerprinted_url("/styles.minified.css"));
+        // Hex but too short to be a fingerprint.
+        assert!(!is_fingerprinted_url("/styles.abc.css"));
+        // Single segment can't have the *.<hex>.<ext> shape.
+        assert!(!is_fingerprinted_url("/foo"));
+    }
 }
 
 /// Parse `application/x-www-form-urlencoded` content into a string-keyed

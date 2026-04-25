@@ -156,7 +156,7 @@ pub fn push_with_options(
 
     // Walk `public/` for static assets — same fail-loud philosophy. We
     // hash + read once here so the DB transaction is just inserts.
-    let assets = scan_public(app_dir)?;
+    let mut assets = scan_public(app_dir)?;
 
     // Parse pgweb.toml once. env gets synced into pgweb.settings below;
     // other sections (database, dev, assets) stay the province of whoever
@@ -208,6 +208,20 @@ pub fn push_with_options(
         }
     }
 
+    // Component H — when env=production, fingerprint asset URLs and
+    // rewrite literal references in templates. Dev mode keeps the
+    // canonical URLs so the iteration loop stays predictable.
+    let is_prod = matches!(toml_cfg.server.env.as_deref(), Some("production") | Some("prod"));
+    let mut asset_rewrites: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    if is_prod {
+        for a in assets.iter_mut() {
+            let hashed = fingerprint_url(&a.url_path, &a.fingerprint_hex);
+            asset_rewrites.insert(a.url_path.clone(), hashed.clone());
+            a.url_path = hashed;
+        }
+    }
+
     let expected_asset_paths: HashSet<String> =
         assets.iter().map(|a| a.url_path.clone()).collect();
     let host = gethostname::gethostname().to_string_lossy().into_owned();
@@ -228,7 +242,7 @@ pub fn push_with_options(
 
         // Phase 1 — apply desired state from the filesystem.
         for entry in &entries {
-            apply_entry(&mut tx, entry, &mut tx_summary)?;
+            apply_entry(&mut tx, entry, &asset_rewrites, &mut tx_summary)?;
         }
 
         // Phase 2 — validate each expected handler actually exists in the
@@ -449,10 +463,14 @@ fn sync_env(tx: &mut Transaction<'_>, env: &str) -> Result<()> {
 }
 
 /// Apply one filesystem entry to the DB: run (or synthesize) its handler
-/// function, upsert the template row, upsert the route row.
+/// function, upsert the template row, upsert the route row. `asset_rewrites`
+/// maps canonical asset URLs (`/styles.css`) to their fingerprinted form
+/// (`/styles.<hex>.css`); applied to template content before upsert in
+/// production-mode pushes. Empty in dev mode — no rewrite.
 fn apply_entry(
     tx: &mut Transaction<'_>,
     entry: &RouteEntry,
+    asset_rewrites: &std::collections::HashMap<String, String>,
     summary: &mut PushSummary,
 ) -> Result<()> {
     if let Some(sql_path) = &entry.sql_path {
@@ -477,8 +495,13 @@ fn apply_entry(
     }
 
     if let (Some(html_path), Some(template_path)) = (&entry.html_path, &entry.template_path) {
-        let content = fs::read_to_string(html_path)
+        let raw = fs::read_to_string(html_path)
             .with_context(|| format!("reading {}", html_path.display()))?;
+        let content = if asset_rewrites.is_empty() {
+            raw
+        } else {
+            rewrite_asset_refs(&raw, asset_rewrites)
+        };
         tx.execute(
             "INSERT INTO pgweb.templates (template_path, content) \
              VALUES ($1, $2) \
@@ -664,6 +687,11 @@ struct Asset {
     content_type: String,
     /// HTTP ETag value in its exact on-the-wire form (double-quoted).
     etag: String,
+    /// First 8 hex chars of the Blake3 hash of `content`. Used at push
+    /// time to build the fingerprinted URL (`/styles.<hex>.css`) when
+    /// env=production. Component H. 8 hex chars = 32 bits = ~4 billion
+    /// possible values, plenty for realistic app sizes (Vite uses 8).
+    fingerprint_hex: String,
 }
 
 /// Walk `<app_dir>/public/` recursively, hashing each file into an
@@ -717,25 +745,83 @@ fn scan_public(app_dir: &Path) -> Result<Vec<Asset>> {
             .first_or_octet_stream()
             .as_ref()
             .to_string();
-        let etag = blake3_etag(&content);
+        let hash = blake3::hash(&content);
+        let etag = format!("\"{}\"", hash.to_hex());
+        let fingerprint_hex = hash.to_hex().as_str()[..8].to_string();
 
         out.push(Asset {
             url_path,
             content,
             content_type,
             etag,
+            fingerprint_hex,
         });
     }
     Ok(out)
 }
 
-/// Format the Blake3 content hash as a strong HTTP ETag literal. The
-/// stored value is what we want the browser to send back verbatim in
-/// `If-None-Match` — keeping the double quotes in-DB means the router
-/// can emit headers without any per-request formatting.
-fn blake3_etag(content: &[u8]) -> String {
-    let hex = blake3::hash(content).to_hex();
-    format!("\"{hex}\"")
+/// Build the fingerprinted URL for an asset. `/styles.css` + hex `abcd1234`
+/// becomes `/styles.abcd1234.css`. Files without an extension or hidden-file
+/// patterns (`.gitkeep`-style with leading dot in the basename) get the hex
+/// appended as a new last segment instead — the rewrite still produces a
+/// stable URL but the asset is unlikely to be referenced from a template
+/// either way. Component H.
+fn fingerprint_url(canonical: &str, hex: &str) -> String {
+    let (dir, file) = match canonical.rsplit_once('/') {
+        Some((d, f)) => (d, f),
+        None => ("", canonical),
+    };
+    // `rsplit_once('.')` on `styles.css` → ("styles", "css"). On
+    // `.gitkeep` → ("", "gitkeep") — the empty stem is a leading-dot
+    // file (hidden), append-as-new-segment is the safer rewrite.
+    match file.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => {
+            format!("{dir}/{stem}.{hex}.{ext}")
+        }
+        _ => format!("{dir}/{file}.{hex}"),
+    }
+}
+
+/// True when `url` looks like a fingerprinted path produced by
+/// [`fingerprint_url`] — i.e. the last segment matches `*.<hex>.<ext>$`
+/// where the hex run is at least 8 chars (we emit exactly 8). Mirrors
+/// the extension's `http::is_fingerprinted_url`; CLI-side currently
+/// only tests with it (the actual cache-policy decision happens in the
+/// router), so `#[cfg(test)]` keeps it from being dead code in the
+/// shipping binary. Keep the two definitions in sync — the spec is
+/// "what does push emit." Component H.
+#[cfg(test)]
+fn is_fingerprinted_url(url: &str) -> bool {
+    let file = url.rsplit_once('/').map(|(_, f)| f).unwrap_or(url);
+    let parts: Vec<&str> = file.split('.').collect();
+    if parts.len() < 3 {
+        return false;
+    }
+    let hash_part = parts[parts.len() - 2];
+    hash_part.len() >= 8 && hash_part.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Rewrite literal asset references in `html` from canonical URLs to
+/// their fingerprinted form. Operates on `"<url>"` substrings — i.e.,
+/// the value inside `href="..."` / `src="..."` / `srcset="..."` etc.
+/// Single-quoted attributes (`href='...'`) and unquoted attributes
+/// (`href=/foo.css`) are NOT rewritten — both are valid HTML but
+/// unconventional in templates; document the limitation rather than
+/// fight a regex zoo. Dynamic refs (`<img src="{{ user.avatar }}">`)
+/// can't be rewritten at push time either. Component H.
+fn rewrite_asset_refs(
+    html: &str,
+    rewrites: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut out = html.to_string();
+    for (canonical, hashed) in rewrites {
+        // Wrap with double quotes so we only match attribute-value
+        // contexts, not e.g. naked text or comments.
+        let from = format!("\"{canonical}\"");
+        let to = format!("\"{hashed}\"");
+        out = out.replace(&from, &to);
+    }
+    out
 }
 
 fn upsert_asset(tx: &mut Transaction<'_>, a: &Asset) -> Result<()> {
@@ -927,16 +1013,107 @@ mod tests {
         );
     }
 
-    #[test]
-    fn blake3_etag_is_quoted_and_stable() {
-        let a = blake3_etag(b"hello");
-        let b = blake3_etag(b"hello");
-        assert_eq!(a, b, "same bytes → same ETag");
-        assert!(a.starts_with('"') && a.ends_with('"'), "etag is double-quoted");
-        // Blake3 hex output is 64 chars → 66 chars with quotes.
-        assert_eq!(a.len(), 66);
+    // ---- fingerprinted asset URLs (Component H) ----
 
-        let c = blake3_etag(b"world");
-        assert_ne!(a, c, "different bytes → different ETag");
+    #[test]
+    fn fingerprint_url_inserts_hex_before_extension() {
+        assert_eq!(
+            fingerprint_url("/styles.css", "abcd1234"),
+            "/styles.abcd1234.css"
+        );
+        assert_eq!(
+            fingerprint_url("/img/logo.png", "deadbeef"),
+            "/img/logo.deadbeef.png"
+        );
+        // Multi-dot stems keep the original structure: `app.min.js`
+        // becomes `app.min.<hex>.js`. Splits on the LAST dot.
+        assert_eq!(
+            fingerprint_url("/js/app.min.js", "12345678"),
+            "/js/app.min.12345678.js"
+        );
+    }
+
+    #[test]
+    fn fingerprint_url_appends_hex_for_extensionless_or_hidden() {
+        // No extension at all — append as new last segment so the URL
+        // still changes per content version.
+        assert_eq!(
+            fingerprint_url("/README", "abcd1234"),
+            "/README.abcd1234"
+        );
+        // Hidden-file pattern — leading dot, empty stem.
+        assert_eq!(
+            fingerprint_url("/.gitkeep", "abcd1234"),
+            "/.gitkeep.abcd1234"
+        );
+    }
+
+    #[test]
+    fn is_fingerprinted_url_matches_fingerprinted_paths() {
+        assert!(is_fingerprinted_url("/styles.abcd1234.css"));
+        assert!(is_fingerprinted_url("/img/logo.deadbeef.png"));
+        assert!(is_fingerprinted_url("/js/app.min.12345678.js"));
+    }
+
+    #[test]
+    fn is_fingerprinted_url_rejects_canonical_paths() {
+        // No middle hex segment.
+        assert!(!is_fingerprinted_url("/styles.css"));
+        assert!(!is_fingerprinted_url("/img/logo.png"));
+        // Middle segment is not hex.
+        assert!(!is_fingerprinted_url("/styles.minified.css"));
+        // Hex but too short (< 8 chars).
+        assert!(!is_fingerprinted_url("/styles.abc.css"));
+    }
+
+    #[test]
+    fn rewrite_asset_refs_replaces_quoted_attribute_values() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("/styles.css".to_string(), "/styles.abcd1234.css".to_string());
+
+        let html = r#"<link href="/styles.css" rel="stylesheet">"#;
+        let out = rewrite_asset_refs(html, &map);
+        assert_eq!(
+            out,
+            r#"<link href="/styles.abcd1234.css" rel="stylesheet">"#
+        );
+    }
+
+    #[test]
+    fn rewrite_asset_refs_skips_unrelated_strings() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("/styles.css".to_string(), "/styles.abcd1234.css".to_string());
+
+        // Naked text mentioning the path is intentionally rewritten too — we
+        // err on the side of "if the user typed the URL literally, they
+        // probably meant to reference it" and keep the rewrite scope simple.
+        // The double-quote requirement is the actual filter: prose without
+        // quotes is left alone.
+        let html = r#"see /styles.css for layout. Also: <a href="/about">about</a>"#;
+        let out = rewrite_asset_refs(html, &map);
+        assert!(out.contains("/styles.css"), "unquoted prose stays intact: {out}");
+        assert!(out.contains(r#""/about""#), "unrelated href untouched: {out}");
+    }
+
+    #[test]
+    fn rewrite_asset_refs_handles_multiple_assets() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("/styles.css".to_string(), "/styles.aaaaaaaa.css".to_string());
+        map.insert("/img/logo.png".to_string(), "/img/logo.bbbbbbbb.png".to_string());
+
+        let html = r#"<link href="/styles.css"><img src="/img/logo.png">"#;
+        let out = rewrite_asset_refs(html, &map);
+        assert!(out.contains("/styles.aaaaaaaa.css"));
+        assert!(out.contains("/img/logo.bbbbbbbb.png"));
+        // No leftover canonical URLs.
+        assert!(!out.contains("\"/styles.css\""));
+        assert!(!out.contains("\"/img/logo.png\""));
+    }
+
+    #[test]
+    fn rewrite_asset_refs_no_op_when_map_is_empty() {
+        let html = r#"<link href="/styles.css">"#;
+        let out = rewrite_asset_refs(html, &std::collections::HashMap::new());
+        assert_eq!(out, html);
     }
 }

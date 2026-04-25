@@ -197,6 +197,100 @@ against the same DB.
 
 ---
 
-## F.2 / H / I / N — TBD
+## H. Content-hash asset filenames
+
+### What changed
+
+- `pg-web push` reads `pgweb.toml [server].env`. When `production` (or
+  `prod`), every asset's URL gets fingerprinted: `/styles.css` becomes
+  `/styles.<8hex>.css` (Blake3-derived). Templates are rewritten in
+  the same step — literal `href="/styles.css"` swaps to
+  `href="/styles.<hex>.css"` before the template row is upserted.
+- Router emits `Cache-Control: public, max-age=31536000, immutable`
+  for any asset request whose path matches the fingerprint shape
+  `*.<hex8+>.<ext>$` AND env=production. Canonical paths still get
+  `must-revalidate`; dev mode is unchanged.
+- `[server].env = "development"` (the default) skips the rewrite and
+  stores assets under canonical URLs. The dev iteration loop is
+  unaffected.
+
+### Verify a prod-mode push fingerprints assets
+
+```bash
+cd /tmp
+~/pg-web/target/debug/pg-web init demo-h
+cd demo-h
+sed -i 's/env  = "development"/env  = "production"/' pgweb.toml
+echo 'body { color: black; }' > public/styles.css
+mkdir -p pages
+echo '<!doctype html><link href="/styles.css">hello' > pages/index.html
+~/pg-web/target/debug/pg-web up
+~/pg-web/target/debug/pg-web push
+```
+
+Then query:
+
+```sql
+SELECT path FROM pgweb.assets;
+```
+
+Expected: a row like `/styles.abcd1234.css` — fingerprinted. No
+`/styles.css` row.
+
+### Verify the rendered template references the hashed URL
+
+```bash
+curl -s http://localhost:8080/ | grep -oE '/styles\.[0-9a-f]+\.css'
+```
+
+Expected: prints something like `/styles.abcd1234.css`. The literal
+`/styles.css` href in the template was rewritten at push time.
+
+### Verify immutable Cache-Control
+
+```bash
+curl -sI http://localhost:8080/styles.abcd1234.css | grep -i cache-control
+```
+
+(use the actual fingerprint from the previous step)
+
+Expected: `cache-control: public, max-age=31536000, immutable`.
+
+### Verify the canonical URL no longer resolves
+
+```bash
+curl -sI http://localhost:8080/styles.css | head -1
+```
+
+Expected: `HTTP/1.1 404 Not Found`. In prod mode, only the
+fingerprinted URL is registered.
+
+### Switch back to dev mode
+
+```bash
+sed -i 's/env  = "production"/env  = "development"/' pgweb.toml
+~/pg-web/target/debug/pg-web push
+curl -s http://localhost:8080/ | grep -oE 'href="[^"]*"'
+```
+
+Expected: `href="/styles.css"` (no fingerprint). Asset row reverted
+to `/styles.css` in pgweb.assets too. The push reconciles fully.
+
+### Known limitations (document, don't fix in v0.2)
+
+- Only **double-quoted** attribute values are rewritten. Single-quoted
+  (`href='/styles.css'`) or unquoted (`href=/styles.css`) attributes
+  stay literal — both are valid HTML but unconventional in templates.
+- **Dynamic refs** like `<img src="{{ user.avatar }}">` can't be
+  rewritten at push time. Templates that interpolate user data
+  bypass the rewrite path entirely.
+- Watcher-driven `pg-web dev` runs against a force-set
+  `env=development`, so even if `pgweb.toml` says `production`, the
+  running server treats the env as dev and won't emit `immutable`
+  Cache-Control during a dev session.
+
+---
+
+## F.2 / I / N — TBD
 
 Sections will land as each component ships.

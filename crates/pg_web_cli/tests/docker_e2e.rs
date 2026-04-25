@@ -1450,3 +1450,124 @@ fn cli_in_image_can_push_from_inside() {
         "from_host should be the container's hostname, not the dev box's: {from_host} vs {local_host}"
     );
 }
+
+/// Tier 3 fingerprinted-asset test (Component H). When `pgweb.toml`
+/// declares `[server].env = "production"`, push rewrites template
+/// references like `<link href="/styles.css">` to fingerprinted URLs
+/// (`/styles.<hex>.css`) and stores the asset under that URL. The
+/// router then emits `Cache-Control: public, max-age=31536000,
+/// immutable` for fingerprinted GETs while keeping `must-revalidate`
+/// semantics for any unhashed legacy URL that's still requested.
+#[test]
+#[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            --test docker_e2e -- --ignored`."]
+fn fingerprinted_assets_get_immutable_cache_control() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start pgweb/postgres container");
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+
+    // Copy the demo into a tempdir so we can flip its env to production
+    // without touching the checked-in source.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    copy_tree(&todo_app_dir(), tmp.path());
+    let toml_path = tmp.path().join("pgweb.toml");
+    let toml_contents = fs::read_to_string(&toml_path).unwrap();
+    let prod_toml =
+        toml_contents.replace("env  = \"development\"", "env  = \"production\"");
+    fs::write(&toml_path, &prod_toml).unwrap();
+
+    pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
+    pg_web_cli::push::push(tmp.path(), &db_url).expect("prod push");
+
+    // 1. The asset row in pgweb.assets sits under a fingerprinted URL.
+    let mut pg = postgres::Client::connect(&db_url, postgres::NoTls).unwrap();
+    let asset_path: String = pg
+        .query_one(
+            "SELECT path FROM pgweb.assets WHERE path LIKE '/styles.%.css'",
+            &[],
+        )
+        .expect("fingerprinted styles asset row exists")
+        .get(0);
+    assert!(
+        asset_path.starts_with("/styles.") && asset_path.ends_with(".css"),
+        "expected fingerprinted /styles.<hex>.css, got: {asset_path}"
+    );
+    // No row left under the canonical URL.
+    let canonical_count: i64 = pg
+        .query_one(
+            "SELECT count(*) FROM pgweb.assets WHERE path = '/styles.css'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        canonical_count, 0,
+        "canonical /styles.css should not be present in prod-mode push"
+    );
+
+    // 2. The rendered template references the fingerprinted URL too —
+    //    the push-time HTML rewrite caught the literal href.
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let body = get(&client, &base_url, "/");
+    assert!(
+        body.contains(&format!("href=\"{}\"", asset_path)),
+        "rendered template should reference {asset_path}, got body: {body}"
+    );
+    assert!(
+        !body.contains("href=\"/styles.css\""),
+        "canonical /styles.css href should have been rewritten, got body: {body}"
+    );
+
+    // 3. The fingerprinted asset comes back with immutable Cache-Control.
+    let resp = client
+        .get(format!("{base_url}{asset_path}"))
+        .send()
+        .expect("GET fingerprinted asset");
+    assert_eq!(resp.status(), 200);
+    let cc = resp
+        .headers()
+        .get("cache-control")
+        .map(|v| v.to_str().unwrap_or("").to_string())
+        .unwrap_or_default();
+    assert!(
+        cc.contains("immutable"),
+        "fingerprinted asset must serve `immutable` Cache-Control, got: {cc:?}"
+    );
+    assert!(
+        cc.contains("max-age=31536000"),
+        "fingerprinted asset must serve a year-long max-age, got: {cc:?}"
+    );
+
+    // 4. Sanity: the canonical URL no longer resolves — the asset is
+    //    only registered under its fingerprinted path now.
+    let resp = client
+        .get(format!("{base_url}/styles.css"))
+        .send()
+        .expect("GET canonical asset");
+    assert_eq!(
+        resp.status(),
+        404,
+        "canonical /styles.css should 404 after prod-mode push"
+    );
+}
