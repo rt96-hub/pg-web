@@ -345,6 +345,67 @@ round-trip is the definitive check.
 
 ---
 
-## F.2 / N — TBD
+## End-to-end golden path
 
-Sections will land as each component ships.
+After running through the per-component checks, the smoke test below
+exercises the full v0.2 surface in one go. Use this to validate a
+fresh dev box.
+
+```bash
+cd /tmp
+~/pg-web/target/debug/pg-web init my-app --template todo
+cd my-app
+sed -i 's/env  = "development"/env  = "production"/' pgweb.toml
+~/pg-web/target/debug/pg-web up
+~/pg-web/target/debug/pg-web migrate apply
+~/pg-web/target/debug/pg-web push
+```
+
+Expected at this point:
+
+```bash
+# (1) /styles.css href in the rendered template is fingerprinted
+curl -s http://localhost:8080/ | grep -oE 'href="[^"]*styles[^"]*"'
+# → href="/styles.<8hex>.css"
+
+# (2) the fingerprinted asset serves with immutable Cache-Control
+ASSET=$(curl -s http://localhost:8080/ | grep -oE '/styles\.[0-9a-f]+\.css' | head -1)
+curl -sI "http://localhost:8080$ASSET" | grep -i cache-control
+# → cache-control: public, max-age=31536000, immutable
+
+# (3) the canonical URL no longer resolves
+curl -sI http://localhost:8080/styles.css | head -1
+# → HTTP/1.1 404 Not Found
+
+# (4) pg_stat_activity shows the host-pushed connection (and any other
+#     pg-web client) tagged with verb + os pid + host
+docker exec my-app-postgres-1 psql -U postgres -d app -c \
+  "SELECT pid, application_name FROM pg_stat_activity WHERE application_name LIKE 'pg-web %'"
+# → at least one row, application_name like
+#   "pg-web push (pid=<your-pid>, host=<your-hostname>)"
+
+# (5) deployment ledger has a row from this push
+docker exec my-app-postgres-1 psql -U postgres -d app -c \
+  "SELECT from_host, file_count FROM pgweb.deployments ORDER BY pushed_at DESC LIMIT 1"
+# → from_host = your dev box's hostname, file_count > 0
+
+# (6) running push from inside the container ALSO works (F.3)
+docker exec my-app-postgres-1 pg-web push --dir /app \
+  --url postgres://postgres:devpassword@127.0.0.1:5432/app
+# → exits 0; new ledger row whose from_host is the container's hostname
+
+# (7) cleanup
+~/pg-web/target/debug/pg-web down
+```
+
+If all seven steps print the expected output, v0.2's user-visible
+surface works end-to-end. Any divergence is a real find — the
+`session_5_validation.md` per-component sections above narrow down
+which feature to look at first.
+
+---
+
+## F.2 / true streaming — TBD
+
+These remain Session 6 / Phase 2+ work. No validation steps to run
+yet; they'll land here when the components ship.

@@ -26,7 +26,7 @@ Source of truth for "what ships when" across the full plan. Status legend: **✅
 | Dynamic route patterns (`[id]` → `req.path_params`) | 3 (M1.2) | ✅ | Static beats capture on specificity. |
 | Dev-mode typed error page (PGWEB_E001-E999) | 3 (M1.2) | ✅ | SQLSTATE + MESSAGE + DETAIL + handler name. |
 | Production-mode generic 500 (no internals leaked) | 3 (M1.2) | ✅ | Env-gated via `pgweb.settings.env`. |
-| Static assets from `public/*` (BYTEA + ETag) | 3 (M1.2) | ✅ | 2 MiB per-file cap; 304 on `If-None-Match`. |
+| Static assets from `public/*` (BYTEA + ETag) | 3 (M1.2) | ✅ | 20 MiB per-file cap (raised from 2 MiB in v0.2 / Component I); 304 on `If-None-Match`. |
 | Push-time Tera template validation | 3 (M1.2) | ✅ | Parse errors caught pre-DB. |
 | Port-shadowing preflight on `pg-web up` | 3 | ✅ | Catches stray pgrx dev PG on `:8080`. |
 | `pgweb.html_escape(text)` SQL helper | 4 (M1.4 A) | ✅ | STRICT IMMUTABLE PARALLEL SAFE; raw-text handlers. |
@@ -43,12 +43,12 @@ Source of truth for "what ships when" across the full plan. Status legend: **✅
 | CI workflow (`.github/workflows/ci.yml`) | 4 (M1.4 J) | ✅ | `scripts/test-all.sh` on push + PR. |
 | Release workflow (tag-driven image publish) | 4 (M1.4 J) | ✅ | Pending Docker Hub creds secret. |
 | `CHANGELOG.md` + `v0.1.0` tag | 4 (M1.4 J) | ✅ | Grouped by milestone. |
-| **Push retry on serialization conflict** | **5** | **🎯 L** | Tuple-concurrently-updated race (two devs on one DB). |
-| **`pg-web push --target <name>` (SSH tunnel)** | **5** | **🎯 F.2** | `openssh` crate; `[deploy.<name>]` in `pgweb.toml`. |
-| **CLI bundled in `pgweb/postgres:latest`** | **5** | **🎯 F.3** | Also standalone `pgweb/cli:<ver>` image. |
-| **Content-hash asset filenames + `immutable` cache** | **5** | **🎯 H** | Push-time HTML rewrite; prod-mode only. |
-| **`pg_largeobject` streaming for assets ≥ 1 MiB** | **5** | **🎯 I** | Risk-flagged; may fall back to buffered 20 MiB cap. |
-| Single-dev guard (file lock) | 5 | ⬜ M (stretch) | Skip if L retry proves sufficient. |
+| Push retry on serialization conflict | 5 | ✅ L | `retry::with_retry` wrapper + `pg_stat_activity`-based sibling-pusher diag. |
+| `pg-web push --target <name>` (SSH tunnel) | 5 | ⏸ F.2 | Deferred to Session 6 — needs real remote infra to validate. Manual `ssh -L` works in the meantime; F.3 covers the SSH-then-push-from-inside path. |
+| CLI bundled in `pgweb/postgres:latest` | 5 | ✅ F.3 | `/usr/local/bin/pg-web` baked in builder stage; `docker exec postgres pg-web push` works. Standalone `pgweb/cli:<ver>` not shipped — bundled image proved sufficient. |
+| Content-hash asset filenames + `immutable` cache | 5 | ✅ H | Push-time HTML rewrite when `[server].env = "production"`; pure-Rust string-replace; double-quoted attribute values only. |
+| Larger asset cap (BYTEA 2 MiB → 20 MiB) | 5 | ✅ I (cap-raise variant) | Cap-raise without `pg_largeobject` streaming. Covers virtually every practical asset. True streaming for >20 MiB stays Phase 2+ work. |
+| Single-dev guard (file lock) | 5 | ⏸ M | Skipped — L retry proved sufficient in validation. |
 
 ### Phase 2 — Auth + realtime + declarative schema
 

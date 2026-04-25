@@ -2,7 +2,7 @@
 
 Snapshot of what's implemented right now and what's next. Re-generated at milestone boundaries. Read this first; chase into `APP-DEVELOPER-GUIDE.md`, `APP-LAYOUT.md`, `ARCHITECTURE.md`, `ROADMAP.md` for depth.
 
-> **Last updated:** 2026-04-24, end of Session 4. Phase 1 (`v0.1.0`) feature surface is complete: M1.1 skeleton (Session 1) + M1.3 demo + contracts (Session 2) + M1.2 dev loop (Session 3) + M1.4 closeout (Session 4). Content-hash asset filenames (Component H), SSH-tunneled remote push (F.2), CLI-in-image (F.3), and `pg_largeobject` streaming (I) deferred to 0.2. See `docs/sessions/session_4.md` for the full Session 4 shipping log and `CHANGELOG.md` for the release notes.
+> **Last updated:** 2026-04-25, end of Session 5 / `v0.2.0`. Phase-1 feature surface plus the deferred polish track: push retry on concurrent DDL (L), CLI bundled in `pgweb/postgres:latest` (F.3), content-hash asset filenames + immutable cache-control (H), and the BYTEA cap-raise from 2 MiB to 20 MiB (cap-raise variant of I). SSH-tunneled remote push (F.2) deferred to Session 6 — needs a real remote target to validate. True `pg_largeobject` streaming (full I) deferred to Phase 2+. See `docs/sessions/session_5.md` for the shipping log, `docs/sessions/session_5_validation.md` for the user-validation playbook, and `CHANGELOG.md` for the release notes.
 
 ---
 
@@ -21,7 +21,7 @@ Everything a browser sees comes out of a single OS process tree rooted at the Po
 
 ---
 
-## Phase 1 — Synchronous Core (complete, `v0.1.0`)
+## Phase 1 — Synchronous Core (`v0.1.0` core + `v0.2.0` polish)
 
 | Milestone | Status | Deliverable |
 |---|---|---|
@@ -29,6 +29,7 @@ Everything a browser sees comes out of a single OS process tree rooted at the Po
 | M1.3 Interactive demo + spec | ✅ shipped Session 2 | Migrations, directory-as-route layout, `(req json)` contract, `_404` fallback, demo todo app, Docker E2E |
 | M1.2 Interactive Dev Loop   | ✅ shipped Session 3 | `pg-web up`/`down`/`dev`, hot reload, dynamic routes, dev error page, static assets |
 | M1.4 Closeout               | ✅ shipped Session 4 | `html_escape`, validation UX, `env`/`check`, `init --template`, push `--dry-run`/`--with-migrate`, `pgweb.deployments` ledger, browser live-reload, release pipeline |
+| v0.2 polish track            | ✅ shipped Session 5 | Push retry on concurrent DDL (L), CLI in image (F.3), content-hash assets (H), 20 MiB asset cap (I cap-raise) |
 
 (Session 2 did M1.3 before M1.2 because the interactive-contract decisions — request-JSON shape, POST return dispatch, 404 fallback — had to be locked before the file-watcher would know what to re-sync.)
 
@@ -58,10 +59,15 @@ Later phases (2 auth/RLS, 3 async jobs, 4 observability) are tracked in `docs/RO
 - **F.1** ✅ Push polish: `--dry-run`, `--with-migrate`, `pgweb.deployments` ledger (`42b725d`)
 - **G** ✅ Browser live-reload via SSE + channel-aware LISTEN router (`537d909`)
 - **J** ✅ v0.1.0 release artifacts: CHANGELOG, version bump, CI/release workflows (`6ad214b`)
-- **K** (this commit) — final docs sweep
-- **H** ⬜ deferred to 0.2 — content-hash asset filenames
-- **F.2 / F.3** ⬜ deferred to 0.2 — SSH-tunneled remote push, CLI baked into image
-- **I** ⬜ deferred to 0.2 — `pg_largeobject` streaming for assets > 2 MiB
+- **K** ✅ docs sweep + close-out (`5157c8e`)
+
+**Session 5 — v0.2 polish** (full shipping log in `docs/sessions/session_5.md`):
+- **L** ✅ Push retry on concurrent DDL + sibling-pusher diagnostic (`ed55de4`)
+- **F.3** ✅ CLI bundled in `pgweb/postgres:latest` (`7eaf724`)
+- **H** ✅ Content-hash asset filenames + `immutable` Cache-Control (`62c8cd7`)
+- **I** ✅ Larger asset cap (BYTEA 2 MiB → 20 MiB) — cap-raise variant of the planned `pg_largeobject` work (`db6fb0d`)
+- **F.2** ⬜ deferred to Session 6 — needs real remote infra to validate
+- **(true streaming)** ⬜ Phase 2+ — `lo_read`-backed assets >20 MiB
 
 ---
 
@@ -141,15 +147,15 @@ One command:
 scripts/test-all.sh
 ```
 
-| Tier | Command | Tests at `v0.1.0` |
+| Tier | Command | Tests at `v0.2.0` |
 |---|---|---|
-| 1. SQL / pgrx  | `cargo pgrx test pg17`                              | **70** — schema / seed / migrations / deployments ledger / settings helper / html_escape; ListenRouter fan-out + livereload injection; router `(req json)` contract + dynamic captures + asset lookup; error-catalog + dev-page formatting; Tera parse-vs-render classification |
+| 1. SQL / pgrx  | `cargo pgrx test pg17`                              | **72** — schema / seed / migrations / deployments ledger / settings helper / html_escape; ListenRouter fan-out + livereload injection; router `(req json)` contract + dynamic captures + asset lookup; error-catalog + dev-page formatting; Tera parse-vs-render classification; fingerprinted-URL detection (Session 5 H) |
 | 2a. HTTP smoke | `scripts/test-http.sh`                              | 2 `#[test]` — `GET /` renders seeded template, unknown path returns default 404 body |
-| 2b. CLI        | `cargo test -p pg_web_cli`                          | **124** — path scanner, migrate, push + reconcile + F.1 flags, init (including `--template todo`), dev classifier, env parser, check validator, stack |
-| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` | **9** — todo CRUD + dynamic routes; watcher re-push; reconcile; push rejects missing handler / broken template; dev error page + prod 500; static asset ETag / 304 / reconcile; F.1 migration-gate + ledger; livereload SSE end-to-end |
+| 2b. CLI        | `cargo test -p pg_web_cli`                          | **143** — path scanner, migrate, push + reconcile + F.1 flags + L retry helper, application_name parser, init (including `--template todo`), dev classifier, env parser, check validator, stack, asset fingerprinting + rewrite (Session 5 H) |
+| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` | **13** — todo CRUD + dynamic routes; watcher re-push; reconcile; push rejects missing handler / broken template; dev error page + prod 500; static asset ETag / 304 / reconcile; F.1 migration-gate + ledger; livereload SSE end-to-end; concurrent push retry (L); CLI-in-image push (F.3); fingerprinted asset cache (H); 5 MiB asset round-trip (I) |
 | 4. CLI smoke   | `scripts/smoke-cli.sh`                              | **19 sections** — scaffold → up → push → 404 fallback → SQL exception dev page → broken template rejected → prod-mode hides internals → static CSS + ETag + 304 + reconcile → `pgweb.html_escape` end-to-end → `check_violation` inline error → `env set/list/unset` + `pgweb.setting()` round-trip → deployments ledger + `--dry-run` rollback + `--with-migrate` gate → `pg-web check` clean + bad migration + bad Tera → livereload injection + prod-404 |
 
-**203+ Rust tests + 19-section black-box smoke, all five tiers green via `scripts/test-all.sh`.**
+**230 Rust tests + 19-section black-box smoke, all five tiers green via `scripts/test-all.sh`.**
 
 Feature matrix in `docs/TESTING.md` tracks which deliverables are demo-covered.
 
@@ -204,14 +210,12 @@ Daily iteration is `scripts/test-all.sh` and editing code.
 
 ---
 
-## Not in `v0.1.0`
+## Not in `v0.2.0`
 
-Deferred to **0.2** (Phase 1 polish that didn't make the release cut):
+Deferred (still inside Phase 1's polish tail):
 
-- **Content-hash asset filenames + `immutable` cache-control** — stable URLs with ETag revalidation ship in 0.1 (cheap 304 round-trip); fingerprinted `/styles.<hash>.css` with long-cache is 0.2.
-- **`pg-web push --target <name>`** — SSH-tunneled remote push. Local-loopback push works; remote push today requires a manual SSH tunnel.
-- **CLI bundled into `pgweb/postgres:latest`** — so `docker exec` can run `pg-web push` from inside the container. 0.2.
-- **`pg_largeobject`-backed streaming** — BYTEA 2 MiB per-file cap is firm at 0.1; bigger assets → CDN until 0.2.
+- **`pg-web push --target <name>`** — SSH-tunneled remote push. Local-loopback push works and the F.3 in-image CLI handles the "SSH in and push from inside" case; what's missing is the laptop-to-VPS automated tunnel. Validation requires a real remote target, so this slid to Session 6 when remote infra is available.
+- **True `pg_largeobject` streaming.** v0.2 ships a 20 MiB BYTEA cap (Component I cap-raise variant) — covers virtually every practical asset. `lo_read`-backed streaming for assets >20 MiB is Phase 2+ work.
 
 Deferred to **Phase 2+** (explicit non-goals for Phase 1):
 

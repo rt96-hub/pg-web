@@ -7,6 +7,69 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Dates are ISO-8601. Version numbers follow semver — breaking pre-1.0
 changes may land in minor releases.
 
+## [0.2.0] — 2026-04-25
+
+Polish release. Closes the deferred-from-0.1 work items, sharpens the
+deploy story, and bumps the asset cap. No invariant changes — apps
+written against `0.1.x` work unchanged on `0.2.x`.
+
+### Added
+
+- **Push retry on concurrent DDL** (`L`). `pg-web push` now wraps its
+  transaction in a 3-attempt jittered retry. Triggered by SQLSTATE
+  40001 (serialization failure) or the literal `tuple concurrently
+  updated` message that concurrent DDL raises (XX000 internal error).
+  On retry exhaustion, push opens a fresh diagnostic connection,
+  queries `pg_stat_activity` for sibling `pg-web *` clients, and
+  attaches a per-row `kill <os_pid>` (same host) or
+  `pg_terminate_backend(<backend_pid>)` (remote host) suggestion to
+  the error.
+- **Application-name tagging on every CLI connection.** Every CLI
+  subcommand (`push`, `dev`, `migrate`, `env`, `check`, `stack`) now
+  opens its connections with `application_name = 'pg-web {verb}
+  (pid={pid}, host={host})'`. Visible in `pg_stat_activity`; powers
+  the retry diagnostic.
+- **CLI bundled in `pgweb/postgres:latest`** (`F.3`). The image
+  builds and ships `pg-web` at `/usr/local/bin/pg-web` so
+  `docker compose exec postgres pg-web push --dir /app` works from
+  inside the compose network without publishing :5432 to the host.
+- **Content-hash asset filenames** (`H`). When `pgweb.toml
+  [server].env = "production"`, push rewrites template references
+  like `<link href="/styles.css">` to fingerprinted URLs
+  (`/styles.<8hex>.css`) and stores the asset under that URL. The
+  router emits `Cache-Control: public, max-age=31536000, immutable`
+  for any asset GET whose path matches the fingerprint shape AND env
+  is production. Canonical paths still get `must-revalidate`; dev
+  mode is unchanged.
+- **Larger asset cap** (`I`). The BYTEA per-asset CHECK and the CLI's
+  cap both bump from 2 MiB to 20 MiB. Covers virtually every
+  practical asset without committing to true `pg_largeobject`
+  streaming yet.
+- **Roadmap: backup story split.** ROADMAP gains three Phase-4
+  entries — `pg-web backup` / `pg-web restore` (operational
+  `pg_dump` wrapper), `pg-web export --code-only` /
+  `pg-web import` (portable code-only dump), source-tree-in-DB via
+  a `pgweb.sources` schema. The parking-lot "project-in-database
+  backup" entry redirects to the trio.
+
+### Deferred
+
+- **`pg-web push --target <name>` SSH-tunneled remote deploy**
+  (`F.2`). Validation requires a real remote target; deferring to
+  Session 6 when remote infra is available. Local-loopback push and
+  the F.3 in-image CLI remain the supported deploy paths until then.
+- **True `pg_largeobject` streaming.** v0.2 ships only the BYTEA
+  cap-raise. `lo_read`-backed streaming for assets >20 MiB stays
+  Phase 2+ work.
+
+### Testing
+
+- Tier 1 — 72 `#[pg_test]` (was 70).
+- Tier 2a — 2 HTTP smoke (unchanged).
+- Tier 2b — 143 CLI unit + integration (was 124).
+- Tier 3 — 13 docker E2E (was 9).
+- Tier 4 — 19-section black-box smoke (unchanged).
+
 ## [0.1.0] — 2026-04-24
 
 First release candidate for Phase 1 — a usable, production-deployable

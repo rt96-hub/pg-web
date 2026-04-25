@@ -269,16 +269,28 @@ Files under `public/` are served from the database at their URL-equivalent path:
 
 Responses include:
 - `ETag`: the Blake3 hash, double-quoted as the HTTP spec requires.
-- `Cache-Control`: `no-cache` in development, `public, max-age=0, must-revalidate` in production.
+- `Cache-Control`:
+  - `no-cache` in development.
+  - `public, max-age=0, must-revalidate` in production for canonical URLs.
+  - `public, max-age=31536000, immutable` in production for fingerprinted URLs (see "Content-hash filenames" below).
 
-A follow-up request that sends back the advertised `ETag` in `If-None-Match` gets `304 Not Modified` with no body — so repeat hits save bytes but always revalidate. True long-cache (`immutable`) requires content-hash filenames (`styles.abc123.css`) which are deferred to M1.4.
+A follow-up request that sends back the advertised `ETag` in `If-None-Match` gets `304 Not Modified` with no body — so repeat hits save bytes but always revalidate.
+
+### Content-hash filenames in production (v0.2 Component H)
+
+When `pgweb.toml [server].env = "production"`, push fingerprints each asset's URL: `/styles.css` becomes `/styles.<8hex>.css` (Blake3-derived). Templates get rewritten in the same step — literal `href="/styles.css"` swaps to `href="/styles.<hex>.css"` before the row is upserted. Combined with `Cache-Control: immutable`, this gives Vite-class long-cache behavior: zero round-trip on cache hit, automatic invalidation on content change.
+
+Limitations:
+- Only **double-quoted** attribute values are rewritten. Single-quoted (`href='/styles.css'`) and unquoted (`href=/styles.css`) attrs stay literal.
+- **Dynamic refs** like `<img src="{{ user.avatar }}">` can't be rewritten at push time. Their URLs stay canonical and pick up `must-revalidate` instead of `immutable`.
+- Dev mode (`[server].env = "development"`, the default) skips the rewrite. Iteration loop stays predictable — saves don't change asset URLs.
 
 **Limits:**
-- Per-file cap is **2 MiB** (CHECK constraint in `pgweb.assets`). Push refuses oversized files with the path in the error.
+- Per-file cap is **20 MiB** (CHECK constraint in `pgweb.assets`, raised from 2 MiB in v0.2 Component I). Push refuses oversized files with the path in the error.
 - `.gitkeep` is skipped so an empty `public/` dir can live in git.
 - If a page route exists at the same path as an asset, the page wins — user-defined routes are always more specific than the asset fallback.
 
-Larger assets (images >2 MiB, large PDFs) via `pg_largeobject` with SPI streaming is tracked for M1.4; until then, host those on a CDN or object store and link to them from your templates.
+Larger assets (>20 MiB) via `pg_largeobject` with `lo_read`-backed streaming is Phase 2+ work; until then, host those on a CDN or object store and link to them from your templates.
 
 ### The `pgweb.pages__*(json)` namespace is reserved
 

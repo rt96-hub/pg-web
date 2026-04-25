@@ -232,7 +232,99 @@ Each followed by a stop-and-check at phase boundaries — same workflow as Sessi
 
 ## Recap — what shipped
 
-(To be filled in at session close, mirroring `session_4.md`'s recap table + retrospective.)
+Full commit table (rows match `git log --oneline main` from the L commit through the v0.2.0 close-out):
+
+| # | Commit | Component | Summary |
+|---|---|---|---|
+| 1 | `ed55de4` | L — Push retry + diag | `retry::with_retry` wrapper, sibling-pusher diag via `pg_stat_activity`, `db::connect` helper tags every CLI connection |
+| 2 | `8ff0c5a` | (docs) | ROADMAP — backup/export/source-tree-in-DB tracks split across Phase 4 |
+| 3 | `7eaf724` | F.3 — CLI in image | Builder stage builds `pg-web`; runtime copies to `/usr/local/bin/pg-web`; `.dockerignore` un-ignores `examples/todo/` |
+| 4 | `62c8cd7` | H — Content-hash assets | Push-time fingerprint + template rewrite when prod; router emits immutable Cache-Control |
+| 5 | `db6fb0d` | I — Asset cap-raise | BYTEA `CHECK` 2 MiB → 20 MiB; CLI cap matches; true streaming explicitly Phase 2+ |
+| 6 | (this commit) | N — Docs + v0.2.0 release | CHANGELOG, version bump, OVERVIEW + ROADMAP + APP-DEVELOPER-GUIDE refresh, session_5 close-out |
+
+## Retrospective
+
+### What went well
+
+- **Four components shipped** (L, F.3, H, I) plus the deferred deferral (F.2). Original plan flagged I as risk-prone with "may fall back to buffered cap"; the cap-raise variant landed cleanly in <30 lines of code + 2 tests, leaving true streaming explicitly framed as Phase 2+ work rather than a vague "TODO."
+- **Zero invariant changes.** Handler contract, directory-as-route, dispatch via `template_path` nullability, push-managed handler namespace — every locked spec stayed put. v0.1 apps run on v0.2 unchanged; the only user-visible change is `pg-web push` against env=production now rewriting templates.
+- **Test growth tracked features 1:1.** pgrx 70→72 (+2 H matchers), CLI 124→143 (+19 retry/db/H/I tests), tier-3 9→13 (+4: concurrent push, in-image push, fingerprinted Cache-Control, 5 MiB round-trip). No "we'll test it later."
+- **Diagnostic UX upgrade with L.** Beyond the retry mechanic, the session shipped a pattern: `application_name` tagging on every CLI connection is a debugging multiplier well beyond push retry — `pg_stat_activity` now shows OS PID + host for every active pg-web client. The diag formatter the retry uses is reusable for any future "who else is touching this DB" question.
+- **F.2 deferral was deliberate, not silent.** Discussed cost-to-validate with the user up front; documented the punt rationale in the shipping log + the OVERVIEW; left the original session_5 design intact so Session 6 picks up cleanly.
+
+### What went wrong
+
+- **Test-all.sh exit-code masking via `tee`.** Twice in this session I piped `bash scripts/test-all.sh 2>&1 | tee /tmp/log` and saw the wrapping shell report exit 0 from `tee`'s success — masking real script failures. First instance hid a `cargo: command not found` in the script (cargo not on the non-interactive PATH); second masked an extension-build failure at the `examples/todo/` `include_dir!` step. Lesson: when running scripts via background subagents, capture exit code into a separate variable (`cmd > log; echo EXIT=$?`) instead of relying on the pipeline's tail-out exit. Updated my Bash invocations partway through; documenting here so the pattern doesn't sneak back in.
+- **Stale `pg-web up` container on `:8080` shadowed the dev pgrx PG.** Tier 2a HTTP smoke failed with the user's `my-todos-postgres-1` container serving stale demo state. The script does DROP/CREATE EXTENSION + restart pg_ctl, but the BGW silently failed to bind `:8080` because the leftover container already had it. The retry-and-diag pattern from L would have caught this if applied here too — flagging "the container holding `:8080` had `from_host = some-container-id` in `pg_stat_activity`" would have been the perfect tell.
+- **rustc 1.95 ICE on a `let mut` miss.** While writing the F.3 docker test, an "internal compiler error" panic during `mir_borrowck` masked a real "needed `let mut`" diagnostic on `migrate_res` and `push_res`. Cost ~10 min of "is this another `[DatumWithOid; 2]`-shape ICE?" before reading the function carefully. Lesson: when the compiler reports an ICE in `mir_borrowck`, the next thing to suspect is "I'm calling a `&mut self` method on a non-mut binding" — the borrow-check diagnostic that should have been printed got swallowed by the panic instead.
+- **Image rebuild required after schema.rs and after http.rs changes.** Both H (http.rs) and I (schema.rs) needed `bash scripts/build-image.sh` before tier 3 would see the new behavior. Forgot once and got a confused tier-3 result. Fixed in process, but a `make tier3` target that auto-rebuilds would close this loop. Punted to a future "test infra polish" task.
+
+### Lessons compiled
+
+1. **Don't pipe to tee in background subagent runs.** Capture exit code explicitly: `bash <script> > log 2>&1; echo EXIT=$?; tail log`. The Monitor tool's `grep --line-buffered` filter misses the `EXIT=` line if the pipe consumes its own tail.
+2. **Treat `mir_borrowck` ICEs as a hint to look for `let mut` errors first.** rustc 1.95 has at least one path where the borrow-check diagnostic gets swallowed by panic instead of printed.
+3. **`application_name` is a free debugging multiplier.** Once you tag every CLI-initiated connection with verb + OS PID + host, every "who is doing what" question reduces to a `pg_stat_activity` query. Should bake this into Phase 2's auth/session work too.
+4. **Cap-raise > true streaming for v0.2 I.** When `lo_read` + Axum streaming compatibility had real friction (the planned BackgroundWorker SPI tx lifetime story is non-trivial), shipping a 20 MiB BYTEA cap covered the practical use case in <30 lines and let the design space for true streaming stay open. The session_5 plan called this out as the fallback; correctly reading "fallback acceptable" was the right call.
+
+### Metrics
+
+- **5 commits** on Session 5: L, ROADMAP-backups, F.3, H, I, and N. (Plus N is this commit.)
+- **Test growth:** pgrx +2 (70→72), CLI +19 (124→143), tier-3 +4 (9→13), tier-4 unchanged (19 sections).
+- **230 Rust tests + 19-section black-box smoke**, all five tiers green at session close.
+- **Docker image:** rebuilt twice (schema.rs change for I, extension `.so` change for H).
+- **Binary size impact:** F.3 added ~10 MiB to the image (the `pg-web` binary, debug-stripped). Acceptable for the convenience-of-`docker exec` payoff.
+
+## Deferred to Session 6
+
+- **F.2 — SSH-tunneled `pg-web push --target <name>`.** Implementation surface is well-scoped (per the original session_5 design); validation needs a real remote target. Picks up when remote infra is available.
+- **True `pg_largeobject` streaming.** v0.2 ships only the BYTEA cap-raise. `lo_read`-backed streaming for assets >20 MiB needs the SPI-tx-during-Axum-stream design discussion the original plan flagged.
+- **Docker-build-aware test infra.** A `make tier3` (or equivalent) that auto-rebuilds the image when `schema.rs` or `crates/pg_web_ext/src/*.rs` changed would catch the "forgot to rebuild" error class.
+- **Tier-2a port-shadowing diagnostic.** When `:8080` is held by something other than the pgrx dev PG, the smoke test should bail with a "stop the shadowing process" message instead of returning a confusing 200 with someone else's body.
+
+## Gotchas hit this session
+
+1. **`tee` masks pipeline exit codes.** When piping a `set -e` script through `tee`, the wrapping shell reports `tee`'s exit (always 0) instead of the script's. Captured as a Session 5 lesson; document if it happens twice more, then DEVELOPER-GUIDE pitfall #16.
+2. **Stale `pg-web up` container shadowed `:8080`.** A leftover container from a prior dev session held `:8080`, the dev PG's BGW silently failed to bind, and tier 2a's smoke saw the container's response instead. Easy to spot with `docker ps` + `ss -tlnp | grep 8080`; harder when the symptom is "the test asserts the wrong body."
+3. **rustc 1.95 ICE wraps `let mut` errors.** At least once, a "needed `let mut`" borrow-check error came back as an internal compiler panic in `mir_borrowck` instead of a normal diagnostic. If you see ICEs in `mir_borrowck` while writing test code, suspect missing `let mut`.
+4. **`.dockerignore` excludes `examples/`.** The CLI's `init.rs` `include_dir!` bundles `examples/todo/` at compile time, but `.dockerignore` excluded all of `examples/`. Build failed with a proc-macro panic until I un-ignored `examples/todo/` specifically.
+5. **F.3 + L composability.** The `application_name` tag introduced for L's diag also surfaces in the F.3 in-image case: pushes from inside the container show `host=<container_id>` in `pg_stat_activity` (vs. dev box's hostname). Used this as the F.3 test's discriminator. Nice cross-feature win.
+
+## Handoff prompt for Session 6
+
+(Paste into a fresh Claude Code session to restart cleanly.)
+
+---
+
+> I'm resuming pg-web work on Session 6. v0.2.0 shipped at the end of Session 5; feature surface is L (push retry + sibling-pusher diag), F.3 (CLI in image), H (content-hash assets + immutable cache), I-cap-raise (BYTEA 2 MiB → 20 MiB). All five tiers green at 230 Rust + 19 smoke sections.
+>
+> **This session's scope:**
+>
+> - **F.2 — SSH-tunneled `pg-web push --target <name>`** — the user-flagged remote-deploy story, deferred from Session 5 because validation needs a real remote target. Original design in `docs/sessions/session_5.md` § F.2 is intact (locked to the `openssh` crate; `[deploy.<name>]` in `pgweb.toml`). I have remote infra available now.
+> - **(stretch) True `pg_largeobject` streaming** — open question is the BackgroundWorker SPI-tx lifetime during Axum streaming. Buffered up to 20 MiB ships in v0.2 (Component I); >20 MiB still requires Phase 2 design work.
+> - **Phase 2 kickoff candidates** — auth/sessions/RLS bridge, app-level realtime subscriptions reusing the channel-aware ListenRouter from Session 4 G. Pick what to start once F.2 lands.
+>
+> **Workspace lives in WSL2 Ubuntu-22.04 at `/home/pgweb/pg-web`, owned by user `pgweb`.** From Git Bash on Windows reach it via `wsl -d Ubuntu-22.04 -u pgweb -- bash -c '...'` with `MSYS_NO_PATHCONV=1` prefix and `\$?` escape for exit-code capture.
+>
+> **Read these first, in this order:**
+>
+> 1. `docs/OVERVIEW.md` — 30-second picture at v0.2.0.
+> 2. `docs/sessions/session_5.md` — full Session 5 recap including the "Retrospective" + "Deferred to Session 6" sections.
+> 3. `docs/sessions/session_5_validation.md` — the validation playbook for L / F.3 / H / I, useful for reproducing v0.2.0's expected behavior on a fresh box.
+> 4. `CHANGELOG.md` — `v0.2.0` release notes.
+> 5. `docs/ROADMAP.md` § Feature matrix at the top.
+>
+> **Workflow conventions** (user preferences, from memory):
+>
+> - No Claude trailer on commits. Conventional-style subjects (`feat(cli):`, `fix:`, `docs(dev-guide):`).
+> - User-flagged in Session 5: keep moving without sign-off if tests are green and docs are updated; deliver expected-behaviors at session close.
+> - Companion-app coverage per feature. `examples/todo/` is the acceptance gate.
+> - Bias toward *why* in inline comments, not *what*. Well-named symbols document themselves.
+> - `pgweb.pages__*(json) RETURNS json|text` is the reserved push-managed namespace.
+> - Test-all.sh runs five tiers; all mandatory. Auto-stops the pgrx dev PG between tiers 3 and 4.
+> - Docker image bakes install SQL — run `bash scripts/build-image.sh` after any `schema.rs` change before tier 3/4. **Also rebuild after extension `*.rs` changes** (the `.so` is baked in too).
+>
+> **First task for this session:** decide F.2's connection-routing model — does the SSH tunnel terminate before push opens its libpq connection (`-L` style, locally-bound ephemeral port that push connects to), or does the openssh crate session forward the entire libpq protocol stream? Both work; the `-L` model is simpler and inherits libpq's normal connection retry. Resolve with the user, then implement.
 
 ---
 
