@@ -1571,3 +1571,69 @@ fn fingerprinted_assets_get_immutable_cache_control() {
         "canonical /styles.css should 404 after prod-mode push"
     );
 }
+
+/// Tier 3 large-asset cap test (Component I). v0.2 raises the BYTEA
+/// cap from 2 MiB to 20 MiB; this test pushes a 5 MiB asset (which
+/// would have been rejected outright at v0.1) and verifies the full
+/// payload is served byte-for-byte. True `pg_largeobject` streaming
+/// for assets >20 MiB remains Phase-2+ work.
+#[test]
+#[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            --test docker_e2e -- --ignored`."]
+fn large_asset_below_new_cap_round_trips() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start pgweb/postgres container");
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+
+    // Copy demo, drop a 5 MiB file under public/ (random-ish bytes so
+    // accidental compression-with-ETag aliasing doesn't cause the round
+    // trip to silently dedupe).
+    let tmp = tempfile::tempdir().expect("tempdir");
+    copy_tree(&todo_app_dir(), tmp.path());
+    let pub_dir = tmp.path().join("public");
+    fs::create_dir_all(&pub_dir).unwrap();
+    // Pseudo-random fill via xor pattern — deterministic, not all-zeros
+    // (which BYTEA could potentially store more compactly).
+    let payload: Vec<u8> = (0..5 * 1024 * 1024_usize)
+        .map(|i| ((i as u32).wrapping_mul(2654435761) & 0xff) as u8)
+        .collect();
+    fs::write(pub_dir.join("hero.bin"), &payload).unwrap();
+
+    pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
+    pg_web_cli::push::push(tmp.path(), &db_url).expect("push with 5 MiB asset");
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap();
+    let resp = client
+        .get(format!("{base_url}/hero.bin"))
+        .send()
+        .expect("GET 5 MiB asset");
+    assert_eq!(resp.status(), 200);
+    let returned = resp.bytes().expect("body bytes").to_vec();
+    assert_eq!(
+        returned.len(),
+        payload.len(),
+        "round-trip length matches"
+    );
+    assert_eq!(returned, payload, "round-trip bytes match");
+}

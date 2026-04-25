@@ -100,8 +100,12 @@ pub struct PushOptions {
 
 /// Hard cap on per-asset size. Matches the `CHECK` in schema.rs so the
 /// CLI catches oversized files before the DB does — the error is much
-/// clearer when it names the offending file.
-const MAX_ASSET_BYTES: u64 = 2 * 1024 * 1024;
+/// clearer when it names the offending file. Bumped from 2 MiB to
+/// 20 MiB in v0.2 (Component I) — covers virtually every asset users
+/// have outside of video, while staying within BYTEA's comfortable
+/// TOAST range. True `pg_largeobject`-backed streaming for >20 MiB
+/// assets is Phase 2+ work.
+const MAX_ASSET_BYTES: u64 = 20 * 1024 * 1024;
 
 /// Sync the filesystem app under `app_dir` into the Postgres at `url`.
 ///
@@ -697,7 +701,7 @@ struct Asset {
 /// Walk `<app_dir>/public/` recursively, hashing each file into an
 /// `Asset` record. Returns an empty vec if `public/` is missing or
 /// empty — a route-only app is valid. Errors on any file exceeding
-/// the 2 MiB cap so the user gets a clear name-the-file error instead
+/// the 20 MiB cap so the user gets a clear name-the-file error instead
 /// of the CHECK-constraint bounce-back from Postgres.
 fn scan_public(app_dir: &Path) -> Result<Vec<Asset>> {
     use walkdir::WalkDir;
@@ -723,8 +727,9 @@ fn scan_public(app_dir: &Path) -> Result<Vec<Asset>> {
         let meta = entry.metadata().with_context(|| format!("stat {}", path.display()))?;
         if meta.len() > MAX_ASSET_BYTES {
             bail!(
-                "{}: asset is {} bytes (cap is {} bytes / 2 MiB). \
-                 Larger assets via pg_largeobject are deferred to M1.4.",
+                "{}: asset is {} bytes (cap is {} bytes / 20 MiB). \
+                 Larger assets via pg_largeobject streaming remain Phase 2+ work — \
+                 host on a CDN until then.",
                 path.display(),
                 meta.len(),
                 MAX_ASSET_BYTES,
@@ -1001,16 +1006,34 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pub_dir = dir.path().join("public");
         std::fs::create_dir(&pub_dir).unwrap();
-        // 2MiB + 1 byte.
-        let big = vec![0u8; (2 * 1024 * 1024) + 1];
+        // 20 MiB + 1 byte triggers the cap. 20 MiB is the v0.2 ceiling
+        // (Component I); true `pg_largeobject` streaming for larger
+        // assets remains a Phase-2+ follow-up.
+        let big = vec![0u8; (20 * 1024 * 1024) + 1];
         std::fs::write(pub_dir.join("huge.bin"), &big).unwrap();
         let err = scan_public(dir.path()).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("huge.bin"), "error names the file: {msg}");
         assert!(
-            msg.contains("2 MiB") || msg.contains(&format!("{}", MAX_ASSET_BYTES)),
+            msg.contains("20 MiB") || msg.contains(&format!("{}", MAX_ASSET_BYTES)),
             "error mentions the cap: {msg}"
         );
+    }
+
+    #[test]
+    fn scan_public_accepts_asset_just_under_cap() {
+        // A 5 MiB asset would have been rejected at v0.1's 2 MiB cap;
+        // v0.2 (Component I) accepts up to 20 MiB. Lock the new floor
+        // by exercising a file the prior cap would have rejected.
+        let dir = tempfile::tempdir().unwrap();
+        let pub_dir = dir.path().join("public");
+        std::fs::create_dir(&pub_dir).unwrap();
+        let medium = vec![0u8; 5 * 1024 * 1024];
+        std::fs::write(pub_dir.join("hero.png"), &medium).unwrap();
+        let assets = scan_public(dir.path()).expect("5 MiB file fits under 20 MiB cap");
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].url_path, "/hero.png");
+        assert_eq!(assets[0].content.len(), 5 * 1024 * 1024);
     }
 
     // ---- fingerprinted asset URLs (Component H) ----

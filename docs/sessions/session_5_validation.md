@@ -291,6 +291,60 @@ to `/styles.css` in pgweb.assets too. The push reconciles fully.
 
 ---
 
-## F.2 / I / N — TBD
+## I. Larger asset cap (BYTEA 2 MiB → 20 MiB)
+
+### What changed
+
+- `pgweb.assets.content` `CHECK` constraint relaxed from 2 MiB to
+  20 MiB. CLI's `MAX_ASSET_BYTES` matches.
+- This is **not** the planned `pg_largeobject` streaming feature —
+  `lo_read`-backed streaming for assets >20 MiB stays Phase 2+ work.
+  v0.2 ships the simple cap-raise, which covers virtually every
+  practical asset (hero images, vendor JS bundles, PDFs).
+
+### Verify a >2 MiB asset is accepted
+
+```bash
+cd /tmp/demo-h    # or any pg-web app dir
+dd if=/dev/urandom of=public/hero.bin bs=1M count=5
+~/pg-web/target/debug/pg-web push
+curl -I http://localhost:8080/hero.bin | head -3
+```
+
+Expected: HTTP 200, `Content-Length: 5242880` (bytes match the input).
+Push doesn't reject; CHECK constraint passes.
+
+### Verify the upper cap holds
+
+```bash
+dd if=/dev/urandom of=public/too-big.bin bs=1M count=21
+~/pg-web/target/debug/pg-web push 2>&1 | head -3
+```
+
+Expected output:
+
+```
+Error: too-big.bin: asset is 22020096 bytes (cap is 20971520 bytes / 20 MiB).
+       Larger assets via pg_largeobject streaming remain Phase 2+ work — host
+       on a CDN until then.
+```
+
+### Verify byte-perfect round-trip
+
+The tier-3 test does this with a 5 MiB pseudo-random payload and
+asserts the served bytes equal the source bytes. To repeat manually:
+
+```bash
+md5sum public/hero.bin
+curl -s http://localhost:8080/hero.bin | md5sum
+```
+
+Expected: identical hashes. Important because BYTEA TOAST + libpq
+binary protocol have multiple potential corruption points; the
+round-trip is the definitive check.
+
+---
+
+## F.2 / N — TBD
 
 Sections will land as each component ships.

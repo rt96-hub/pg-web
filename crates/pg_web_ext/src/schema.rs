@@ -77,10 +77,11 @@ CREATE TABLE pgweb.settings (
 INSERT INTO pgweb.settings (key, value) VALUES ('env', 'development');
 
 -- Static assets served from the `public/` tree. BYTEA-backed, capped at
--- 2 MiB per file by a CHECK constraint so a runaway file doesn't wedge
--- the worker on read. Larger-file support via pg_largeobject with SPI
--- streaming is deferred to M1.4 — practical web assets (CSS / JS / small
--- icons) fit well under 2 MiB.
+-- 20 MiB per file by a CHECK constraint so a runaway file doesn't wedge
+-- the worker on read. The 20 MiB cap (v0.2 / Component I) covers virtually
+-- every practical asset — hero images, vendor JS bundles, PDFs — without
+-- committing to true `pg_largeobject` streaming yet. lo_read-backed
+-- streaming for assets larger than 20 MiB is a Phase 2+ follow-up.
 --
 -- The ETag column stores a content-hash digest pre-wrapped in the
 -- double-quoted form the HTTP header uses, so the router can emit it
@@ -91,7 +92,7 @@ CREATE TABLE pgweb.assets (
     content       BYTEA NOT NULL,
     content_type  TEXT NOT NULL,
     etag          TEXT NOT NULL,
-    CHECK (length(content) <= 2097152)
+    CHECK (length(content) <= 20971520)
 );
 
 -- Default handler for the seeded GET / route. Follows the standard

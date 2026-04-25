@@ -11,7 +11,8 @@
 | (docs) | `8ff0c5a` | ROADMAP backup story — operational, code-only, source-tree-in-DB tracks |
 | F.3. CLI bundled in image | `7eaf724` | `cargo build --release -p pg_web_cli` in builder stage, binary at `/usr/local/bin/pg-web` in runtime; `.dockerignore` un-ignores `examples/todo/` so `include_dir!` works in the image bake |
 | F.2 (deferred) | — | Skipped this session — implementation cost is large for a feature only validatable end-to-end against a real remote target. Picks back up when remote infra is available. |
-| H. Content-hash asset filenames | (this commit) | Push-time fingerprinting + template rewrite when `[server].env = "production"`; router emits `Cache-Control: immutable` for fingerprinted GETs. Dev mode unchanged. Pure-Rust string-replace rewrite (no regex dep); double-quoted attribute values only. |
+| H. Content-hash asset filenames | `62c8cd7` | Push-time fingerprinting + template rewrite when `[server].env = "production"`; router emits `Cache-Control: immutable` for fingerprinted GETs. Dev mode unchanged. Pure-Rust string-replace rewrite (no regex dep); double-quoted attribute values only. |
+| I. Asset BYTEA cap-raise (2 MiB → 20 MiB) | (this commit) | Cap-raise variant of the planned pg_largeobject feature — covers virtually every practical asset without shipping `lo_read`-backed streaming. CHECK constraint + CLI cap match. True streaming for >20 MiB assets remains Phase 2+ work. |
 
 Unlike Session 4 — which had to finish a feature surface on a deadline — Session 5 is polish + robustness. The `v0.1.0` app works; nothing here is blocking new use cases, every component is upgrading an existing capability or removing a known rough edge.
 
