@@ -27,11 +27,13 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
-use postgres::{Client, NoTls, Transaction};
+use postgres::{Client, Transaction};
 use serde::Deserialize;
 
+use crate::db;
 use crate::paths::{self, RouteEntry};
 use crate::migrate;
+use crate::retry;
 
 /// Slice of `pgweb.toml` push cares about. Extra sections in the file
 /// are ignored silently so the user can add their own without push
@@ -174,8 +176,7 @@ pub fn push_with_options(
     let expected_handlers: HashSet<String> =
         entries.iter().map(|e| e.handler_name.clone()).collect();
 
-    let mut client =
-        Client::connect(url, NoTls).with_context(|| format!("connecting to {url}"))?;
+    let mut client = db::connect(url, "push")?;
 
     // --- Migration gate (F.1) -----------------------------------------
     // Check for pending migrations BEFORE push's own transaction opens.
@@ -207,82 +208,171 @@ pub fn push_with_options(
         }
     }
 
-    let mut tx = client.transaction()?;
+    let expected_asset_paths: HashSet<String> =
+        assets.iter().map(|a| a.url_path.clone()).collect();
+    let host = gethostname::gethostname().to_string_lossy().into_owned();
+    let host_opt: Option<String> = if host.is_empty() { None } else { Some(host) };
+    let migrations_applied_i32: i32 =
+        migrations_applied.try_into().unwrap_or(i32::MAX);
+    let file_count: i32 = (entries.len() + assets.len()).try_into().unwrap_or(i32::MAX);
 
-    let mut summary = PushSummary::default();
+    // Wrap the whole transaction in retry::with_retry so a concurrent-DDL
+    // race (`tuple concurrently updated` from another `pg-web push` /
+    // `pg-web dev` writing `pg_proc` simultaneously, or a 40001
+    // serialization failure) re-runs the whole tx with jittered backoff.
+    // Each attempt opens a fresh transaction; nothing the host commits
+    // survives a rollback, so the retry is safe.
+    let tx_result = retry::with_retry(|| {
+        let mut tx = client.transaction()?;
+        let mut tx_summary = PushSummary::default();
+
+        // Phase 1 — apply desired state from the filesystem.
+        for entry in &entries {
+            apply_entry(&mut tx, entry, &mut tx_summary)?;
+        }
+
+        // Phase 2 — validate each expected handler actually exists in the
+        // DB with the right signature. Catches user typos in CREATE FUNCTION.
+        for entry in &entries {
+            validate_handler(&mut tx, entry)?;
+        }
+
+        // Phase 3 — reconcile: drop DB state that no longer has a backing
+        // file. Routes first, then templates, then functions. Order doesn't
+        // matter for correctness (no FKs) but this pattern reads top-down
+        // from user-visible shape to physical storage.
+        tx_summary.routes_deleted = reconcile_routes(&mut tx, &expected_routes)?;
+        tx_summary.templates_deleted = reconcile_templates(&mut tx, &expected_templates)?;
+        tx_summary.handlers_dropped = reconcile_handlers(&mut tx, &expected_handlers)?;
+
+        // Phase 3.5 — static assets. Upsert every file walked from `public/`,
+        // then delete rows whose path isn't in the expected set.
+        for a in &assets {
+            upsert_asset(&mut tx, a)?;
+            tx_summary.assets_upserted += 1;
+        }
+        tx_summary.assets_deleted = reconcile_assets(&mut tx, &expected_asset_paths)?;
+
+        // Phase 4 — sync runtime settings. `pgweb.settings.env` becomes
+        // whatever `[server].env` is in pgweb.toml, so deploying a new
+        // image from the same source tree doesn't have to carry any
+        // environment variable alongside.
+        if let Some(env) = toml_cfg.server.env.as_deref() {
+            sync_env(&mut tx, env)?;
+            tx_summary.env_synced = Some(env.to_string());
+        }
+
+        // Phase 5 — deployments ledger (F.1). One row per successful push
+        // with a snapshot of what we just shipped. Under dry_run we still
+        // insert (so the row is visible to any in-tx SELECT below), but
+        // the tx then rolls back, so the row never persists.
+        //
+        // file_count counts FILES FROM DISK touched by this push (routes
+        // from pages/ + static assets from public/), not DB-side upserts.
+        // That's the signal ops actually want: "how many files did this
+        // deploy bring across?"
+        tx.execute(
+            "INSERT INTO pgweb.deployments (from_host, file_count, migrations_applied) \
+             VALUES ($1, $2, $3)",
+            &[&host_opt.as_deref(), &file_count, &migrations_applied_i32],
+        )
+        .context("inserting pgweb.deployments ledger row")?;
+
+        if opts.dry_run {
+            // Rollback explicitly. Drop would implicitly roll back too, but
+            // being explicit makes intent visible to future maintainers.
+            tx.rollback()
+                .context("rolling back dry-run transaction")?;
+        } else {
+            tx.commit().context("committing push transaction")?;
+        }
+
+        Ok(tx_summary)
+    });
+
+    let mut summary = match tx_result {
+        Ok(s) => s,
+        Err(e) => return Err(maybe_attach_concurrent_pusher_diag(e, url)),
+    };
     summary.dry_run = opts.dry_run;
     summary.migrations_applied = migrations_applied;
     summary.migrations_applied_names = migrations_applied_names;
 
-    // Phase 1 — apply desired state from the filesystem.
-    for entry in &entries {
-        apply_entry(&mut tx, entry, &mut summary)?;
-    }
-
-    // Phase 2 — validate each expected handler actually exists in the
-    // DB with the right signature. Catches user typos in CREATE FUNCTION.
-    for entry in &entries {
-        validate_handler(&mut tx, entry)?;
-    }
-
-    // Phase 3 — reconcile: drop DB state that no longer has a backing
-    // file. Routes first, then templates, then functions. Order doesn't
-    // matter for correctness (no FKs) but this pattern reads top-down
-    // from user-visible shape to physical storage.
-    summary.routes_deleted = reconcile_routes(&mut tx, &expected_routes)?;
-    summary.templates_deleted = reconcile_templates(&mut tx, &expected_templates)?;
-    summary.handlers_dropped = reconcile_handlers(&mut tx, &expected_handlers)?;
-
-    // Phase 3.5 — static assets. Upsert every file walked from `public/`,
-    // then delete rows whose path isn't in the expected set.
-    let expected_asset_paths: HashSet<String> =
-        assets.iter().map(|a| a.url_path.clone()).collect();
-    for a in &assets {
-        upsert_asset(&mut tx, a)?;
-        summary.assets_upserted += 1;
-    }
-    summary.assets_deleted = reconcile_assets(&mut tx, &expected_asset_paths)?;
-
-    // Phase 4 — sync runtime settings. `pgweb.settings.env` becomes
-    // whatever `[server].env` is in pgweb.toml, so deploying a new
-    // image from the same source tree doesn't have to carry any
-    // environment variable alongside.
-    if let Some(env) = toml_cfg.server.env.as_deref() {
-        sync_env(&mut tx, env)?;
-        summary.env_synced = Some(env.to_string());
-    }
-
-    // Phase 5 — deployments ledger (F.1). One row per successful push
-    // with a snapshot of what we just shipped. Under dry_run we still
-    // insert (so the row is visible to any in-tx SELECT below), but
-    // the tx then rolls back, so the row never persists.
-    //
-    // file_count counts FILES FROM DISK touched by this push (routes
-    // from pages/ + static assets from public/), not DB-side upserts.
-    // That's the signal ops actually want: "how many files did this
-    // deploy bring across?"
-    let file_count: i32 = (entries.len() + assets.len()).try_into().unwrap_or(i32::MAX);
-    let migrations_applied_i32: i32 =
-        summary.migrations_applied.try_into().unwrap_or(i32::MAX);
-    let host = gethostname::gethostname().to_string_lossy().into_owned();
-    let host_opt: Option<&str> = if host.is_empty() { None } else { Some(&host) };
-    tx.execute(
-        "INSERT INTO pgweb.deployments (from_host, file_count, migrations_applied) \
-         VALUES ($1, $2, $3)",
-        &[&host_opt, &file_count, &migrations_applied_i32],
-    )
-    .context("inserting pgweb.deployments ledger row")?;
-
-    if opts.dry_run {
-        // Rollback explicitly. Drop would implicitly roll back too, but
-        // being explicit makes intent visible to future maintainers.
-        tx.rollback()
-            .context("rolling back dry-run transaction")?;
-    } else {
-        tx.commit().context("committing push transaction")?;
-    }
-
     Ok(summary)
+}
+
+/// On retry exhaustion (or any other retryable error), best-effort
+/// open a fresh diagnostic connection and look up sibling `pg-web *`
+/// connections in `pg_stat_activity`. The retry-context message tells
+/// the user *what* happened; this tells them *who* to stop, with a
+/// concrete `kill <pid>` (same host) or `pg_terminate_backend(<pid>)`
+/// (remote host) suggestion. Diagnostic failures are swallowed — the
+/// caller still sees the underlying retry error.
+fn maybe_attach_concurrent_pusher_diag(err: anyhow::Error, url: &str) -> anyhow::Error {
+    if !retry::is_retryable(&err) {
+        return err;
+    }
+    match gather_concurrent_pushers(url) {
+        Ok(diag) if !diag.is_empty() => err.context(diag),
+        _ => err,
+    }
+}
+
+/// Connect with a `diag` verb and ask `pg_stat_activity` who else is
+/// pushing. Returns a multi-line, ready-to-print summary or empty
+/// string if no other pg-web clients are connected.
+fn gather_concurrent_pushers(url: &str) -> Result<String> {
+    let mut client = db::connect(url, "diag")?;
+    let rows = client
+        .query(
+            "SELECT pid, application_name \
+             FROM pg_stat_activity \
+             WHERE application_name LIKE 'pg-web %' \
+               AND pid <> pg_backend_pid() \
+             ORDER BY backend_start",
+            &[],
+        )
+        .context("querying pg_stat_activity for sibling pg-web connections")?;
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+    let local_host = gethostname::gethostname().to_string_lossy().into_owned();
+    let mut out = String::from(
+        "concurrent `pg-web` connections detected. Stop these to clear the conflict:",
+    );
+    for row in rows {
+        let backend_pid: i32 = row.get(0);
+        let app_name: String = row.get(1);
+        let line = format_pusher_line(&app_name, backend_pid, &local_host);
+        out.push_str("\n  - ");
+        out.push_str(&line);
+    }
+    Ok(out)
+}
+
+/// Format one row from `pg_stat_activity` for the diagnostic output.
+/// Public-but-untested-via-this-name only because pulling
+/// `db::parse_application_name` into a unit test here would require
+/// constructing pg_stat_activity rows from scratch; the parser itself
+/// is unit-tested in `db::tests`.
+fn format_pusher_line(app_name: &str, backend_pid: i32, local_host: &str) -> String {
+    match db::parse_application_name(app_name) {
+        Some(tag) if tag.host == local_host => format!(
+            "{app_name} (backend pid {backend_pid}) — same host; stop with: kill {os_pid}",
+            os_pid = tag.pid,
+        ),
+        Some(tag) => format!(
+            "{app_name} (backend pid {backend_pid}) — host {host}; stop with: \
+             ssh {host} 'kill {os_pid}', or run \
+             SELECT pg_terminate_backend({backend_pid}); from psql",
+            host = tag.host,
+            os_pid = tag.pid,
+        ),
+        None => format!(
+            "{app_name} (backend pid {backend_pid}) — unrecognized format; stop with: \
+             SELECT pg_terminate_backend({backend_pid}); from psql"
+        ),
+    }
 }
 
 /// Compute which `migrations/*.sql` files exist locally but aren't yet

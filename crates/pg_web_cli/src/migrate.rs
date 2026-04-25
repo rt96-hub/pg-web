@@ -15,7 +15,9 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use postgres::{Client, NoTls};
+use postgres::Client;
+
+use crate::db;
 
 #[derive(Debug, Default, Clone)]
 pub struct MigrateSummary {
@@ -39,8 +41,7 @@ pub fn apply(app_dir: &Path, url: &str) -> Result<MigrateSummary> {
 
     let files = discover(&migrations_dir)?;
 
-    let mut client =
-        Client::connect(url, NoTls).with_context(|| format!("connecting to {url}"))?;
+    let mut client = db::connect(url, "migrate")?;
 
     let applied_set = load_applied(&mut client)?;
     let mut summary = MigrateSummary::default();

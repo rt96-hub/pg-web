@@ -1,7 +1,13 @@
 # Session 5 — Deferred polish + remote deploy (0.2.0 target)
 
-**Status:** planned, not started.
+**Status:** in progress. Component L shipped.
 **Theme:** close the `v0.2.0` scope. Everything the 0.1 release explicitly deferred, plus a small batch of post-0.1 fixes the user discovered during validation. Biggest user-facing win: **F.2** (`pg-web push --target <name>` — SSH-tunneled remote deploy), which removes the last "you need to hold an `ssh -L` tunnel open by hand" friction from the prod workflow.
+
+## Shipping log (running)
+
+| Component | Commit | Notes |
+|---|---|---|
+| L. Push retry on serialization conflict | (this commit) | `retry::with_retry` wrapper, sibling-pusher diag via `pg_stat_activity`, `db::connect` helper tags every CLI connection so the diag can extract OS PID + host |
 
 Unlike Session 4 — which had to finish a feature surface on a deadline — Session 5 is polish + robustness. The `v0.1.0` app works; nothing here is blocking new use cases, every component is upgrading an existing capability or removing a known rough edge.
 

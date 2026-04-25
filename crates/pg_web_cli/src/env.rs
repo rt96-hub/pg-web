@@ -10,7 +10,8 @@
 //! reverted on the next push. Keys beyond that are free-form text.
 
 use anyhow::{bail, Context, Result};
-use postgres::{Client, NoTls};
+
+use crate::db;
 
 /// Keys synced from `pgweb.toml` by `pg-web push`. Setting them via the
 /// CLI would be silently overwritten on the next push — reject up-front
@@ -31,8 +32,7 @@ pub struct EnvEntry {
 pub fn set(url: &str, key: &str, value: &str) -> Result<()> {
     validate_key(key)?;
     reject_reserved(key)?;
-    let mut client =
-        Client::connect(url, NoTls).with_context(|| format!("connecting to {url}"))?;
+    let mut client = db::connect(url, "env")?;
     client
         .execute(
             "INSERT INTO pgweb.settings (key, value) VALUES ($1, $2) \
@@ -50,8 +50,7 @@ pub fn set(url: &str, key: &str, value: &str) -> Result<()> {
 pub fn unset(url: &str, key: &str) -> Result<bool> {
     validate_key(key)?;
     reject_reserved(key)?;
-    let mut client =
-        Client::connect(url, NoTls).with_context(|| format!("connecting to {url}"))?;
+    let mut client = db::connect(url, "env")?;
     let n = client
         .execute("DELETE FROM pgweb.settings WHERE key = $1", &[&key])
         .context("deleting from pgweb.settings")?;
@@ -60,8 +59,7 @@ pub fn unset(url: &str, key: &str) -> Result<bool> {
 
 /// Read all rows from `pgweb.settings` in alphabetical key order.
 pub fn list(url: &str) -> Result<Vec<EnvEntry>> {
-    let mut client =
-        Client::connect(url, NoTls).with_context(|| format!("connecting to {url}"))?;
+    let mut client = db::connect(url, "env")?;
     let rows = client
         .query("SELECT key, value FROM pgweb.settings ORDER BY key", &[])
         .context("selecting from pgweb.settings")?;

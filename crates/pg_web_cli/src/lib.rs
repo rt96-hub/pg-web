@@ -4,11 +4,13 @@
 //! them directly without going through `main.rs` (which handles arg parsing).
 
 pub mod check;
+pub mod db;
 pub mod dev;
 pub mod env;
 pub mod init;
 pub mod migrate;
 pub mod paths;
 pub mod push;
+pub mod retry;
 pub mod stack;
 mod templates;

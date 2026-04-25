@@ -214,7 +214,7 @@ pub fn ensure_compose_file(app_dir: &Path) -> Result<PathBuf> {
 /// "the database system is starting up" until init scripts finish.
 fn wait_for_db_ready(url: &str, deadline: Instant) -> Result<()> {
     loop {
-        match postgres::Client::connect(url, postgres::NoTls) {
+        match crate::db::connect(url, "stack") {
             Ok(mut client) => {
                 if client.simple_query("SELECT 1").is_ok() {
                     return Ok(());

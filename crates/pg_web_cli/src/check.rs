@@ -26,7 +26,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use postgres::{Client, NoTls};
+use crate::db;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 use walkdir::WalkDir;
@@ -258,8 +258,7 @@ fn check_ledger_drift(app_dir: &Path, url: &str, report: &mut CheckReport) -> Re
         Vec::new()
     };
 
-    let mut client =
-        Client::connect(url, NoTls).with_context(|| format!("connecting to {url}"))?;
+    let mut client = db::connect(url, "check")?;
     let rows = client
         .query("SELECT name FROM pgweb.migrations", &[])
         .context("reading pgweb.migrations (is the extension installed?)")?;

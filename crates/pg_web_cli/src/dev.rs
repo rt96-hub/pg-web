@@ -48,9 +48,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use notify_debouncer_full::notify::{EventKind, RecursiveMode, Watcher};
 use notify_debouncer_full::{new_debouncer, DebouncedEvent};
-use postgres::{Client, NoTls};
-
-use crate::{push, stack};
+use crate::{db, push, stack};
 
 /// 200ms sits between Vite (≈100ms) and Next (≈300ms). Long enough that a
 /// rename-over-write editor save collapses into one event, short enough
@@ -162,8 +160,7 @@ pub fn dev(app_dir: &Path, opts: DevOptions) -> Result<()> {
 /// connection. Runs outside the watcher loop — the subsequent push
 /// flow will re-sync from pgweb.toml if the user changes it.
 fn force_env_development(url: &str) -> Result<()> {
-    let mut client = postgres::Client::connect(url, postgres::NoTls)
-        .with_context(|| format!("connecting to {url} to override env"))?;
+    let mut client = db::connect(url, "dev")?;
     client
         .execute(
             "INSERT INTO pgweb.settings (key, value) VALUES ('env', 'development') \
@@ -293,7 +290,7 @@ fn handle_batch(
     // before the real push starts. Abort without pushing on any error
     // so the live route keeps working while the developer fixes it.
     if !changed_sql.is_empty() {
-        let mut client = Client::connect(url, NoTls).context("connecting for preflight")?;
+        let mut client = db::connect(url, "dev")?;
         for path in &changed_sql {
             let sql = fs::read_to_string(path)
                 .with_context(|| format!("reading {}", path.display()))?;
@@ -374,7 +371,7 @@ fn notify_livereload(url: &str, kind: LivereloadKind) -> Result<()> {
         LivereloadKind::Full => "{\"kind\":\"full\"}",
         LivereloadKind::None => return Ok(()),
     };
-    let mut client = Client::connect(url, NoTls).context("connecting for livereload NOTIFY")?;
+    let mut client = db::connect(url, "dev")?;
     // NOTIFY's parameter is an IDENT not a string, so the channel name
     // can't be parameterized with $1. Channel name is a hardcoded
     // literal — no user input reaches this query.
@@ -387,7 +384,7 @@ fn notify_livereload(url: &str, kind: LivereloadKind) -> Result<()> {
 
 /// Run the file contents in a throwaway transaction — catches parse,
 /// type, and function-signature errors without mutating any live route.
-fn preflight_sql(client: &mut Client, sql: &str) -> Result<()> {
+fn preflight_sql(client: &mut postgres::Client, sql: &str) -> Result<()> {
     let mut tx = client.transaction().context("begin preflight tx")?;
     tx.batch_execute(sql).context("executing SQL")?;
     tx.rollback().context("rolling back preflight")?;

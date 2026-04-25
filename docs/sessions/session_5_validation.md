@@ -1,0 +1,119 @@
+# Session 5 — User validation playbook
+
+What to manually try after each component lands so you can satisfy
+yourself the framework behaves as designed. Component sections are
+self-contained: you can run any one alone after a fresh `pg-web up`.
+
+Rough setup baseline assumed: the Docker stack has been bootstrapped
+once (`pg-web up` + `pg-web migrate apply` + `pg-web push` against
+`examples/todo/`). All commands are run from the `pgweb` user inside
+WSL2 unless noted.
+
+---
+
+## L. Push retry on serialization conflict
+
+### What changed
+
+- Every CLI subcommand that opens a Postgres connection now tags it via
+  `application_name = 'pg-web {verb} (pid={pid}, host={host})'`. Visible
+  in `pg_stat_activity.application_name`.
+- `pg-web push`'s transaction body is wrapped in a 3-attempt jittered
+  retry. Triggered by SQLSTATE 40001 (serialization failure) or the
+  literal `tuple concurrently updated` message that concurrent DDL
+  raises (XX000 internal error).
+- On retry exhaustion, push opens a fresh diagnostic connection,
+  queries `pg_stat_activity` for sibling `pg-web *` clients, and
+  attaches a per-row "stop with: kill PID" (same host) or
+  `pg_terminate_backend(PID)` (remote host) suggestion to the error.
+
+### Verify in `pg_stat_activity`
+
+While `pg-web dev` is running:
+
+```sql
+SELECT pid, application_name, state
+FROM pg_stat_activity
+WHERE application_name LIKE 'pg-web %'
+ORDER BY backend_start;
+```
+
+Expected: at least one row, `application_name` like
+`pg-web dev (pid=<NNNN>, host=<your-hostname>)`. The `pid` here is the
+**OS pid of your `pg-web dev` process**, not the Postgres backend pid.
+That's the actionable target the diagnostic suggests for `kill`.
+
+### Verify the retry path under contention
+
+Open two terminals against the same DB and run two pushes back-to-back:
+
+```bash
+# Terminal A — keep it pushing in a tight loop
+cd ~/pg-web/examples/todo
+while true; do ../../target/debug/pg-web push; done
+
+# Terminal B — same loop, same app
+cd ~/pg-web/examples/todo
+while true; do ../../target/debug/pg-web push; done
+```
+
+Both should keep committing — neither should error out with
+`tuple concurrently updated`. Watch `pgweb.deployments`:
+
+```sql
+SELECT count(*), max(pushed_at)
+FROM pgweb.deployments
+WHERE pushed_at > now() - interval '30 seconds';
+```
+
+Expected: count grows monotonically, no aborted pushes (each successful
+push lands a row).
+
+### Verify the diagnostic on retry exhaustion
+
+Force exhaustion by sleeping inside an interactive transaction that
+holds a row lock on `pgweb.routes`, then try a push from a second
+terminal. The push will retry 3× and fail with the diagnostic.
+
+Expected error tail:
+
+```
+Error: ...
+Caused by:
+   0: push retried 3 times against concurrent DDL
+   1: concurrent `pg-web` connections detected. Stop these to clear the conflict:
+        - pg-web dev (pid=12345, host=mymachine) (backend pid 67890) — same host; stop with: kill 12345
+   2: tuple concurrently updated
+```
+
+If the racing process's `application_name` came in unrecognized format
+(e.g. someone connected via `psql`), the diag falls back to:
+
+```
+        - psql (backend pid 67890) — unrecognized format; stop with: SELECT pg_terminate_backend(67890); from psql
+```
+
+### Sanity: no regressions
+
+- `examples/todo/` still works end-to-end: `pg-web up` → curl `/`
+  shows the empty-state, POST a todo, refresh, see the row.
+- Single-pusher `pg-web push` is unchanged in latency (the retry
+  wrapper is a no-op on the happy path; one tx, one commit).
+- `pg-web env list`, `pg-web check`, `pg-web migrate apply` all still
+  connect (now via `db::connect`) and work as before.
+
+### Known nuances
+
+- A leftover `pg-web up`-managed container shadowing `:8080` is now
+  much easier to spot — `pg_stat_activity` shows the in-container
+  worker's connections too. The fix is `docker stop <container>` or
+  `pg-web down` from the original app dir.
+- The retry helper is only on `pg-web push`. `pg-web migrate apply`
+  uses one tx per migration file and isn't typically a DDL-race target;
+  no retry there.
+
+---
+
+## F.2 / F.3 / H / I / N — TBD
+
+Sections will land as each component ships.

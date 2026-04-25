@@ -1225,3 +1225,89 @@ fn push_rejects_missing_handler_function() {
         "broken route should never have been committed"
     );
 }
+
+/// Tier 3 concurrency test (Component L). Multiple `pg-web push`
+/// processes against the same DB used to fail the loser with
+/// `tuple concurrently updated` from the racing `CREATE OR REPLACE
+/// FUNCTION` calls (the real bug the user hit during Session 4
+/// validation when a forgotten `pg-web dev` raced a new one). The
+/// retry wrapper in `push_with_options` should make every concurrent
+/// push eventually succeed; the assertion is "all pushers return Ok
+/// AND every push lands a `pgweb.deployments` row."
+#[test]
+#[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            --test docker_e2e -- --ignored`."]
+fn concurrent_pushes_all_commit() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start pgweb/postgres container");
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+
+    let todo_app = todo_app_dir();
+    pg_web_cli::migrate::apply(&todo_app, &db_url).expect("migrate apply");
+    // Initial push so all subsequent pushes are pure CREATE OR REPLACE
+    // updates against existing pg_proc rows — that's where concurrent
+    // DDL races, not on first-time CREATEs.
+    pg_web_cli::push::push(&todo_app, &db_url).expect("seed push");
+
+    // Snapshot ledger before the concurrent burst so we can verify exactly
+    // N rows landed.
+    let mut pg = postgres::Client::connect(&db_url, postgres::NoTls).unwrap();
+    let pre: i64 = pg
+        .query_one("SELECT count(*) FROM pgweb.deployments", &[])
+        .unwrap()
+        .get(0);
+
+    // Three concurrent pushers against the same app. Three is enough to
+    // make racing on `CREATE OR REPLACE FUNCTION` likely without making
+    // the test painfully slow on weak runners.
+    const PUSHERS: usize = 3;
+    let app = todo_app.clone();
+    let url = db_url.clone();
+    let handles: Vec<_> = (0..PUSHERS)
+        .map(|_| {
+            let app = app.clone();
+            let url = url.clone();
+            std::thread::spawn(move || pg_web_cli::push::push(&app, &url))
+        })
+        .collect();
+
+    let mut failures = Vec::new();
+    for h in handles {
+        match h.join().expect("thread join") {
+            Ok(_) => {}
+            Err(e) => failures.push(format!("{e:#}")),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "all {PUSHERS} concurrent pushes should have committed; failures: {failures:#?}"
+    );
+
+    let post: i64 = pg
+        .query_one("SELECT count(*) FROM pgweb.deployments", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        post - pre,
+        PUSHERS as i64,
+        "every successful push lands a pgweb.deployments row"
+    );
+}
