@@ -69,6 +69,10 @@ Later phases (2 auth/RLS, 3 async jobs, 4 observability) are tracked in `docs/RO
 - **F.2** ⬜ deferred to Session 6 — needs real remote infra to validate
 - **(true streaming)** ⬜ Phase 2+ — `lo_read`-backed assets >20 MiB
 
+**Longer-term direction** (parking lot, see ROADMAP):
+- Documentation-focused MCP + marketplace skills so agents writing pg-web apps have excellent access to the real docs, CLAUDE.md, invariants, etc.
+- Related but further out: simple CLI data access (`pg-web query` / `pg-web psql`) and eventual runtime data MCP for agents to reach the actual tables in a running app.
+
 ---
 
 ## Code map
@@ -216,6 +220,11 @@ Deferred (still inside Phase 1's polish tail):
 
 - **`pg-web push --target <name>`** — SSH-tunneled remote push. Local-loopback push works and the F.3 in-image CLI handles the "SSH in and push from inside" case; what's missing is the laptop-to-VPS automated tunnel. Validation requires a real remote target, so this slid to Session 6 when remote infra is available.
 - **True `pg_largeobject` streaming.** v0.2 ships a 20 MiB BYTEA cap (Component I cap-raise variant) — covers virtually every practical asset. `lo_read`-backed streaming for assets >20 MiB is Phase 2+ work.
+
+Longer-term / speculative (parking lot, see ROADMAP):
+
+- Documentation MCP server + packaged agent skills so AIs writing pg-web code have first-class access to the authoritative docs, invariants, error catalog, etc.
+- Related but further-out idea: lightweight `pg-web query` / `pg-web psql` CLI helpers (and eventually a data MCP) for agents to inspect the actual tables inside a running pg-web app.
 
 Deferred to **Phase 2+** (explicit non-goals for Phase 1):
 

@@ -17,7 +17,7 @@ One Docker container. One binary. One mental model.
 - **Developers are rediscovering the value of owning the Postgres host.** Managed DBs (RDS, Cloud SQL, Supabase) don't allow custom extensions, but for ambitious teams shipping on VPS or self-hosted infrastructure, the speed and flexibility wins outweigh the ops cost. pg-web doubles down on that shift.
 - **Latency is the final frontier.** Modern web apps spend 80-95% of their server time waiting on database round-trips. Zero-hop SPI access is a category-level performance improvement, not a micro-optimization.
 
-## What a developer does
+## What a developer (and their agents) do
 
 ```
 my-app/
@@ -39,7 +39,9 @@ my-app/
 4. Hit `http://localhost:8080/posts/42`.
 5. See your HTML rendered with real data, pulled through SPI, rendered by Tera, shipped back — all without leaving the Postgres process.
 
-That's the whole dev loop. No Node install. No ORM learning curve. No build step.
+Longer term, the same zero-config spirit extends to AI agents: an MCP surface + skills gives coding agents first-class access to the live documentation and (eventually) the actual data inside the app.
+
+That's the whole dev loop. No Node install. No ORM learning curve. No build step. Agents that deeply understand the framework (and its data) are dramatically more effective teammates.
 
 ## Non-goals
 
