@@ -170,7 +170,8 @@ Goal: close out Phase 1 for a releasable v0.1.
 - SQL handlers that call external APIs (Stripe, etc.) will block the HTTP worker thread until the API returns. **Fixed in Phase 3** via the async job queue.
 - No declarative schema-diffing (`pg-web migrate create`). Users hand-write `migrations/NNNN_name.sql`. **Schema-diffing (from Prisma / DBML / DB introspection) is punted to a later phase.**
 - No auth, no sessions, no RLS bridge. **Delivered in Phase 2**.
-- No in-browser debugger dashboard. **Delivered in Phase 4.**
+- No in-browser debugger dashboard. **Delivered in Phase 4**.
+- Browser live-reload (SSE + EventSource) has client-side bfcache/navigation cleanup and a server-side connection lifetime cap, but lacks automated tests that simulate rapid page navigation + bfcache restores and verify that SSE connections / broadcast subscribers do not accumulate. Full simulation test coverage is deferred.
 
 ## Phase 2 — Security & Identity
 

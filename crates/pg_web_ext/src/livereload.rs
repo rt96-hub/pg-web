@@ -37,6 +37,7 @@ use axum::{
 };
 use futures_util::stream::{Stream, StreamExt};
 use pgrx::bgworkers::BackgroundWorker;
+use tokio::time::sleep;
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::listen_router::ListenRouter;
@@ -63,7 +64,21 @@ pub const LIVERELOAD_CHANNEL: &str = "pgweb_livereload";
 ///   full `location.reload()`.
 const LIVERELOAD_JS: &str = r#"(function(){
   if (typeof EventSource === 'undefined') return;
+
+  // Sentinel prevents duplicate EventSources when the script is
+  // injected multiple times (bfcache restores, rapid navigation, etc.).
+  if (window.__pgwebLivereload) return;
+
   var es = new EventSource('/_pgweb/livereload');
+  window.__pgwebLivereload = es;
+
+  function cleanup() {
+    try {
+      if (es) es.close();
+    } catch (e) {}
+    delete window.__pgwebLivereload;
+  }
+
   es.addEventListener('reload', function(ev){
     var msg = {};
     try { msg = JSON.parse(ev.data); } catch(e) {}
@@ -80,10 +95,29 @@ const LIVERELOAD_JS: &str = r#"(function(){
     }
     window.location.reload();
   });
+
   es.addEventListener('error', function(){
     // Browser auto-reconnects; don't log — dev's restart is noisy
     // enough and connection flaps are normal when the server restarts.
   });
+
+  // Critical bfcache + navigation hygiene.
+  // pagehide is the most reliable signal that the page is being
+  // discarded or frozen (including bfcache).
+  window.addEventListener('pagehide', cleanup, { once: true });
+
+  // beforeunload as a belt-and-suspenders fallback for some older
+  // browsers and certain navigation scenarios.
+  window.addEventListener('beforeunload', cleanup, { once: true });
+
+  // If the page was restored from bfcache and the old connection
+  // somehow survived, close it so the freshly injected script can
+  // create a clean one.
+  window.addEventListener('pageshow', function(ev){
+    if (ev.persisted && window.__pgwebLivereload) {
+      cleanup();
+    }
+  }, { once: true });
 })();
 "#;
 
@@ -132,6 +166,17 @@ pub async fn serve_livereload_sse(
 
     let rx = router.subscribe(LIVERELOAD_CHANNEL);
     let stream = build_reload_stream(rx);
+
+    // Hard safety net for dev-only SSE connections.
+    // Even with perfect client cleanup, bfcache edge cases, crashed
+    // tabs, or very long-running dev sessions can leave connections
+    // open. After 2 hours we unilaterally close the stream. The
+    // browser will see the connection drop and stop trying.
+    //
+    // This is deliberately generous (a full workday) and only affects
+    // the livereload endpoint (which 404s in production).
+    let max_lifetime = sleep(Duration::from_secs(2 * 60 * 60));
+    let stream = stream.take_until(max_lifetime);
 
     Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(30)))
@@ -248,5 +293,33 @@ mod tests {
         assert!(script_pos < last_body_close);
         // And only one injection happened.
         assert_eq!(out.matches("data-pgweb-livereload").count(), 1);
+    }
+
+    #[test]
+    fn livereload_js_contains_bfcache_cleanup() {
+        // Regression guard for the SSE connection leak fix.
+        // The client JS must contain the defensive lifecycle code so
+        // that future edits don't accidentally re-introduce the
+        // accumulation bug under rapid navigation + bfcache.
+        assert!(
+            LIVERELOAD_JS.contains("pagehide"),
+            "JS must listen for pagehide to close EventSource"
+        );
+        assert!(
+            LIVERELOAD_JS.contains("beforeunload"),
+            "JS must listen for beforeunload as fallback"
+        );
+        assert!(
+            LIVERELOAD_JS.contains("pageshow"),
+            "JS must handle pageshow + persisted for bfcache restores"
+        );
+        assert!(
+            LIVERELOAD_JS.contains("__pgwebLivereload"),
+            "JS must use a sentinel to prevent duplicate EventSources"
+        );
+        assert!(
+            LIVERELOAD_JS.contains("es.close()"),
+            "JS must actually call close() on the EventSource"
+        );
     }
 }

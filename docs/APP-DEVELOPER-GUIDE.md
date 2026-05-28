@@ -429,7 +429,11 @@ The chain:
 
 **Production mode is untouched.** `pgweb.settings.env = 'production'` disables the injection AND 404s the `/_pgweb/livereload` SSE endpoint. No connection leaks, no stray script downloads in prod.
 
-**Opt out:** `pg-web dev --no-livereload` skips the NOTIFY broadcast (connected tabs just stay quiet). The script injection still happens in dev mode — the EventSource connects, receives nothing, costs nothing. This is useful when you're running a heavy-JS app whose in-page state would be lost on reload and you'd rather manually control when the refresh happens.
+**Opt out:** `pg-web dev --no-livereload` skips the NOTIFY broadcast (connected tabs just stay quiet). The script injection still happens in dev mode. This is useful when you're running a heavy-JS app whose in-page state would be lost on reload and you'd rather manually control when the refresh happens.
+
+**Known limitations (bfcache / rapid navigation).** The live-reload client opens a persistent `EventSource` (SSE) connection. On apps with frequent full-page navigation or heavy use of the browser back/forward buttons, these connections can accumulate because of how browsers preserve pages in the back/forward cache (bfcache). The implementation includes defensive client-side cleanup (`pagehide`, `beforeunload`, `pageshow` + sentinel) plus a hard 2-hour server-side lifetime on the SSE stream, but very rapid navigation can still produce a handful of connections per tab.
+
+If you see sluggish tabs or many open `/_pgweb/livereload` requests in DevTools during development, use `--no-livereload` and refresh manually. This is the recommended setting for complex client-side apps during active iteration. The feature is deliberately dev-only and has no effect in production.
 
 **What about HTMX?** No dependency. If your app already uses HTMX, live-reload's `location.reload()` blows away whatever state HTMX was maintaining — same as any other full-page reload. Phase 2 will layer an HTMX-friendly morph path on top of the same SSE transport so partial state can survive refreshes; the current v0.1 client is deliberately minimal.
 
