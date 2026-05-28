@@ -538,6 +538,38 @@ assert_contains "$check_out" "CRATE" "diagnostic surfaces the parser's unexpecte
 # Clean up so subsequent sections (if any) see a clean state.
 rm "$SMOKE_DIR/migrations/0999_typo.sql"
 
+step "16. pg-web check accepts rich dollar-quoted + adjacent literal COMMENTs → exit 0"
+# This is the regression case from the original sqlparser limitation report.
+# Migrations with high-quality documentation using $$...$$, $tag$...$tag$,
+# and adjacent string literals ('foo' 'bar') must not cause false-positive
+# parse errors. Real Postgres accepts them; the offline check must too.
+cat > "$SMOKE_DIR/migrations/0001_rich_comments.sql" <<'SQL'
+CREATE TABLE carriers (
+    id   bigserial PRIMARY KEY,
+    name text NOT NULL
+);
+
+COMMENT ON TABLE carriers IS $$
+Comprehensive carrier master table.
+
+Supports:
+- Multiple contact methods
+- O'Brien Logistics style names (apostrophes)
+- Regional rate cards
+$$;
+
+COMMENT ON COLUMN carriers.name IS 'O''Reilly''s Preferred' ' Carrier';
+SQL
+
+set +e
+check_out=$("$BIN" check 2>&1)
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "check should exit 0 on rich COMMENT migration, got $rc; output:\n$check_out"
+assert_contains "$check_out" "no findings" "rich dollar-quoted COMMENTs produce clean check"
+
+rm "$SMOKE_DIR/migrations/0001_rich_comments.sql"
+
 step "17. livereload: script auto-injected, JS stub served, SSE returns 200"
 # Script injection into the rendered scaffold homepage.
 http GET /
