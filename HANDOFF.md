@@ -80,9 +80,14 @@ echo "shared_preload_libraries = 'pg_web_ext'" >> ~/.pgrx/data-17/postgresql.con
 
 ```bash
 cd ~
-git clone <your-fork-or-the-upstream-url> pg-web
+git clone https://github.com/rt96-hub/pg-web.git
 cd pg-web
 ```
+
+The repo is **private** — clone needs authentication. Two options:
+
+- **`gh` CLI (recommended):** `gh auth login` once, then `gh repo clone rt96-hub/pg-web ~/pg-web` does the rest.
+- **HTTPS with PAT:** generate a personal access token (Settings → Developer settings → Tokens, `repo` scope), then `git clone https://<token>@github.com/rt96-hub/pg-web.git`. Don't persist the token in the URL — `git remote set-url origin https://github.com/rt96-hub/pg-web.git` after the initial clone, then let `gh auth setup-git` or a credential helper handle subsequent pushes.
 
 If you're picking up where Session 5 left off, the latest commit subject should be `chore(scripts): tier-2a port-shadow preflight + tier-3 auto-rebuild` (followed by the session_6.md draft commit). `git log --oneline | head -10` orients quickly.
 
