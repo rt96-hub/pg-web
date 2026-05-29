@@ -48,7 +48,7 @@ pub enum ServeOutcome {
     Response { status: u16, body: String },
     /// Static asset response (CSS, JS, images, …). Bytes + content-type
     /// + ETag from `pgweb.assets`. `http.rs` owns the Cache-Control
-    /// header and the `If-None-Match` → 304 conversion.
+    ///   header and the `If-None-Match` → 304 conversion.
     Asset {
         body: Vec<u8>,
         content_type: String,

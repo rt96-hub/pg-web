@@ -570,6 +570,29 @@ assert_contains "$check_out" "no findings" "rich dollar-quoted COMMENTs produce 
 
 rm "$SMOKE_DIR/migrations/0001_rich_comments.sql"
 
+step "16b. pg-web check accepts extension DDL + opclass indexes (pg_trgm style) → exit 0"
+# Regression for prompt 003 / sibling app. A migration containing
+# CREATE EXTENSION + CREATE INDEX ... USING gin (col gin_trgm_ops)
+# (and CREATE UNIQUE INDEX) must not produce parser findings.
+cat > "$SMOKE_DIR/migrations/0002_smoke_trgm.sql" <<'SQL'
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX IF NOT EXISTS carriers_name_trgm_idx
+  ON public.carriers USING gin (name gin_trgm_ops);
+
+CREATE UNIQUE INDEX IF NOT EXISTS carriers_email_uidx
+  ON public.carriers (email);
+SQL
+
+set +e
+check_out=$("$BIN" check 2>&1)
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "check should exit 0 on extension+opclass migration, got $rc; output:\n$check_out"
+assert_contains "$check_out" "no findings" "extension DDL + gin_trgm_ops indexes produce clean check"
+
+rm "$SMOKE_DIR/migrations/0002_smoke_trgm.sql"
+
 step "17. livereload: script auto-injected, JS stub served, SSE returns 200"
 # Script injection into the rendered scaffold homepage.
 http GET /

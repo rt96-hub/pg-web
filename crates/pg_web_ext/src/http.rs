@@ -148,13 +148,13 @@ async fn handle(req: Request) -> Response {
 ///
 /// Cache-Control policy:
 /// - dev:  `no-cache` — browser always revalidates via ETag, so a
-///         saved file shows up on refresh without hard-reload gymnastics.
+///   saved file shows up on refresh without hard-reload gymnastics.
 /// - prod, canonical URL (e.g. `/styles.css`): `public, max-age=0,
-///         must-revalidate` — ETag round-trip on every page load.
+///   must-revalidate` — ETag round-trip on every page load.
 /// - prod, fingerprinted URL (e.g. `/styles.<hex>.css`): `public,
-///         max-age=31536000, immutable` — content-addressed URL means
-///         the bytes never change for that URL, so the browser can
-///         cache forever without revalidation. Component H.
+///   max-age=31536000, immutable` — content-addressed URL means
+///   the bytes never change for that URL, so the browser can
+///   cache forever without revalidation. Component H.
 fn render_asset(
     request_path: &str,
     body: Vec<u8>,

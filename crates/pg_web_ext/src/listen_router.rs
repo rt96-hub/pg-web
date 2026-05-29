@@ -108,6 +108,7 @@ impl ListenRouter {
     /// Deleting it and re-adding it when Phase 2 starts would churn
     /// git history for no benefit. Live with the warning; it's a
     /// marker that Phase 2 has a hook here.
+    #[allow(dead_code)]
     pub fn registered_channels(&self) -> Vec<String> {
         let map = self.channels.lock().expect("listen_router mutex");
         map.keys().cloned().collect()

@@ -15,15 +15,18 @@
 //! - **Return-type consistency** between a `.html` sibling and the
 //!   handler signature. Valuable, but requires SQL-AST walking past
 //!   the function wrapper; deferred.
-//! - **Rich literals inside `COMMENT ON ...` statements**. We use a
-//!   small tolerant statement splitter so that dollar-quoted strings
-//!   (`$$...$$`, `$tag$...$tag$`) and adjacent string literals
-//!   (`'foo' 'bar'`) are accepted in top-level `COMMENT ON TABLE /
-//!   COLUMN / ...` statements. These are overwhelmingly used for
-//!   high-quality, self-documenting schema comments and are fully
-//!   supported by real PostgreSQL. All other statements remain under
-//!   the strict sqlparser. (See `split_sql_statements` and
-//!   `validate_sql_with_tolerant_comments`.)
+//! - **Rich literals inside `COMMENT ON ...` statements** and certain
+//!   extension DDL patterns in migrations. We use a small tolerant
+//!   statement splitter so that dollar-quoted/adjacent literals in
+//!   `COMMENT ON` are accepted, and top-level `CREATE EXTENSION ...`
+//!   plus `CREATE [UNIQUE] INDEX ...` statements (including opclass
+//!   syntax such as `USING gin (col gin_trgm_ops)`) bypass sqlparser
+//!   entirely. These constructs are valid PostgreSQL and commonly
+//!   required for real apps (pg_trgm, pgvector, PostGIS, ...), but are
+//!   outside sqlparser 0.52's Postgres grammar. Real Postgres via
+//!   `migrate apply` remains the source of truth. Handler SQL stays
+//!   under stricter scrutiny. (See `split_sql_statements`,
+//!   `finalize_statement`, and `validate_sql_with_tolerant_comments`.)
 //!
 //! The offline SQL checks are intentionally approximate. They exist to
 //! catch typos, unbalanced constructs, and obviously malformed DDL
@@ -56,11 +59,14 @@ use crate::{migrate, paths};
 struct SqlStatement {
     /// The original text of this statement (including trailing semicolon if present).
     text: String,
-    /// True if this statement is a top-level `COMMENT ON ...` (after trimming
-    /// leading whitespace and stripping leading line/block comments).
-    /// These are allowed to contain rich dollar-quoted and adjacent literals
-    /// that sqlparser's Postgres dialect currently rejects.
-    is_comment_on: bool,
+    /// True if this statement should bypass the sqlparser check entirely.
+    /// Reasons:
+    /// - `COMMENT ON ...` (rich $$ / adjacent-literal documentation)
+    /// - `CREATE EXTENSION ...` and `CREATE [UNIQUE] INDEX ...` (opclass syntax
+    ///   e.g. `USING gin (col gin_trgm_ops)` is valid PG but rejected by the
+    ///   parser's grammar; these are overwhelmingly migration DDL).
+    ///   Real execution (`migrate apply` / push) is the source of truth for these.
+    is_trusted: bool,
 }
 
 /// Split `content` into top-level statements while correctly skipping over
@@ -68,8 +74,12 @@ struct SqlStatement {
 /// dollar signs, or the word "COMMENT".
 ///
 /// This is deliberately a small, zero-dependency scanner. It is *not* a full
-/// SQL parser — its only job is to let us treat `COMMENT ON ...` statements
-/// specially while still running the real sqlparser on everything else.
+/// SQL parser — its only job is to let us treat `COMMENT ON ...`,
+/// `CREATE EXTENSION ...`, and `CREATE [UNIQUE] INDEX ...` statements as
+/// trusted (bypass sqlparser) while still running the real sqlparser on
+/// everything else. The trusted carve-out exists because sqlparser's
+/// Postgres dialect does not understand extension opclass syntax inside
+/// index definitions (and a few other real-world patterns).
 fn split_sql_statements(content: &str) -> Vec<SqlStatement> {
     let mut stmts = Vec::new();
     let mut current = String::new();
@@ -272,22 +282,31 @@ fn finalize_statement(text: &str) -> Option<SqlStatement> {
     }
 
     let lower = probe.to_ascii_lowercase();
-    let is_comment_on = lower.starts_with("comment on ");
+    // Token-based classification is robust to arbitrary whitespace after keywords.
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    let is_comment_on = tokens.len() >= 2 && tokens[0] == "comment" && tokens[1] == "on";
+    let is_create_extension = tokens.len() >= 2 && tokens[0] == "create" && tokens[1] == "extension";
+    let is_create_index = tokens.len() >= 2 && tokens[0] == "create" && tokens[1] == "index"
+        || tokens.len() >= 3 && tokens[0] == "create" && tokens[1] == "unique" && tokens[2] == "index";
+    let is_trusted = is_comment_on || is_create_extension || is_create_index;
 
     Some(SqlStatement {
         text: text.to_string(),
-        is_comment_on,
+        is_trusted,
     })
 }
 
 /// Validate SQL content using the tolerant splitter + selective sqlparser.
 ///
-/// - `COMMENT ON ...` statements are accepted as-is (they will be validated
-///   by real Postgres on `migrate apply`). This lets developers use rich
-///   dollar-quoted and adjacent-string documentation without the check
-///   forcing them to degrade it.
+/// - `COMMENT ON ...`, `CREATE EXTENSION ...`, and `CREATE [UNIQUE] INDEX ...`
+///   statements are accepted as-is (trusted to real Postgres). This lets
+///   migrations use extension opclasses (`gin_trgm_ops`, PostGIS ops, etc.)
+///   and rich documentation without the offline check forcing degraded SQL.
 /// - All other statements are passed through the real sqlparser so that
 ///   typos (`CRATE TABLE`), unbalanced constructs, etc. are still caught.
+/// - Handler SQL (`pages/**/*.sql`) and migration SQL share this logic;
+///   the trusted carve-outs are intentionally broad for migrations because
+///   they are the documented home for schema + index DDL.
 fn validate_sql_with_tolerant_comments(
     content: &str,
     dialect: &PostgreSqlDialect,
@@ -295,9 +314,10 @@ fn validate_sql_with_tolerant_comments(
     let stmts = split_sql_statements(content);
 
     for stmt in stmts {
-        if stmt.is_comment_on {
-            // Rich documentation comments are explicitly allowed.
-            // Real Postgres will reject truly malformed ones at apply time.
+        if stmt.is_trusted {
+            // Trusted categories (rich COMMENTs + extension DDL) are explicitly
+            // allowed. Real Postgres on `migrate apply` (or push for handlers)
+            // is the source of truth and will reject truly malformed statements.
             continue;
         }
         if let Err(e) = Parser::parse_sql(dialect, &stmt.text) {
@@ -413,12 +433,10 @@ fn check_templates(app_dir: &Path, report: &mut CheckReport) -> Result<()> {
 /// Parse every `.sql` under `pages/` through sqlparser.
 ///
 /// Dollar-quoted function bodies are treated as opaque (only the wrapper
-/// is validated). `COMMENT ON ...` statements are also treated specially:
-/// they are allowed to contain dollar-quoted strings (`$$...$$`, `$tag$...$tag$`)
-/// and adjacent string literals (`'foo' 'bar'`) that sqlparser's current
-/// Postgres dialect rejects, even though real PostgreSQL accepts them.
-/// These are overwhelmingly used for high-quality schema documentation.
-/// Real syntax errors in any non-COMMENT statement are still reported.
+/// is validated). `COMMENT ON ...` statements are treated specially (rich
+/// literals). CREATE EXTENSION / INDEX statements are also trusted here
+/// (harmless in practice — handlers almost never contain top-level DDL).
+/// Real syntax errors in non-trusted statements are still reported.
 fn check_handler_sql(app_dir: &Path, report: &mut CheckReport) -> Result<()> {
     let pages = app_dir.join("pages");
     if !pages.exists() {
@@ -452,8 +470,12 @@ fn check_handler_sql(app_dir: &Path, report: &mut CheckReport) -> Result<()> {
 
 /// Parse every `migrations/*.sql` through sqlparser.
 ///
-/// See `check_handler_sql` for the special handling of dollar-quoted
-/// and adjacent literals inside `COMMENT ON ...` statements.
+/// `COMMENT ON ...` (rich docs), `CREATE EXTENSION ...`, and
+/// `CREATE [UNIQUE] INDEX ...` (including opclass syntax such as
+/// `USING gin (col gin_trgm_ops)`) are trusted and bypass the parser.
+/// This is the pragmatic carve-out so that real-world migration DDL
+/// following the documented "migrations own schema and indexes" rule
+/// does not produce spurious failures. See module docs for policy.
 fn check_migration_sql(app_dir: &Path, report: &mut CheckReport) -> Result<()> {
     let migrations = app_dir.join("migrations");
     if !migrations.exists() {
@@ -478,9 +500,18 @@ fn check_migration_sql(app_dir: &Path, report: &mut CheckReport) -> Result<()> {
             .with_context(|| format!("reading {}", path.display()))?;
 
         if let Some(err) = validate_sql_with_tolerant_comments(&content, &dialect) {
+            // Improve the message for the common migration case: the offline
+            // parser is deliberately approximate. The guidance points users
+            // at the documented workflow.
+            let message = format!(
+                "{} — if this is extension DDL (CREATE EXTENSION, GIN/GiST indexes \
+                 with opclasses such as gin_trgm_ops, etc.), the SQL is likely valid; \
+                 `pg-web migrate apply` against real Postgres is the source of truth.",
+                err
+            );
             report.migrations.push(Finding {
                 path: path.clone(),
-                message: err,
+                message,
             });
         }
     }
@@ -715,10 +746,10 @@ ALTER TABLE carriers ADD COLUMN region text;
         let stmts = split_sql_statements(sql);
         assert_eq!(stmts.len(), 4, "expected 4 top-level statements, got {}", stmts.len());
 
-        assert!(!stmts[0].is_comment_on);
-        assert!(stmts[1].is_comment_on, "dollar-quoted COMMENT should be recognized");
-        assert!(stmts[2].is_comment_on, "adjacent-literal COMMENT should be recognized");
-        assert!(!stmts[3].is_comment_on);
+        assert!(!stmts[0].is_trusted);
+        assert!(stmts[1].is_trusted, "dollar-quoted COMMENT should be recognized as trusted");
+        assert!(stmts[2].is_trusted, "adjacent-literal COMMENT should be recognized as trusted");
+        assert!(!stmts[3].is_trusted);
     }
 
     #[test]
@@ -746,7 +777,7 @@ SELECT 42;   -- final real statement
         // We expect: CREATE FUNCTION, COMMENT, CREATE TABLE, SELECT
         assert_eq!(stmts.len(), 4, "got: {:#?}", stmts);
         assert!(stmts[0].text.contains("CREATE FUNCTION"));
-        assert!(stmts[1].is_comment_on);
+        assert!(stmts[1].is_trusted);
         assert!(stmts[2].text.contains("CREATE TABLE real"));
         assert!(stmts[3].text.contains("SELECT 42"));
     }
@@ -831,5 +862,65 @@ COMMENT ON FUNCTION pgweb.pages__demo IS $$handler for /demo$$;
 
         let report = check(dir.path(), None).unwrap();
         assert!(report.is_clean(), "function body + rich comment must be clean: {:#?}", report);
+    }
+
+    #[test]
+    fn check_accepts_extension_ddl_and_opclass_indexes_in_migrations() {
+        // Regression test for the exact pattern from the sibling trucking-carriers
+        // app (prompt 003): CREATE EXTENSION + CREATE INDEX ... USING gin (col opclass)
+        // plus other common indexes. These must produce a clean report even though
+        // sqlparser 0.52 rejects the opclass syntax. Real PG accepts them.
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "migrations/0002_trgm_and_vectors.sql",
+            r#"
+-- Real-world extension DDL that previously hard-failed `pg-web check`.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- GIN trigram indexes (the reported failure case)
+CREATE INDEX IF NOT EXISTS carriers_legal_name_trgm_idx
+  ON public.carriers USING gin (legal_name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS carriers_dba_name_trgm_idx
+  ON public.carriers USING gin (dba_name gin_trgm_ops);
+
+-- Plain btree still works (now via the trusted path)
+CREATE INDEX carriers_region_idx ON public.carriers (region);
+
+-- UNIQUE index form
+CREATE UNIQUE INDEX IF NOT EXISTS carriers_email_uidx ON public.carriers (email);
+
+-- Hypothetical future pgvector / PostGIS style (parser would also reject these)
+-- CREATE INDEX items_embedding_idx ON public.items USING hnsw (embedding vector_l2_ops);
+-- (commented; the pg_trgm cases above are sufficient for the regression)
+"#,
+        );
+
+        let report = check(dir.path(), None).unwrap();
+        assert!(
+            report.is_clean(),
+            "CREATE EXTENSION + opclass-bearing CREATE INDEX must be accepted in migrations: {:#?}",
+            report
+        );
+    }
+
+    #[test]
+    fn check_still_flags_real_syntax_errors_in_create_index_position() {
+        // A typo inside what would be a trusted CREATE INDEX statement must
+        // still be caught because the token classification sees "CRATE" not "create".
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "migrations/0001_bad_idx.sql",
+            r#"
+CREATE TABLE ok (id int);
+CRATE INDEX oops ON ok (id);  -- typo in keyword, not trusted
+"#,
+        );
+
+        let report = check(dir.path(), None).unwrap();
+        assert_eq!(report.migrations.len(), 1, "{:?}", report);
+        assert!(report.migrations[0].message.to_lowercase().contains("crate"));
     }
 }

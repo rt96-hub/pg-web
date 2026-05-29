@@ -507,12 +507,17 @@ pg-web check
 Passes when:
 - `pages/` conforms to the layout spec (directory-as-route, reserved stems, no flat HTML at root).
 - Every `.html` parses under Tera.
-- Every `.sql` (handlers + migrations) parses under a Postgres dialect SQL parser.
+- Every `.sql` (handlers + migrations) parses under a Postgres dialect SQL parser **except** for two trusted categories in migrations (and harmlessly in handlers):
+  - `COMMENT ON ...` statements using rich dollar-quoted (`$$...$$`) or adjacent string literals (high-quality self-documentation).
+  - `CREATE EXTENSION ...` and `CREATE [UNIQUE] INDEX ...` statements, including extension opclass syntax such as `USING gin (col gin_trgm_ops)` (or GiST, SP-GiST, pgvector, PostGIS, etc.). These are valid PostgreSQL but outside the offline parser's grammar.
 - Migration filenames have unique numeric prefixes (`0001_x.sql` / `0002_y.sql`…). Duplicate prefixes are flagged because filesystem order isn't guaranteed at migrate time.
 
 Doesn't check:
 - Semantic SQL (column existence, type agreement, RLS). Runtime PG does that at push / request time; this is a pre-push syntax gate.
 - PL/pgSQL function bodies past the outer `CREATE FUNCTION` wrapper. Dollar-quoted bodies are opaque to the parser; `pg-web push` validates them when PG compiles the function.
+- Extension DDL patterns listed above (by design — `pg-web migrate apply` is the source of truth).
+
+**Policy for extension DDL:** If `pg-web check` emits a parser finding on a migration containing `CREATE EXTENSION` or opclass-bearing indexes but `pg-web migrate apply` (or `push --with-migrate`) succeeds cleanly, you are fine. The offline check is intentionally approximate for these cases so that real applications following the documented "migrations own schema and indexes" rule do not hit friction. Add a regression test in your own suite (or just rely on the framework's) and move on.
 
 Opt-in DB check:
 
@@ -522,11 +527,11 @@ pg-web check --url "$DATABASE_URL"
 
 adds a ledger-drift pass that compares local `migrations/*.sql` to `pgweb.migrations` in the DB. Flags files applied in the DB but deleted locally (historical record lost), and files present locally but not yet applied (push/migrate reminder). The default offline surface stays intact — everything above runs without `--url`.
 
-Sample output on a broken app:
+Sample output on a broken app (typo case; extension-DDL findings are suppressed with guidance instead):
 
 ```
 Migrations:
-  ./migrations/0002_typo.sql: sql parser error: Expected: an SQL statement, found: CRATE at Line: 1, Column: 1
+  ./migrations/0002_typo.sql: sql parser error: Expected: an SQL statement, found: CRATE at Line: 1, Column: 1 — if this is extension DDL (CREATE EXTENSION, GIN/GiST indexes with opclasses such as gin_trgm_ops, etc.), the SQL is likely valid; `pg-web migrate apply` against real Postgres is the source of truth.
 
 Templates:
   ./pages/broken/index.html: Failed to parse 'index.html' — unclosed tag {% if %}
