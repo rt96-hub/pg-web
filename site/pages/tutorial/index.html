@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tutorial — pg-web</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="/" class="brand">pg-web<span>.dev</span></a>
+      <a href="/overview">Overview</a>
+      <a href="/layout">App Layout</a>
+      <a href="/tutorial" class="active">Tutorial</a>
+      <a href="/deployment">Deploy</a>
+      <a href="/roadmap">Roadmap</a>
+      <a href="https://github.com/rt96-hub/pg-web" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Tutorial — Build a Todo List</h1>
+
+    <p>The official step-by-step walkthrough lives in <a href="https://github.com/rt96-hub/pg-web/blob/main/docs/TUTORIAL.md"><code>docs/TUTORIAL.md</code></a> in the repo. It produces exactly the app at <a href="https://github.com/rt96-hub/pg-web/tree/main/examples/todo"><code>examples/todo/</code></a>.</p>
+
+    <p>Time: 20–40 minutes. You only need Docker and the <code>pg-web</code> CLI.</p>
+
+    <h2>What you will build</h2>
+    <p>An HTMX-driven todo list with add, toggle, and delete — every action round-trips through Postgres, is validated by a table CHECK constraint, and returns either a new <code>&lt;li&gt;</code> fragment or an inline error via <code>hx-swap-oob</code>.</p>
+
+    <h2>Key stops along the way</h2>
+    <ul>
+      <li><code>pg-web init my-todos --template todo</code> (or the minimal scaffold + manual work)</li>
+      <li><code>pg-web up</code> (boots the <code>pgweb/postgres</code> + optional Caddy stack)</li>
+      <li>A forward-only migration that creates <code>public.todos</code> with a <code>CHECK</code></li>
+      <li><code>pg-web migrate apply</code> + the <code>pgweb.migrations</code> ledger</li>
+      <li>Dynamic GET (<code>index.html</code> + <code>index.sql</code>) that returns <code>{ todos: [...] }</code></li>
+      <li>POST returning a fragment through Tera (<code>todos/post.*</code>)</li>
+      <li>Form validation using the table constraint + <code>EXCEPTION WHEN check_violation</code> + OOB error div</li>
+      <li>Raw-text POST for delete (no sibling <code>.html</code>, returns <code>''</code>)</li>
+      <li>Custom <code>_404.html</code></li>
+      <li>Dynamic route example: <code>pages/todos/[id]/</code></li>
+    </ul>
+
+    <h2>After the tutorial</h2>
+    <p>Read <a href="/app-layout">App Layout</a> for the exhaustive rules, <a href="/overview">Overview</a> for the current feature matrix, and <a href="/deployment">Deployment</a> for how to take the same pattern to a VPS.</p>
+
+    <p class="callout">The todo app is the primary companion app and the Tier 3 Docker E2E target. Every Phase 1 feature is exercised here on every commit.</p>
+
+    <p><a href="https://github.com/rt96-hub/pg-web/tree/main/examples/todo">Browse the final code</a> or clone the repo and <code>cd examples/todo &amp;&amp; ../../target/debug/pg-web dev</code> to run it locally.</p>
+  </main>
+
+  <footer>
+    <p>Built with pg-web • <a href="/">Home</a></p>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deployment — pg-web</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="/" class="brand">pg-web<span>.dev</span></a>
+      <a href="/overview">Overview</a>
+      <a href="/layout">App Layout</a>
+      <a href="/tutorial">Tutorial</a>
+      <a href="/deployment" class="active">Deploy</a>
+      <a href="/roadmap">Roadmap</a>
+      <a href="https://github.com/rt96-hub/pg-web" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Deployment</h1>
+
+    <p>Target: single VPS, Docker Compose, Caddy for TLS. Managed databases (RDS, Cloud SQL, Supabase) cannot load custom Rust extensions and are out of scope.</p>
+
+    <h2>Minimum requirements</h2>
+    <ul>
+      <li>VPS with ≥1 vCPU / 2 GiB RAM (t3.small, Hetzner CX22, DO $12 droplet, etc.)</li>
+      <li>Docker + Compose plugin</li>
+      <li>DNS A record pointing at the VPS</li>
+      <li>Ports 80/443 open</li>
+    </ul>
+
+    <h2>The stack (two containers)</h2>
+    <p>Use (or adapt) the <code>docker-compose.yml</code> and <code>Caddyfile</code> that <code>pg-web init</code> (or this docs site) provides.</p>
+
+    <pre><code>services:
+  postgres:
+    image: pgweb/postgres:latest
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: app
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # caddy: (uncomment for prod)
+  #   image: caddy:2
+  #   ports: ["80:80", "443:443"]
+  #   volumes: ["./Caddyfile:/etc/caddy/Caddyfile", ...]
+</code></pre>
+
+    <h2>First production deploy (summary)</h2>
+    <ol>
+      <li>SSH to VPS, clone your app repo (or copy compose + Caddyfile).</li>
+      <li>Create a <code>.env</code> with a strong <code>POSTGRES_PASSWORD</code>.</li>
+      <li><code>docker compose up -d</code>.</li>
+      <li>From your laptop, open a background SSH tunnel: <code>ssh -L 5432:localhost:5432 user@vps</code>.</li>
+      <li><code>pg-web migrate apply --url "postgres://postgres:pass@localhost:5432/app"</code></li>
+      <li><code>pg-web push --url "..."</code> (or <code>pg-web push --with-migrate</code>).</li>
+      <li>Visit <code>https://yourdomain</code>. Caddy handled Let's Encrypt.</li>
+    </ol>
+
+    <h2>Updating the site / app</h2>
+    <p>Push new code with <code>pg-web push --with-migrate</code> (or the in-image CLI via <code>docker compose exec postgres pg-web push</code> once you have the repo on the VPS).</p>
+    <p>Zero-downtime for code changes — routes/templates/handlers are swapped in a single transaction inside Postgres.</p>
+
+    <h2>Upgrading the pg-web image itself</h2>
+    <p>On the VPS: <code>docker compose pull &amp;&amp; docker compose up -d</code>, then <code>ALTER EXTENSION pg_web_ext UPDATE;</code> inside the container.</p>
+
+    <p>Full recipe, security checklist, CI example, and backup story: <code>docs/DEPLOYMENT.md</code> in the repo.</p>
+
+    <div class="callout">
+      <strong>This docs site deploys exactly the same way.</strong> See <code>site/docker-compose.yml</code> + <code>site/Caddyfile</code> and the <code>README.md</code> in <code>site/</code> for the exact commands used to keep <code>https://pg-web.dev</code> live.
+    </div>
+  </main>
+
+  <footer>
+    <p>Built with pg-web • <a href="/">Home</a></p>
+  </footer>
+</body>
+</html>

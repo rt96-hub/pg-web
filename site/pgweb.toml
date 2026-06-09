@@ -1,0 +1,12 @@
+# pg-web app config for pg-web.dev docs site
+# This site is itself a pg-web application (dogfooding).
+
+[server]
+port = 8080
+env  = "development"
+
+[database]
+url_env = "DATABASE_URL"
+
+[dev]
+watch_paths = ["pages", "public"]

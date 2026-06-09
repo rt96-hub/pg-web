@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pg-web — PostgreSQL is your web server</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="/" class="brand">pg-web<span>.dev</span></a>
+      <a href="/overview">Overview</a>
+      <a href="/layout">App Layout</a>
+      <a href="/tutorial">Tutorial</a>
+      <a href="/deployment">Deploy</a>
+      <a href="/roadmap">Roadmap</a>
+      <a href="https://github.com/rt96-hub/pg-web" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>PostgreSQL is your web server.</h1>
+
+    <p class="callout">
+      <strong>You are viewing a real pg-web application.</strong><br>
+      This documentation site (<code>site/</code> in the repo) is served by Postgres + the <code>pg_web_ext</code> background worker, exactly the same stack you get from <code>pg-web init</code>. No Node, no separate app server.
+    </p>
+
+    <p>pg-web embeds an async HTTP listener inside a PostgreSQL background worker. You write <code>.sql</code> handlers and <code>.html</code> (Tera) templates. The CLI syncs them into the database. SQL <em>is</em> the business logic. HTMX is the UI layer when you want it.</p>
+
+    <h2>Get started in &lt; 5 minutes</h2>
+
+    <pre><code># 1. Install the CLI (once published) or build from source
+cargo install pg-web
+
+# 2. Get the runtime image (Postgres 17 + pg_web_ext + pg-web CLI inside)
+bash scripts/build-image.sh   # from a checkout, one-time
+
+# 3. Scaffold a real app (the full HTMX todo that exercises everything)
+pg-web init my-todos --template todo
+cd my-todos
+
+# 4. Boot + schema + code
+pg-web up
+pg-web migrate apply
+pg-web push
+
+# 5. Open it
+open http://localhost:8080
+</code></pre>
+
+    <p>Edit files under <code>pages/</code> or <code>public/</code>, run <code>pg-web dev</code> (or <code>push</code>), and refresh. No Rust compilation on your iteration path.</p>
+
+    <h2>What's here</h2>
+
+    <div class="nav-grid">
+      {% for s in sections %}
+      <div><a href="{{ s.path }}">{{ s.title }}</a></div>
+      {% endfor %}
+    </div>
+
+    <p><a href="https://github.com/rt96-hub/pg-web">GitHub repo</a> • <a href="https://github.com/rt96-hub/pg-web/tree/main/examples/todo">The todo companion app</a> (the other primary dogfood target) • Full docs live in <code>docs/</code> in the source tree.</p>
+
+    <h2>Why</h2>
+    <p>Zero network hops between your web tier and your data. One Docker image. One mental model. The database <em>is</em> the application.</p>
+
+    <p class="callout">This page was rendered by a live SQL handler (<code>pgweb.pages__index</code>) returning JSON that Tera used to populate the section grid above. Pure dogfooding.</p>
+  </main>
+
+  <footer>
+    <p>pg-web • MIT OR Apache-2.0 • <a href="https://github.com/rt96-hub/pg-web">rt96-hub/pg-web</a></p>
+  </footer>
+</body>
+</html>

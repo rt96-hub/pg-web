@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Overview — pg-web</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="/" class="brand">pg-web<span>.dev</span></a>
+      <a href="/overview" class="active">Overview</a>
+      <a href="/layout">App Layout</a>
+      <a href="/tutorial">Tutorial</a>
+      <a href="/deployment">Deploy</a>
+      <a href="/roadmap">Roadmap</a>
+      <a href="https://github.com/rt96-hub/pg-web" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>pg-web — Current State Overview</h1>
+
+    <p>pg-web is a PostgreSQL extension that runs an HTTP server <em>inside</em> a Postgres background worker. Everything a browser sees comes out of a single OS process tree rooted at the Postgres postmaster.</p>
+
+    <div class="callout">
+      <strong>Phase 1 — Synchronous Core (v0.2.0)</strong> is complete. All core milestones shipped.
+    </div>
+
+    <h2>The 30-second picture</h2>
+    <ol>
+      <li>Installs via <code>CREATE EXTENSION pg_web_ext;</code> — creates the <code>pgweb</code> schema (<code>routes</code>, <code>templates</code>, <code>migrations</code>) and seeds a default <code>GET /</code>.</li>
+      <li>Starts an HTTP server on <code>:8080</code> when Postgres boots (via <code>shared_preload_libraries</code>).</li>
+      <li>Serves HTML rendered from a database-stored Tera template merged with a SQL-function-returned JSON payload.</li>
+      <li>Returns 404 for unmatched paths (override with <code>pages/_404.html</code>).</li>
+    </ol>
+
+    <p>A CLI (<code>pg-web</code>) scaffolds apps (<code>init</code>), applies forward-only SQL migrations (<code>migrate apply</code>), and syncs the <code>pages/</code> tree into the DB (<code>push</code>). The prebuilt Docker image <code>pgweb/postgres:latest</code> packages PG 17 + the extension.</p>
+
+    <h2>Phase 1 milestones (all shipped)</h2>
+
+    <table>
+      <thead>
+        <tr><th>Milestone</th><th>Key deliverables</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>M1.1 Walking Skeleton</td><td>Framework schema + BGW + Axum + SPI→Tera + CLI init/push + Docker image</td></tr>
+        <tr><td>M1.3 Interactive Contracts</td><td>Directory-as-route, <code>(req json)</code> contract, <code>_404</code>, <code>examples/todo/</code>, Docker E2E</td></tr>
+        <tr><td>M1.2 Dev Loop</td><td><code>pg-web up/down/dev</code>, hot reload, dynamic <code>[id]</code> routes, dev error page, static assets</td></tr>
+        <tr><td>M1.4 Closeout</td><td><code>html_escape</code>, validation UX, <code>env</code>/<code>check</code>, <code>init --template</code>, push flags + ledger, live-reload SSE, release bits</td></tr>
+        <tr><td>v0.2 polish (Session 5)</td><td>Push retry, CLI bundled in image (F.3), content-hash immutable assets (H), 20 MiB asset cap</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Try it</h2>
+    <p>See the quickstart on the <a href="/">home page</a> or follow <a href="/tutorial">the tutorial</a> that builds the full todo app.</p>
+
+    <h2>What's not in v0.2</h2>
+    <ul>
+      <li>Auth / sessions / RLS (Phase 2)</li>
+      <li>Async job queue (Phase 3)</li>
+      <li>Declarative migrations (Phase 2.5)</li>
+      <li>Real-time subscriptions (Phase 2)</li>
+      <li>Managed DB support (RDS etc. cannot load custom extensions)</li>
+    </ul>
+
+    <p>Full details and the decision log live in <code>docs/ROADMAP.md</code> in the source repo.</p>
+  </main>
+
+  <footer>
+    <p>Built with pg-web • <a href="/">Home</a></p>
+  </footer>
+</body>
+</html>

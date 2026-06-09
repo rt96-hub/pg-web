@@ -1,0 +1,17 @@
+# pg-web.dev — Caddyfile for production TLS.
+#
+# After uncommenting the caddy service in docker-compose.yml, Caddy will
+# automatically obtain and renew a Let's Encrypt certificate for the domain(s)
+# listed here.
+#
+# pg-web itself only ever speaks plain HTTP on :8080 inside the container.
+# TLS termination is always out-of-process (architectural invariant).
+
+pg-web.dev {
+    reverse_proxy postgres:8080
+}
+
+# Optional: www redirect
+www.pg-web.dev {
+    redir https://pg-web.dev{uri} 301
+}

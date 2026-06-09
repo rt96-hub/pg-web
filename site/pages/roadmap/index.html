@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roadmap — pg-web</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="/" class="brand">pg-web<span>.dev</span></a>
+      <a href="/overview">Overview</a>
+      <a href="/layout">App Layout</a>
+      <a href="/tutorial">Tutorial</a>
+      <a href="/deployment">Deploy</a>
+      <a href="/roadmap" class="active">Roadmap</a>
+      <a href="https://github.com/rt96-hub/pg-web" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Roadmap &amp; Phases</h1>
+
+    <p>Phased delivery. Each phase must be stable and usable on its own. The companion apps (<code>examples/todo/</code> and this docs site) exercise shipped features.</p>
+
+    <h2>Phase 1 — Synchronous Core (v0.2.0 — complete)</h2>
+    <p>All of M1.1–M1.4 + the v0.2 polish track (push retry, CLI-in-image, content-hashed immutable assets, 20 MiB cap) are done. See the <a href="/overview">Overview</a> for the milestone table.</p>
+
+    <h2>Phase 2 — Auth + realtime + declarative schema</h2>
+    <ul>
+      <li>Cookie sessions + login/logout</li>
+      <li><code>req.session</code> + RLS bridge (<code>SET LOCAL ROLE</code>)</li>
+      <li>CSRF double-submit for non-GET HTMX</li>
+      <li>App-level realtime via SSE (reusing the internal ListenRouter)</li>
+      <li>Declarative <code>pg-web migrate create</code> (Phase 2.5, native Rust diff)</li>
+    </ul>
+
+    <h2>Phase 3 — Async job queue</h2>
+    <ul>
+      <li><code>pgweb.jobs</code> + <code>pg-web enqueue</code></li>
+      <li>Worker pool in the BGW, retry, dead-letter, cron-like scheduling via settings</li>
+    </ul>
+
+    <h2>Phase 4 — Observability / dashboard</h2>
+    <ul>
+      <li>In-browser dev dashboard at <code>/_pgweb/admin</code></li>
+      <li>Request log, slow query capture, Prometheus metrics, live log tail</li>
+    </ul>
+
+    <h2>Parking lot / explicit non-goals</h2>
+    <ul>
+      <li>Managed-DB support (RDS/Cloud SQL/Supabase cannot load extensions)</li>
+      <li>JavaScript build integration (Vite etc.) — stay HTML-first</li>
+      <li>GraphQL, ORM, declarative routes (directory-as-route is invariant)</li>
+    </ul>
+
+    <p>The full matrix and status live in <code>docs/ROADMAP.md</code>. Session notes are in <code>docs/internal/sessions/</code>.</p>
+  </main>
+
+  <footer>
+    <p>Built with pg-web • <a href="/">Home</a></p>
+  </footer>
+</body>
+</html>

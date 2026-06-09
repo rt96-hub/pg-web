@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>App Layout — pg-web</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="/" class="brand">pg-web<span>.dev</span></a>
+      <a href="/overview">Overview</a>
+      <a href="/layout" class="active">App Layout</a>
+      <a href="/tutorial">Tutorial</a>
+      <a href="/deployment">Deploy</a>
+      <a href="/roadmap">Roadmap</a>
+      <a href="https://github.com/rt96-hub/pg-web" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>App Layout (the law)</h1>
+
+    <p>A pg-web app is a tree of files under <code>pages/</code>. Three rules:</p>
+
+    <ol>
+      <li><strong>Directory = route.</strong> <code>pages/todos/toggle/</code> → <code>/todos/toggle</code>.</li>
+      <li><strong>Filename = HTTP method.</strong> <code>index</code> (GET alias), <code>post</code>. <code>put</code>/<code>patch</code>/<code>delete</code> are reserved for Phase 2+.</li>
+      <li><strong>Each method has two files:</strong> <code>&lt;method&gt;.html</code> (template) + <code>&lt;method&gt;.sql</code> (handler). Either is optional.</li>
+    </ol>
+
+    <h2>Pipeline modes</h2>
+
+    <table>
+      <thead>
+        <tr><th>Files present</th><th>Pipeline</th><th>Use for</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>.html</code> only</td><td>Render template with empty context <code>{}</code>. No SPI call.</td><td>Static marketing / about pages</td></tr>
+        <tr><td><code>.html</code> + <code>.sql</code></td><td>Handler returns <code>json</code> → Tera renders with it (auto-escape on).</td><td>Most pages</td></tr>
+        <tr><td><code>.sql</code> only</td><td>Handler returns <code>text</code> → router sends bytes as-is.</td><td>HTMX fragments, JSON APIs, deletes returning ''</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Naming (exact)</h2>
+    <ul>
+      <li>URL path = <code>/</code> + segments joined by <code>/</code>. Drop trailing <code>index</code>.</li>
+      <li>HTTP method from the stem (<code>index</code> → GET, <code>post</code> → POST).</li>
+      <li>Template path key = literal <code>pages/&lt;segments&gt;/&lt;stem&gt;.html</code>.</li>
+      <li>Handler function = <code>pgweb.pages__&lt;segments joined by __&gt;__&lt;stem&gt;</code> (e.g. <code>pgweb.pages__todos__toggle__post</code>).</li>
+    </ul>
+
+    <h2>Dynamic segments</h2>
+    <p>A directory name in <code>[brackets]</code> is a capture. It matches any single segment and appears in <code>req.path_params</code>.</p>
+    <pre><code>pages/posts/[id]/index.html   → GET /posts/:id
+pages/users/[user]/posts/[post]/index.sql
+</code></pre>
+
+    <p>Captures are always strings. The handler decides how to cast/validate. Static routes win on specificity.</p>
+
+    <h2>The req contract</h2>
+    <pre><code>{
+  "body":        { "title": "buy milk" },   // form body, {} if empty
+  "query":       { "page": "2" },           // query string, {} if empty
+  "method":      "POST",
+  "path":        "/todos/42",
+  "path_params": { "id": "42" }
+}
+</code></pre>
+
+    <p>Return <code>json</code> when you have a sibling <code>.html</code>; return <code>text</code> when you are <code>.sql</code>-only.</p>
+
+    <h2>Migrations vs push</h2>
+    <p><code>pg-web migrate apply</code> advances your app schema (your tables) from <code>migrations/*.sql</code> and is tracked in <code>pgweb.migrations</code> (append-only history).</p>
+    <p><code>pg-web push</code> replaces routes, templates, and the <code>pgweb.pages__*</code> handler functions from the current <code>pages/</code> tree. It is fully reconciling and transactional.</p>
+    <p>Always migrate before push in a deploy.</p>
+
+    <p>Full spec: <code>docs/APP-LAYOUT.md</code> in the repo. The <code>examples/todo/</code> app is the canonical reference.</p>
+  </main>
+
+  <footer>
+    <p>Built with pg-web • <a href="/">Home</a></p>
+  </footer>
+</body>
+</html>

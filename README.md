@@ -58,7 +58,7 @@ Caddy terminates TLS in front. The extension only ever speaks plain HTTP on :808
 - Exact layout rules: `docs/APP-LAYOUT.md`
 - Walkthrough that builds the todo list: `docs/TUTORIAL.md`
 - The reference app: `examples/todo/` (and its `README.md`)
-- Live friendly docs (when the dogfood site is up): https://pg-web.dev
+- Live docs (dogfooded): https://pg-web.dev (the `site/` directory in this repo *is* the pg-web app serving it)
 - Config, env, check, up/dev, push flags: the CLI `--help` and `pg-web check`
 
 Everything you write stays in SQL + HTML + a little TOML. The framework owns the HTTP worker, the router, Tera, asset serving, live-reload, and the dev/deploy loop.
@@ -95,7 +95,7 @@ Dual-licensed under MIT OR Apache-2.0. See `LICENSE-MIT` and `LICENSE-APACHE`.
 - crates.io (CLI): (pending publication — see prompt 010)
 - Docker Hub: `pgweb/postgres:latest`
 - Tutorial + guides: `docs/` in this repo
-- Dogfooded docs site: https://pg-web.dev (work in progress)
+- Dogfooded docs site: https://pg-web.dev (served from the `site/` app — see its README)
 
 ---
 

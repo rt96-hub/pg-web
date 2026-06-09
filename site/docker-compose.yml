@@ -1,0 +1,46 @@
+# pg-web.dev documentation site — single-container stack (plus optional Caddy).
+#
+# Local dev: `pg-web up` (or from repo root: ../target/debug/pg-web up from site/).
+#   Exposes :8080 directly and :5432 for `pg-web push` / `migrate`.
+#
+# Production (https://pg-web.dev):
+#   - Uncomment the caddy service.
+#   - Point DNS A/AAAA for pg-web.dev at the VPS.
+#   - Set a strong POSTGRES_PASSWORD via .env (never commit it).
+#   - Caddy terminates TLS and reverse-proxies to the postgres container on :8080.
+#   - Use `pg-web push --with-migrate` (or the in-image CLI) to deploy updates.
+#
+# The container image is the standard `pgweb/postgres:latest` — no custom image
+# for the docs site. The CLI is bundled inside (F.3).
+
+services:
+  postgres:
+    image: pgweb/postgres:latest
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"   # for pg-web push / migrate from host (dev + SSH tunnel prod)
+      - "8080:8080"   # direct HTTP in dev; remove or firewall in prod
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # Production TLS termination. Edit Caddyfile first, then uncomment.
+  # caddy:
+  #   image: caddy:2
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   depends_on:
+  #     - postgres
+
+volumes:
+  pgdata:
+  # caddy_data:
+  # caddy_config:
