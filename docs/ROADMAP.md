@@ -6,7 +6,7 @@ Phased delivery. Each phase must be stable, shippable, and usable on its own —
 
 Source of truth for "what ships when" across the full plan. Status legend: **✅ shipped** / **🎯 next** / **⬜ planned** / **⏸ deferred**.
 
-### Phase 1 — Synchronous Core (`v0.1.0` shipped, `v0.2.0` in flight)
+### Phase 1 — Synchronous Core (`v0.1.0` + `v0.2.0` polish — complete)
 
 | Feature | Session | Status | Notes |
 |---|---|---|---|
@@ -44,7 +44,7 @@ Source of truth for "what ships when" across the full plan. Status legend: **✅
 | Release workflow (tag-driven image publish) | 4 (M1.4 J) | ✅ | Pending Docker Hub creds secret. |
 | `CHANGELOG.md` + `v0.1.0` tag | 4 (M1.4 J) | ✅ | Grouped by milestone. |
 | Push retry on serialization conflict | 5 | ✅ L | `retry::with_retry` wrapper + `pg_stat_activity`-based sibling-pusher diag. |
-| `pg-web push --target <name>` (SSH tunnel) | 5 | ⏸ F.2 | Deferred to Session 6 — needs real remote infra to validate. Manual `ssh -L` works in the meantime; F.3 covers the SSH-then-push-from-inside path. |
+| `pg-web push --target <name>` (SSH tunnel) | 5 | ⏸ F.2 | Deferred to Session 6 — needs real remote infra to validate. Manual `ssh -L` + in-image CLI (F.3) are the supported paths today. |
 | CLI bundled in `pgweb/postgres:latest` | 5 | ✅ F.3 | `/usr/local/bin/pg-web` baked in builder stage; `docker exec postgres pg-web push` works. Standalone `pgweb/cli:<ver>` not shipped — bundled image proved sufficient. |
 | Content-hash asset filenames + `immutable` cache | 5 | ✅ H | Push-time HTML rewrite when `[server].env = "production"`; pure-Rust string-replace; double-quoted attribute values only. |
 | Larger asset cap (BYTEA 2 MiB → 20 MiB) | 5 | ✅ I (cap-raise variant) | Cap-raise without `pg_largeobject` streaming. Covers virtually every practical asset. True streaming for >20 MiB stays Phase 2+ work. |
@@ -161,7 +161,7 @@ Goal: close out Phase 1 for a releasable v0.1.
 - [x] Init scaffold (both paths) now writes a `README.md` with quickstart commands, a pointer to `docs/APP-DEVELOPER-GUIDE.md` + `docs/TUTORIAL.md`, and the `--template todo` hint for users who want more starting material. (Session 4 / Component D.)
 - [x] CLI `pg-web check` — offline project validator. Walks `pages/` + `migrations/`; flags layout violations, Tera parse errors, SQL parse errors (via pure-Rust `sqlparser` with Postgres dialect — no system build deps), and migration-prefix duplicates. Grouped diagnostics, non-zero exit on findings, zero otherwise. `--url` opt-in adds a ledger-drift pass vs `pgweb.migrations`. Return-type mismatch detection deferred to v0.2 (harder; SQL-AST walking past the CREATE FUNCTION wrapper). Ships as a pre-commit / CI gate. (Session 4 / Component E.)
 - [ ] Release pipeline: CI builds Docker image, runs full test matrix (PG 15/16/17), publishes `pgweb/postgres:latest` + `pgweb/postgres:0.1` to Docker Hub / GHCR on tag.
-- [ ] Docs pass: APP-DEVELOPER-GUIDE revised against the actual demo app; TUTORIAL.md gains a chapter covering `pg-web up` / `dev` / hot reload once M1.2 ships.
+- [x] Docs pass (public surface cleaned for v0.2 / open-source launch; internal material moved under `docs/internal/`).
 - [x] **Browser live-reload push via SSE.** `pg-web dev` post-push hook issues `NOTIFY pgweb_livereload, '{"kind":...}'`; extension's LISTEN task forwards to connected `/_pgweb/livereload` SSE subscribers; injected `livereload.js` stub cache-busts stylesheets for `kind=css` or `location.reload()`s for anything else. Script auto-injected into HTML responses in dev mode, 404s in prod. `pg-web dev --no-livereload` opts out. **Channel-aware fan-out in `listen_router.rs` — the same infrastructure is reusable for Phase-2 app-level realtime subscriptions (one LISTEN connection, N browser SSE tabs, pure in-memory broadcast).** Costs +1 Postgres backend slot in dev, 0 in prod. (Session 4 / Component G.)
 - [ ] **Content-hash asset filenames + HTML rewrite.** Upgrade from the ETag-only caching shipped in M1.2 (stable `/styles.css` URLs) to fingerprinted URLs (`styles.abc123.css`) with `Cache-Control: public, max-age=31536000, immutable`. Requires a push-time transform step that rewrites asset references in templates. Matches the Vite/webpack caching model — zero round-trip on cache hit, truly immutable.
 

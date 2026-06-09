@@ -1,6 +1,6 @@
 # 009 — Docs cleanup and public/open-source readiness
 
-**Status:** Handoff prompt — ready to execute  
+**Status:** ✅ Executed (Session ~6 / post-v0.2.0 open-source prep)
 **Priority:** High (required before credible open source launch)  
 **Context:** We have decided to stay fully open source under MIT OR Apache-2.0. The project will be published to crates.io (CLI), GitHub will be the primary home, and `pg-web.dev` will be dogfooded as a real pg-web app (see sibling prompt 008). Before any announcement or external contributors, the documentation tree must be welcoming, scannable, and clearly separate "for users/app developers" from "for framework maintainers / project history."
 
@@ -183,5 +183,43 @@ pg-web/
 Be ruthless about first-impression cleanliness while being respectful of the excellent detailed work that already exists. The goal is "someone lands on the GitHub repo and immediately feels 'this is a real, well-documented project I can trust'."
 
 When done, update the status of this prompt and leave a short recap of what moved where.
+
+## Execution recap (docs cleanup)
+
+**Root front door (new):**
+- `README.md` — pitch (VISION + 30s picture), 5-min `cargo install pg-web` + `pg-web init --template todo` + `pg-web up` flow (notes Docker image supplies runtime), clear "build an app" vs "contribute/internals" split, links to TUTORIAL / examples/todo / pg-web.dev / GitHub, v0.2.0 status, dual-license note, badges placeholders.
+- `CONTRIBUTING.md` — points new contributors at CLAUDE.md first, internal/DEVELOPER-GUIDE + TESTING, companion-app rule, conventional commits, no Co-Authored trailers.
+- `LICENSE` — dual-license pointer to the existing LICENSE-MIT / LICENSE-APACHE (GitHub badge friendly).
+
+**docs/ reorganization:**
+- Created `docs/internal/`.
+- Moved: `sessions/` → `docs/internal/sessions/` (7 files preserved), `DEVELOPER-GUIDE.md` → `docs/internal/DEVELOPER-GUIDE.md`, `HANDOFF.md` → `docs/internal/HANDOFF.md`.
+- Added `docs/internal/README.md` (explains who should read here vs public docs).
+- `CLAUDE.md` kept at repo root (agent discovery + referenced from CONTRIBUTING) with its internal layout example lightly refreshed.
+- `prompts/` left at root (as allowed; technical notes, not first-impression noise).
+- Public top level in `docs/`: OVERVIEW.md (entry), VISION.md, APP-DEVELOPER-GUIDE.md, TUTORIAL.md, APP-LAYOUT.md, DEPLOYMENT.md, ROADMAP.md, ARCHITECTURE.md, TESTING.md (all feel written for a newcomer who just discovered the crate).
+
+**Polish performed on public docs:**
+- Audience / "who this is for" notes added or strengthened near tops.
+- Heavy "Session X / M1.x Component Y / in-flight" ticket language removed or footnoted; replaced with calendar/v0.2.0/Phase 1 complete language where it helped scannability.
+- Install paths in TUTORIAL + APP-DEVELOPER-GUIDE updated to `cargo install pg-web` + image reality (aspirational until prompt 010 lands, but accurate per the sibling prompt).
+- Outdated "coming in M1.4", "Session 4 Component F.2", old test counts, and "DEVELOPER-GUIDE at docs/" links fixed.
+- DEPLOYMENT remote-push section refreshed (F.2 still deferred).
+- TESTING.md numbers + matrix intro synced to current OVERVIEW v0.2 reality (230 tests, 5 tiers, companion-app rule).
+- Cross-links after the move were repaired in the public surface (internal sessions/ references only appear in ROADMAP history / internal files, which is correct).
+- OVERVIEW "Try it", "Dev loop", "Not in v0.2", code map, and gotchas link updated.
+- Last-updated / status banners point at v0.2.0 + `docs/internal/sessions/`.
+
+**Validation:**
+- `target/debug/pg-web check` against `examples/todo/` → "✓ check passed — no findings".
+- `cargo check --workspace` clean.
+- `cargo clippy --workspace -- -D warnings` clean (exit 0).
+- Internal material still findable (e.g. full decision log lives in ROADMAP + moved sessions/).
+- New public surface is scannable: a fresh reader can answer "what is this?", "how do I try it?", "where is the tutorial?", "how do I deploy?" in well under 2 minutes from README.
+- Docs now in good shape for direct (or light-transform) consumption by the `pg-web.dev` dogfood site (prompt 008).
+
+**Root hygiene:** README/CONTRIBUTING/LICENSE* at top; CLAUDE.md at root (intentional); prompts/ at root; .github/ (ci.yml + release.yml) already present; no new top-level formats invented. Everything else (Cargo, Dockerfile, scripts/, docker/, examples/, docs/) stayed.
+
+**Deliverables complete per the prompt.** The project now presents a professional, welcoming first impression on GitHub / crates.io while preserving every bit of detailed internal history for maintainers.
 
 **End of prompt 009.**

@@ -2,7 +2,7 @@
 
 Snapshot of what's implemented right now and what's next. Re-generated at milestone boundaries. Read this first; chase into `APP-DEVELOPER-GUIDE.md`, `APP-LAYOUT.md`, `ARCHITECTURE.md`, `ROADMAP.md` for depth.
 
-> **Last updated:** 2026-04-25, end of Session 5 / `v0.2.0`. Phase-1 feature surface plus the deferred polish track: push retry on concurrent DDL (L), CLI bundled in `pgweb/postgres:latest` (F.3), content-hash asset filenames + immutable cache-control (H), and the BYTEA cap-raise from 2 MiB to 20 MiB (cap-raise variant of I). SSH-tunneled remote push (F.2) deferred to Session 6 — needs a real remote target to validate. True `pg_largeobject` streaming (full I) deferred to Phase 2+. See `docs/sessions/session_5.md` for the shipping log, `docs/sessions/session_5_validation.md` for the user-validation playbook, and `CHANGELOG.md` for the release notes.
+> **Last updated:** 2026-04-25 / `v0.2.0` (Phase 1 complete). Polish track shipped: push retry on concurrent DDL (L), CLI bundled in `pgweb/postgres:latest` (F.3), content-hash asset filenames + immutable `Cache-Control` (H), BYTEA cap raised to 20 MiB. SSH-tunneled remote push (F.2) deferred to Session 6. True `pg_largeobject` streaming deferred to Phase 2+. Full shipping log in `docs/internal/sessions/`. See also `CHANGELOG.md`.
 
 ---
 
@@ -94,11 +94,12 @@ pg-web/
 │   ├── ARCHITECTURE.md               # Engine internals
 │   ├── ROADMAP.md                    # Phases + decision log
 │   ├── APP-LAYOUT.md                 # ⭐ Canonical spec: file/route conventions
-│   ├── APP-DEVELOPER-GUIDE.md        # For framework users — narrative walkthrough
-│   ├── DEVELOPER-GUIDE.md            # For framework maintainers — env + pitfalls
-│   ├── TESTING.md                    # Three-tier test strategy
-│   ├── DEPLOYMENT.md                 # Caddy + Docker + VPS
-│   └── sessions/                     # Per-session recaps and plans
+│   ├── APP-DEVELOPER-GUIDE.md        # For app developers (narrative)
+│   ├── TESTING.md
+│   ├── DEPLOYMENT.md
+│   ├── ROADMAP.md
+│   ├── ARCHITECTURE.md
+│   └── internal/                     # Maintainer material: DEVELOPER-GUIDE, HANDOFF, sessions/ history, etc.
 └── crates/
     ├── pg_web_cli/                   # `pg-web` binary — init/push/migrate
     │   └── src/{init,paths,push,migrate,templates}.rs
@@ -165,78 +166,59 @@ Feature matrix in `docs/TESTING.md` tracks which deliverables are demo-covered.
 
 ---
 
-## Try it — the Docker path
+## Try it — the Docker path (after `cargo install pg-web`)
 
 ```bash
-# 1. Build the image (one-time, ~5-10 min cold; cache-hit after that)
-bash scripts/build-image.sh
+# 1. Ensure the runtime image exists (one-time cold build ~5-10 min, or `docker pull pgweb/postgres:latest` once published)
+bash scripts/build-image.sh   # from a pg-web checkout
 
-# 2. Scaffold an app and boot it
-cargo build -p pg_web_cli
+# 2. Scaffold + boot (the CLI is now `pg-web` on your PATH)
 cd /tmp
-~/pg-web/target/debug/pg-web init demo-app
+pg-web init demo-app
 cd demo-app
-~/pg-web/target/debug/pg-web up          # Session 3 M1.2 A — wraps `docker compose up -d`
+pg-web up                     # starts the pgweb/postgres + caddy stack, prints DATABASE_URL
 
-# 3. Advance schema (only needed once you've written migrations/*.sql) and push app code
-~/pg-web/target/debug/pg-web migrate apply        # URL auto-resolved from pgweb.toml + env
-~/pg-web/target/debug/pg-web push
+# 3. Schema + code
+pg-web migrate apply
+pg-web push
 
 # 4. Hit it
 curl http://localhost:8080/
 ```
 
-Edit `demo-app/pages/index.html` or `.sql`, re-run push, refresh.
+Edit files under `pages/` or `public/`, re-run `pg-web push` (or use `pg-web dev` for the watcher + live-reload). See the root `README.md` for the 60-second version and `docs/TUTORIAL.md` for a full walkthrough.
 
-## Dev loop without Docker (framework maintainers)
+## Dev loop without Docker (framework maintainers only)
 
-One-time on fresh WSL2 Ubuntu-22.04:
-
-```bash
-# As root
-apt update && apt install -y build-essential libclang-dev libreadline-dev \
-  zlib1g-dev flex bison libxml2-dev libxslt1-dev libssl-dev pkg-config ccache patchelf
-useradd -m -s /bin/bash pgweb
-
-# As pgweb
-sudo -iu pgweb
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source ~/.cargo/env
-cargo install --locked cargo-pgrx
-cargo pgrx init --pg17 download
-echo "shared_preload_libraries = 'pg_web_ext'" >> ~/.pgrx/data-17/postgresql.conf
-
-cd ~/pg-web
-scripts/test-all.sh   # all green
-```
-
-Daily iteration is `scripts/test-all.sh` and editing code.
+See `docs/internal/DEVELOPER-GUIDE.md` (dev loop, architectural constraints, workspace rules, packaging) and `docs/internal/HANDOFF.md` (cold-start example) for maintainer setup. Daily driver for app work is the Docker path above + `pg-web dev`. The pgrx dev loop is only needed when changing the extension itself.
 
 ---
 
 ## Not in `v0.2.0`
 
-Deferred (still inside Phase 1's polish tail):
+Deferred (Phase 1 polish tail / Session 6):
 
-- **`pg-web push --target <name>`** — SSH-tunneled remote push. Local-loopback push works and the F.3 in-image CLI handles the "SSH in and push from inside" case; what's missing is the laptop-to-VPS automated tunnel. Validation requires a real remote target, so this slid to Session 6 when remote infra is available.
-- **True `pg_largeobject` streaming.** v0.2 ships a 20 MiB BYTEA cap (Component I cap-raise variant) — covers virtually every practical asset. `lo_read`-backed streaming for assets >20 MiB is Phase 2+ work.
+- **`pg-web push --target <name>`** (F.2) — SSH-tunneled remote deploy from laptop. Local + in-image CLI work; automated tunnel validation waits on remote infra.
+- **True `pg_largeobject` streaming** for >20 MiB assets (the v0.2 BYTEA cap-raise covers the 99% case; streaming is Phase 2+).
 
-Longer-term / speculative (parking lot, see ROADMAP):
+Longer-term / speculative (see `docs/ROADMAP.md` parking lot):
 
-- Documentation MCP server + packaged agent skills so AIs writing pg-web code have first-class access to the authoritative docs, invariants, error catalog, etc.
-- Related but further-out idea: lightweight `pg-web query` / `pg-web psql` CLI helpers (and eventually a data MCP) for agents to inspect the actual tables inside a running pg-web app.
+- Documentation MCP + agent skills for first-class access to docs/invariants while writing pg-web apps.
+- Lightweight `pg-web query` / data MCP for agents to reach live tables in a running app.
 
-Deferred to **Phase 2+** (explicit non-goals for Phase 1):
+Deferred to **Phase 2+** (explicit non-goals for the Phase 1 core):
 
-- **Declarative migrations** — `pg-web migrate create` doesn't exist; raw SQL migrations via `migrate apply` is the 0.1 story. **Phase 2.5.**
-- **Auth / sessions / RLS bridge.** Write your own RLS policies today. **Phase 2.**
-- **App-level realtime subscriptions** — `<div hx-ext="sse" sse-connect="/_pgweb/subscribe/...">` for live data push. The channel-aware `ListenRouter` primitive shipped in 0.1 Component G; Phase 2 adds the app-facing SSE endpoint + NOTIFY helper on top.
-- **Async job queue.** **Phase 3.**
-- **In-browser dev dashboard.** **Phase 4.**
+- Declarative migrations (`pg-web migrate create`) — raw SQL only for now (**Phase 2.5**).
+- Auth / sessions / RLS bridge (**Phase 2**).
+- App-level realtime subscriptions (the internal ListenRouter primitive exists; app surface is Phase 2).
+- Async job queue (**Phase 3**).
+- In-browser dev dashboard (**Phase 4**).
+
+Managed-DB services (RDS, Cloud SQL, Supabase) are out of scope — they do not allow custom extensions. You must own the Postgres host.
 
 ---
 
-## Gotchas (full write-ups in `docs/DEVELOPER-GUIDE.md` § Common pitfalls)
+## Gotchas (curated write-ups in `docs/internal/DEVELOPER-GUIDE.md`)
 
 | Symptom | Root cause | Fix |
 |---|---|---|

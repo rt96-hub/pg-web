@@ -126,7 +126,7 @@ For the full validation playbook including L / F.3 / H / I checks, walk through 
 
 ## Cross-machine gotchas (the short list)
 
-A longer annotated list is in `docs/DEVELOPER-GUIDE.md` § Common pitfalls (entries #1–#18). The ones you'll trip on first:
+A longer (but curated) list of gotchas lives in `docs/internal/DEVELOPER-GUIDE.md`. Many environment-specific bring-up issues are WSL/Git-Bash specific and have been trimmed from the guide — see the git history or `docs/internal/sessions/` if you're on a similar setup and hit something weird. The ones you'll trip on first in a typical mixed pgrx + Docker workflow:
 
 | Symptom | Cause | Fix |
 |---|---|---|

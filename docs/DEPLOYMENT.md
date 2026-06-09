@@ -87,22 +87,11 @@ Nothing touches the public internet except SSH port 22, which already has to be 
 
 **3. Expose `:5432` to the internet (DO NOT).** The scaffolded `docker-compose.yml` publishes `"5432:5432"` with a dev-default password as a **local-loopback convenience for `pg-web push` on your laptop**. Before you deploy, change it to `"127.0.0.1:5432:5432"` (binds only to the server's loopback) or remove it entirely. Publishing Postgres to `0.0.0.0` with the dev password — or any password — is an invitation.
 
-### Coming in M1.4 — automated target-based deploy
+### Remote push (SSH tunnel)
 
-Tunneling manually works but is tedious. Session 4 Component **F.2** adds a `--target <name>` flag:
+Tunneling manually works today. `pg-web push --target <name>` (SSH-tunneled remote deploy, F.2) is deferred to Session 6 pending real remote infra for validation. The manual background-tunnel path documented above is the supported story for now. The in-image CLI (F.3) means you can also `docker compose exec postgres pg-web push` from inside the VPS once you have code there.
 
-```bash
-# One-time in pgweb.toml
-[deploy.prod]
-ssh = "deploy@vps.example.com"
-
-# Every deploy
-pg-web push --target prod
-```
-
-The CLI opens the SSH tunnel itself (using your existing `~/.ssh/config`, ssh-agent, deploy keys — same keys you'd use manually), runs the push, and tears the tunnel down. GitHub Actions treats an SSH deploy key the same way it treats any other credential. Full spec in `docs/sessions/session_4.md` Component F.
-
-Until then: the manual SSH-tunnel path above is the standard answer. The code comments in `crates/pg_web_cli/src/push.rs` and the `Push` subcommand's `--help` both call this out.
+See `docs/ROADMAP.md` for the current status of remote targets.
 
 ## CI/CD (GitHub Actions example)
 
@@ -120,7 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install pg-web CLI
-        run: cargo install pg-web-cli --locked
+        run: cargo install pg-web --locked  # or the published name once on crates.io
       - uses: webfactory/ssh-agent@v0.9
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -132,7 +121,7 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.PROD_POSTGRES_PASSWORD }}
 ```
 
-Once Component F.2 lands (Session 4), this collapses to a single `pg-web push --target prod` step — the tunnel lifecycle moves into the CLI.
+Once `pg-web push --target` (F.2) ships, the example collapses to a single `pg-web push --target prod` step (the tunnel lifecycle moves into the CLI). Until then the explicit tunnel + direct `--url` form works and is what the current CI examples use.
 
 What `pg-web push` does:
 
@@ -194,5 +183,5 @@ Two patterns, both deferred to post-1.0:
 - [ ] Caddy on latest patch version.
 - [ ] Postgres on latest patch version (patch releases don't break the ABI; the `pgweb/postgres:pg17-X.Y` tag tracks upstream).
 - [ ] `pgweb.settings.env = 'production'` set before deploy (flip in `pgweb.toml` and re-`pg-web push`) — disables the debug error page and the `div by zero / PGWEB_E003` leak.
-- [ ] Secrets via `pg-web env set` (Session 4 Component C — not yet shipped; until then use `.env` next to compose), never in committed files.
+- [ ] Secrets via `pg-web env set` (shipped), never in committed files. Use `pg-web env` + `pgweb.setting()` in handlers.
 - [ ] Postgres `pg_hba.conf` configured to restrict connection sources.

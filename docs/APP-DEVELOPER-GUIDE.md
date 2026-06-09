@@ -2,7 +2,7 @@
 
 For developers *using* pg-web to build apps. You write SQL and HTML. You never write or compile Rust.
 
-> **Status (2026-04-18):** Session 2 in progress. M1.1 walking-skeleton is complete; M1.3 (interactive todo app) lands piece-by-piece. Features marked **(M1.x)** aren't implemented yet — see `docs/ROADMAP.md` for the full timeline.
+> **Status:** v0.2.0 (Phase 1 complete). All core features (dev loop, dynamic routes, assets, live-reload, validation UX, `pg-web check`, etc.) are shipped. See `docs/ROADMAP.md` for Phase 2+ plans. This guide targets app developers writing `.sql` + `.html`. Framework maintainers: start with `CONTRIBUTING.md` + `docs/internal/`.
 
 ## 60-second orientation
 
@@ -16,11 +16,12 @@ The exhaustive layout spec is `docs/APP-LAYOUT.md`. This guide is the narrative 
 ## Install
 
 ```bash
-cargo install --path crates/pg_web_cli     # from this repo for now
-# Pre-built binaries and `brew install pg-web` land with v0.1.
+cargo install pg-web     # once published (see prompt 010 / crates.io)
 ```
 
-Plus Docker (for running Postgres + the extension locally).
+The published crate installs the `pg-web` CLI. The runtime (Postgres + extension) is supplied by the official Docker image `pgweb/postgres:latest` — the CLI itself does not embed Postgres.
+
+Plus Docker (for running Postgres + the extension locally during development). For production deploys you also use the same image.
 
 ## Create a project
 
@@ -38,7 +39,7 @@ Want more code to poke at? `pg-web init my-todos --template todo` scaffolds the 
 
 `pg-web up` / `pg-web down` are thin wrappers over `docker compose up -d` / `down`. `up` polls Postgres + the HTTP server until both accept connections, and resolves `DATABASE_URL` from `pgweb.toml`'s `[database].url_env` (default `DATABASE_URL`), falling back to the dev-scaffold default baked into `docker-compose.yml`. `pg-web down --volumes` also drops the `pgdata` volume (destructive).
 
-`pg-web dev` watches `pages/` and `public/` for changes and auto-pushes on save. It also tails the Postgres container's logs inline (`--no-logs` turns that off). A save triggers a 200ms debounce → content-hash dedupe (so re-saving with identical bytes is a no-op) → a shift-left `BEGIN;...ROLLBACK;` preflight on any changed handler `.sql` (so parse errors surface without touching live routes) → a full `pg-web push`. Ctrl-C stops the watcher cleanly. Note: after save, the browser still needs a manual refresh — browser-push (WebSocket/SSE) is an M1.4 follow-up.
+`pg-web dev` watches `pages/` and `public/` for changes and auto-pushes on save. It also tails the Postgres container's logs inline (`--no-logs` turns that off). A save triggers a 200ms debounce → content-hash dedupe (so re-saving with identical bytes is a no-op) → a shift-left `BEGIN;...ROLLBACK;` preflight on any changed handler `.sql` (so parse errors surface without touching live routes) → a full `pg-web push`. Ctrl-C stops the watcher cleanly. Browser tabs auto-reload on successful push via injected SSE (dev only; production mode never injects).
 
 ## Project anatomy
 
@@ -47,7 +48,7 @@ my-blog/
 ├── pages/                   # URL routes (directory = route)
 │   ├── index.html           # GET / template
 │   └── index.sql            # GET / handler (returns JSON for the template)
-├── public/                  # Static assets (M1.3+ — served at /<filename>)
+├── public/                  # Static assets (served at /<filename>)
 ├── migrations/              # Forward-only SQL migrations (NNNN_name.sql)
 ├── pgweb.toml               # Framework config
 ├── docker-compose.yml       # Boots pgweb/postgres locally
@@ -187,8 +188,7 @@ CREATE OR REPLACE FUNCTION pgweb.pages__todos__toggle__post(req json) RETURNS te
   RETURNING format(
     '<li class="%s">%s</li>',
     CASE WHEN done THEN 'done' ELSE '' END,
-    title   -- TODO: escape via pgweb.html_escape() once it ships in M1.4.
-            -- Until then prefer the `.html` + `.sql` form for dynamic fragments.
+    title   -- use pgweb.html_escape() for raw-text handlers that interpolate user content.
   )
 $$ LANGUAGE sql;
 ```
@@ -339,7 +339,7 @@ env  = "development"        # "development" | "production" — affects 500 page 
 url_env = "DATABASE_URL"    # Which env var holds the connection string
 
 [dev]
-watch_paths = ["pages", "public"]   # For `pg-web dev` in M1.2+
+watch_paths = ["pages", "public"]   # For `pg-web dev` watcher
 ```
 
 ## Forms & validation
@@ -557,7 +557,7 @@ Templates:
 - Own a VPS for production. Managed-DB services (RDS, Cloud SQL, Supabase) don't accept custom extensions; Phase 1 is BYO-server only.
 - Set up Postgres RLS policies in **Phase 2+** if you have multi-tenant data.
 
-## Not implemented yet
+## Implementation timeline (Phase 1 features — all shipped in v0.1.0 / v0.2.0)
 
 | Feature                                                         | Lands in |
 |-----------------------------------------------------------------|----------|
@@ -582,4 +582,4 @@ Check `docs/ROADMAP.md` before building against a "not yet" feature.
 - **`docs/APP-LAYOUT.md`** — the exhaustive, spec-level reference for routing and file conventions. Use this when you want the rule on an edge case.
 - **`docs/ARCHITECTURE.md`** — how the framework actually works under the hood.
 - **`docs/ROADMAP.md`** — what's shipping when, and what's deliberately out of scope.
-- **`examples/todo/`** — the companion todo app. Runs end-to-end; read it to see every Phase 1 feature exercised together. (Lands as M1.3.)
+- **`examples/todo/`** — the companion todo app. Runs end-to-end; read it (and its README) to see every Phase 1 feature exercised together. It is the end state of the tutorial and the primary E2E target for the test suite.

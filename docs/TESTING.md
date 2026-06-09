@@ -1,8 +1,8 @@
 # pg-web — Testing Strategy
 
-Three tiers of tests. Each tier has a distinct scope, a distinct failure mode, and distinct tooling. Tests at tier N don't substitute for tests at tier N+1.
+Four (plus one) tiers of tests. Each tier has a distinct scope, a distinct failure mode, and distinct tooling. Tests at tier N don't substitute for tests at tier N+1. The companion app (`examples/todo/`) is the acceptance gate: if a feature isn't exercised there (or in the docs-site app), it isn't done.
 
-## TL;DR — what actually runs today (post-M1.3)
+## TL;DR — what actually runs today (v0.2.0)
 
 One command runs everything:
 
@@ -10,16 +10,17 @@ One command runs everything:
 scripts/test-all.sh
 ```
 
-It exits non-zero on any failure and prints `All tests passed.` on success. Four tiers in order:
+It exits non-zero on any failure and prints `All tests passed.` on success. Tiers:
 
-| Tier | Command | Tests (today) |
+| Tier | Command | Tests (v0.2.0) |
 |---|---|---|
-| 1. SQL / pgrx  | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | 8 `#[pg_test]` — schema existence, seed row round-trips, migrations ledger, `(req json)` handler contract |
+| 1. SQL / pgrx  | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | **72** `#[pg_test]` — schema / seed / migrations / deployments ledger / settings helper / html_escape; ListenRouter + livereload; router contract + dynamic captures + asset lookup; error catalog + dev page; Tera classification; fingerprinted assets (H) |
 | 2a. HTTP smoke | `scripts/test-http.sh` (starts PG, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — seeded `GET /` renders, unknown path returns default 404 body |
-| 2b. CLI        | `cargo test -p pg_web_cli` | 47 — 23 path scanner + reserved-stem tests, 6 migrate unit + 3 hermetic, 6 init integration + 2 push hermetic, 3 `examples/todo/` regression tests, 4 other |
-| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` (requires Docker + `pgweb/postgres:latest`) | 1 — boots the image via testcontainers, migrates + pushes `examples/todo/`, drives full todo CRUD + toggle + delete + custom 404 via HTTP |
+| 2b. CLI        | `cargo test -p pg_web_cli` | **143** — path scanner, migrate, push + reconcile + flags + retry (L), init, dev, env, check, stack, asset fingerprinting (H) |
+| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` (requires Docker + `pgweb/postgres:latest`) | **13** — todo CRUD + dynamic routes; watcher; reconcile; error pages; assets + ETag; F.1 ledger; livereload; concurrent push retry (L); CLI-in-image (F.3); fingerprinted cache (H); 5 MiB assets (I) |
+| 4. CLI smoke   | `scripts/smoke-cli.sh` | **19 sections** — full black-box walk of scaffold → up → push → 404 → dev error → prod 500 → assets → helpers → env → deployments → check → livereload (see `docs/OVERVIEW.md`) |
 
-**58 tests all green via `scripts/test-all.sh`.**
+**230+ Rust tests + 19-section smoke, all tiers green via `scripts/test-all.sh`.** Tier 3 hard-fails (no silent skip) if Docker or the published image is missing — the image *is* the runtime artifact.
 
 Env knobs: `PG_MAJOR=16 scripts/test-all.sh` targets a different Postgres major; the default is 17. Tier 3 panics with a remediation message if Docker or the image is missing — no silent-skip (the image is a shipped artifact; false green would undermine the tier).
 
@@ -184,19 +185,25 @@ If a feature isn't exercised in `examples/todo/`, it isn't done. New features la
 
 ### Demo app trajectory
 
-The demo app grows in lockstep with the framework:
+The demo app (`examples/todo/`) grows in lockstep with the framework and is the primary E2E target (tier 3 + tier 4 smoke). It is also the end-state of `docs/TUTORIAL.md`.
 
-- **Milestone 1.1 (Walking Skeleton):** `examples/todo/` is a single hello-world page. One route, one template, no DB tables beyond framework-owned ones. Purpose: prove the `init → compose up → push → HTTP 200` loop works end-to-end.
-- **Milestone 1.3 (First Real Demo):** `examples/todo/` becomes a **todo list** app. Full CRUD, raw-SQL migrations, HTMX forms, validation, static CSS. This is the first honest demonstration of the framework's value.
-- **Phase 2+:** demo extends with auth + per-user todos via RLS.
-- **Phase 3+:** demo adds email confirmation via the async job queue.
-- **Phase 4+:** demo README includes a dashboard walkthrough.
+- **v0.1.0 / Phase 1 core:** full todo CRUD + HTMX, migrations, dynamic routes, assets, validation UX, live-reload, `_404`, dev/prod error modes.
+- **Phase 2+:** will extend with auth + RLS-filtered data.
+- **Later phases:** job-queue examples, dashboard screenshots in its README, etc.
 
-### Demo app feature matrix
+See the feature matrix in `docs/OVERVIEW.md` for the exact v0.2.0 coverage. The rule: every shipped framework feature must have a corresponding exercised path in the companion app (or the dogfooded `pg-web.dev` docs site).
 
-Checked items are covered; unchecked are next. Grouped by milestone. This matrix updates with every feature PR.
+### Demo app feature matrix (summary)
 
-| Framework feature | Demo coverage | Milestone | Status |
+The exhaustive current-state matrix lives in `docs/OVERVIEW.md` (and the roadmap in `docs/ROADMAP.md`). Key rule: **if a feature isn't exercised in `examples/todo/` (or the docs-site app), it isn't done.**
+
+High-level coverage at v0.2.0 includes: static + dynamic routes, JSON→Tera + raw-text handlers, custom 404, migrations + ledger, HTMX forms + validation UX, `html_escape`, `pgweb.setting()`, `pg-web check`, `--dry-run`/`--with-migrate`, deployments ledger, live-reload SSE, content-hashed assets + immutable caching, 20 MiB assets, push retry (L), CLI-in-image (F.3).
+
+For the detailed per-component checklist see `docs/OVERVIEW.md` § Test story and `docs/ROADMAP.md`.
+
+Abridged table (historical snapshot; see OVERVIEW for live numbers):
+
+| Framework feature | Demo coverage | Status |
 |---|---|---|---|
 | Static route (`GET /`) | `pages/index.html` + `pages/index.sql` | M1.1 | ☑ |
 | SQL handler returning JSON | `pgweb.hello_handler` returns `{"name":"pg-web"}` | M1.1 | ☑ |

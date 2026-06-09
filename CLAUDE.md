@@ -15,20 +15,20 @@ pg-web/
 ├── crates/
 │   ├── pg_web_ext/               # pgrx extension (cdylib) — HTTP, SPI, templating
 │   └── pg_web_cli/               # `pg-web` binary — filesystem, migrations, deploy
-├── docs/                         # Authoritative spec — source of truth
-│   ├── VISION.md
-│   ├── ARCHITECTURE.md
-│   ├── ROADMAP.md
+├── docs/                         # Authoritative spec — source of truth (public docs at top level)
 │   ├── OVERVIEW.md               # Current-state snapshot (read first)
-│   ├── APP-LAYOUT.md             # Canonical: directory/file/handler conventions
+│   ├── VISION.md
 │   ├── APP-DEVELOPER-GUIDE.md    # Narrative reference for app developers
 │   ├── TUTORIAL.md               # Step-by-step walkthrough building a todo app
-│   ├── DEVELOPER-GUIDE.md        # For framework maintainers (us)
-│   ├── TESTING.md                # Four-tier test strategy + feature matrix
+│   ├── APP-LAYOUT.md             # Canonical: directory/file/handler conventions
 │   ├── DEPLOYMENT.md             # Caddy + Docker + VPS
-│   └── sessions/                 # Per-session plans + recaps
+│   ├── ROADMAP.md
+│   ├── ARCHITECTURE.md
+│   ├── TESTING.md
+│   └── internal/                 # Maintainer-only: DEVELOPER-GUIDE, HANDOFF, sessions/, prompts/
+├── CLAUDE.md                     # Agent north-star (this file) + internal/ copies of maintainer docs
 └── examples/
-    └── demo/                     # Companion todo app — tier 3 E2E target
+    └── todo/                     # Companion todo app — tier 3 E2E target (and docs-site dogfood target)
 ```
 
 ## Architectural invariants — DO NOT VIOLATE
@@ -64,7 +64,7 @@ pg-web/
 
 ## Current phase & milestones
 
-**Phase 1 — Synchronous Core.** All four milestones shipped; `v0.1.0` tagged 2026-04-24 (see `CHANGELOG.md`).
+**Phase 1 — Synchronous Core.** All milestones + v0.2.0 polish shipped (2026-04-25). `v0.1.0` was the core; see `CHANGELOG.md` + `docs/OVERVIEW.md`. Phase 2 (auth/RLS/realtime) planning in `docs/sessions/session_6.md` (internal).
 
 1. **M1.1 Walking Skeleton** ✅ shipped Session 1 — extension + CLI + Docker Compose + `pg-web push` produces a working `GET /` → Tera-from-DB render.
 2. **M1.3 Interactive Contracts + Real Demo** ✅ shipped Session 2 — `(req json)` handler contract, directory-as-route layout, `_404` fallback, `examples/todo/` todo app, tier 3 Docker E2E.

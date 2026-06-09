@@ -15,14 +15,17 @@ You'll build a working HTMX-driven todo app from scratch. Add, toggle, and delet
 You need:
 
 1. **Docker.** `docker --version` should work.
-2. **The `pg-web` CLI.** For now, that means cloning this repo and building it:
+2. **The `pg-web` CLI.** Install from crates.io (once published) or build from source:
    ```bash
-   git clone https://github.com/<you>/pg-web.git
-   cd pg-web
-   cargo build -p pg_web_cli                 # produces target/debug/pg-web
-   bash scripts/build-image.sh               # builds pgweb/postgres:latest, ~5–10 min cold
+   cargo install pg-web
    ```
-   From here on the tutorial assumes `pg-web` is on your `$PATH` (or substitute `./target/debug/pg-web` in commands below). Pre-built binaries + `cargo install pg-web-cli` come with v0.1.
+   You also need the runtime image for local development:
+   ```bash
+   # From a pg-web source checkout (one-time, ~5–10 min cold; subsequent runs are fast)
+   bash scripts/build-image.sh
+   # Or in the future: docker pull pgweb/postgres:latest
+   ```
+   From here on the tutorial assumes `pg-web` is on your `$PATH`. The CLI talks to Postgres over the normal wire; the actual web server runs inside the `pgweb/postgres` container.
 3. **A terminal.** That's it. No Node, Python, Go, or anything else.
 
 ---
@@ -55,16 +58,18 @@ Nothing special yet — a hello-world page.
 ## Step 2 — Boot the stack
 
 ```bash
-docker compose up -d
+pg-web up
 ```
+
+(Under the hood this runs the equivalent of `docker compose up -d`, waits for Postgres + the HTTP listener on :8080, and prints the resolved `DATABASE_URL`.)
 
 This starts Postgres with the `pg_web_ext` extension preloaded. The HTTP server inside the extension listens on `:8080`.
 
-Push the scaffolded routes in:
+Push the scaffolded routes in (the `up` command already set the URL for you, or export it explicitly):
 
 ```bash
 export DATABASE_URL="postgres://postgres:devpassword@localhost:5432/app"
-pg-web push --url "$DATABASE_URL"
+pg-web push
 ```
 
 You should see:
