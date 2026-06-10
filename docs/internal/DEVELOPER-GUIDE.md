@@ -45,9 +45,9 @@ cargo pgrx install           # Install into a real system PG (rare; prefer the D
 
 ### CLI (`pg_web_cli`)
 ```bash
-cargo build -p pg_web_cli
-cargo run -p pg_web_cli -- init test-app --template todo
-cargo test -p pg_web_cli
+cargo build -p pg-web
+cargo run -p pg-web -- init test-app --template todo
+cargo test -p pg-web
 ```
 
 Pure Rust. No pgrx features needed.
@@ -148,7 +148,7 @@ Extension upgrades are handled by Postgres itself:
 Before tagging a release:
 1. All planned deliverables for the version are implemented.
 2. `cargo pgrx test pg15`, `pg16`, and `pg17` are green.
-3. `cargo test -p pg_web_cli` is green.
+3. `cargo test -p pg-web` is green.
 4. `examples/todo/` exercises the new/changed behavior end-to-end via Docker.
 5. `docs/ROADMAP.md` is updated (deliverables checked, open questions resolved if entering a new phase).
 6. `docs/ARCHITECTURE.md` updated if public interfaces changed.

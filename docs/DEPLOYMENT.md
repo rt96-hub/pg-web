@@ -109,7 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install pg-web CLI
-        run: cargo install pg-web --locked  # or the published name once on crates.io
+        run: cargo install pg-web --locked
       - uses: webfactory/ssh-agent@v0.9
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}

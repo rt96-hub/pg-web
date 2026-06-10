@@ -16,8 +16,8 @@ It exits non-zero on any failure and prints `All tests passed.` on success. Tier
 |---|---|---|
 | 1. SQL / pgrx  | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | **72** `#[pg_test]` — schema / seed / migrations / deployments ledger / settings helper / html_escape; ListenRouter + livereload; router contract + dynamic captures + asset lookup; error catalog + dev page; Tera classification; fingerprinted assets (H) |
 | 2a. HTTP smoke | `scripts/test-http.sh` (starts PG, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — seeded `GET /` renders, unknown path returns default 404 body |
-| 2b. CLI        | `cargo test -p pg_web_cli` | **143** — path scanner, migrate, push + reconcile + flags + retry (L), init, dev, env, check, stack, asset fingerprinting (H) |
-| 3. Docker E2E  | `cargo test -p pg_web_cli --test docker_e2e -- --ignored` (requires Docker + `pgweb/postgres:latest`) | **13** — todo CRUD + dynamic routes; watcher; reconcile; error pages; assets + ETag; F.1 ledger; livereload; concurrent push retry (L); CLI-in-image (F.3); fingerprinted cache (H); 5 MiB assets (I) |
+| 2b. CLI        | `cargo test -p pg-web` | **143** — path scanner, migrate, push + reconcile + flags + retry (L), init, dev, env, check, stack, asset fingerprinting (H) |
+| 3. Docker E2E  | `cargo test -p pg-web --test docker_e2e -- --ignored` (requires Docker + `pgweb/postgres:latest`) | **13** — todo CRUD + dynamic routes; watcher; reconcile; error pages; assets + ETag; F.1 ledger; livereload; concurrent push retry (L); CLI-in-image (F.3); fingerprinted cache (H); 5 MiB assets (I) |
 | 4. CLI smoke   | `scripts/smoke-cli.sh` | **19 sections** — full black-box walk of scaffold → up → push → 404 → dev error → prod 500 → assets → helpers → env → deployments → check → livereload (see `docs/OVERVIEW.md`) |
 
 **230+ Rust tests + 19-section smoke, all tiers green via `scripts/test-all.sh`.** Tier 3 hard-fails (no silent skip) if Docker or the published image is missing — the image *is* the runtime artifact.
@@ -130,7 +130,7 @@ The script handles orchestration. The test itself is pure assertion.
 ## Tier 2b — CLI tests (outside Postgres)
 
 **Tool:** standard Rust `#[test]` + `testcontainers` for integration flows.
-**Runs:** `cargo test -p pg_web_cli`.
+**Runs:** `cargo test -p pg-web`.
 **Scope:** file watcher, migration diffing, `pg-web push`, CLI arg parsing.
 
 ### Example

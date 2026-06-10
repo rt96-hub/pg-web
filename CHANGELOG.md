@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Dates are ISO-8601. Version numbers follow semver — breaking pre-1.0
 changes may land in minor releases.
 
+## [Unreleased]
+
+### Added
+- `cargo install pg-web` distribution for the CLI (prompt 010). The package on
+  crates.io is now named `pg-web` (binary remains `pg-web`). Full recommended
+  metadata (description, keywords, categories, homepage, docs link, readme).
+  The `templates/todo/` tree is vendored inside the crate so `init --template
+  todo` works out of the box for published installs.
+- CI: `cargo publish -p pg-web --dry-run` on every PR/push (in the normal CI
+  job) to catch packaging problems early.
+- Release workflow: new `publish-cli` job that runs on `v*` tags (after the
+  existing test-all + publish-image), gated by `CARGO_REGISTRY_TOKEN` secret.
+  Matches the Docker Hub guard pattern; no accidental publishes from forks.
+- Docs + scripts updated for the split install story: `cargo install pg-web`
+  gets you the management CLI; the runtime (Postgres + `pg_web_ext`) always
+  comes from the `pgweb/postgres` Docker image. All `-p pg_web_cli` cargo
+  selectors updated to the new package name `-p pg-web`. Internal lib name and
+  directory unchanged.
+
 ## [0.2.0] — 2026-04-25
 
 Polish release. Closes the deferred-from-0.1 work items, sharpens the

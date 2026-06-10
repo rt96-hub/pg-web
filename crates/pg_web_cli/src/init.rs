@@ -26,7 +26,13 @@ use crate::templates;
 /// The HTMX todo-list demo — same directory `cargo test` + smoke tests
 /// drive, baked into the binary so users without a local checkout of
 /// the pg-web repo can scaffold it.
-static TODO_TEMPLATE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../examples/todo");
+///
+/// We deliberately keep only *one* copy of the rich example tree (at the
+/// repo root `examples/todo/`). A symlink at `templates/todo` makes it
+/// reachable with a stable relative path for `include_dir!` both during
+/// normal development and when the crate is built from a published tarball
+/// (Cargo dereferences the symlink when packaging).
+static TODO_TEMPLATE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates/todo");
 
 /// Names of files inside a bundled template that `init --template` will
 /// NOT copy verbatim. We re-generate an app-facing replacement for each.

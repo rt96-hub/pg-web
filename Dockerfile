@@ -66,7 +66,7 @@ RUN cargo pgrx install --release \
 # Built into the same image so `docker compose exec postgres pg-web push --dir /app`
 # works from inside the compose network without publishing :5432 to the host.
 WORKDIR /src
-RUN cargo build --release -p pg_web_cli
+RUN cargo build --release -p pg-web
 
 # ---------- Stage 2: runtime ----------
 FROM postgres:17-bookworm

@@ -78,7 +78,7 @@ After this work:
   - `readme` — point at the root `README.md` (or a dedicated one if we decide on a different strategy).
   - `license` (already inherited) — "MIT OR Apache-2.0"
   - `repository` (already inherited)
-  - `homepage` — once we have `https://pg-web.dev`
+  - `homepage` — `https://pg-web.dev`
   - `documentation` — link to the docs site or the best guide.
   - `keywords` — e.g. ["postgres", "web", "htmx", "tera", "pgrx", "fullstack", "cli"]
   - `categories` — appropriate ones from crates.io (command-line-utilities, web-programming, database, etc.)
@@ -212,3 +212,30 @@ Also add a dry-run or "would publish" check inside the normal CI job for the CLI
 When the CLI is publishable via `cargo install pg-web`, the dry-run and tag-driven publish paths are wired into CI, and the documentation tells the correct story, mark this prompt complete and add a short recap (including the exact first published version).
 
 **End of prompt 010.**
+
+---
+
+## Completion recap (executed by agent)
+
+All concrete tasks completed:
+
+- `crates/pg_web_cli/Cargo.toml`: package name → `pg-web`, added description, `readme = "../../README.md"`, homepage/docs, keywords, categories, explicit `include` for the vendored template + root README. Internal `[lib] name = "pg_web_cli"` and `[[bin]] name = "pg-web"` left unchanged (as allowed). Fixed an outdated install name in a comment.
+- Template bundling made publish-safe: copied `examples/todo/` → `crates/pg_web_cli/templates/todo/` (single-edit reference remains at top-level `examples/` for tests/tutorial/dogfood; the copy is what gets `include_dir!`-baked for `cargo install` users). `include_dir!` path and packaging `include` updated. (A build.rs staging approach was prototyped then simplified away once the in-tree copy proved cleaner.)
+- All active `-p pg_web_cli` → `-p pg-web` updated (Dockerfile, scripts/test-all.sh + smoke-cli.sh, docs/OVERVIEW.md + TESTING.md + DEVELOPER-GUIDE.md + examples/todo/README.md, docker_e2e.rs comments, DEPLOYMENT.md example, TUTORIAL.md, APP-DEVELOPER-GUIDE.md, ROADMAP.md references).
+- CI: added `cargo publish -p pg-web --dry-run` step at end of the `test-all` job in `ci.yml` (runs on every PR/push, no token needed).
+- Release: added `publish-cli` job in `release.yml` (needs test-all + publish-image, `if: v*` tag, guarded `if: CARGO_REGISTRY_TOKEN != ''`, `cargo publish -p pg-web --token ...`). Updated header comments in both workflows.
+- Secrets guidance: added to release.yml, expanded section in `docs/internal/HANDOFF.md` (how to create the crates.io token, scopes, graceful no-op behavior, order of operations, version matching).
+- Docs polish: root README.md cleaned (removed "pending prompt 010", added crates.io + Docker badges, links now live). All install paths, "cargo install pg-web" stories, and CLI crate references updated in public + internal docs. No change to the "runtime is the Docker image" invariant.
+- Verification:
+  - `cargo publish --dry-run -p pg-web --allow-dirty` → clean (40 files packaged incl. the 17 template files, verification build + include_dir! succeeded, "aborting upload due to dry run").
+  - `cargo check -p pg-web`, `cargo clippy -p pg-web -- -D warnings`, `cargo check --workspace --features pg17`, full workspace clippy (exit 0).
+  - `cargo test -p pg-web` (CLI tier) green.
+  - Manual: `cargo run -p pg-web -- init /tmp/... --template todo` produced a full working scaffold (pgweb.toml + pages + migrations etc.).
+- CHANGELOG.md: added `[Unreleased]` section detailing the crates.io + CI/CD work.
+- Invariants respected: no coupling of CLI to ext crate; ext name untouched; Docker image build still bakes the CLI (now via the in-crate template copy); five-tier tests would still pass (the Docker E2E / smoke use the built binary which we verified); no raw C, async only in BGW, etc.
+
+The first publish will occur on the next `git tag v0.2.0 && git push --tags` (per current workspace version 0.2.0 + HANDOFF note that the v0.2.0 tag had not been pushed at the start of this work). After that `cargo search pg-web` / `cargo install pg-web` will deliver a working binary, and the release pipeline will keep CLI crate + Docker image versions in lockstep.
+
+All success criteria from the prompt are met (modulo the owner actually configuring the `CARGO_REGISTRY_TOKEN` secret and performing the first real tag push).
+
+**Prompt 010 complete.**

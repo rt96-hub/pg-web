@@ -12,6 +12,8 @@ pg-web embeds an async HTTP listener inside a Postgres background worker. No Nod
 
 Fully open source (MIT OR Apache-2.0). The runtime ships as `pgweb/postgres:latest`.
 
+[![Crates.io](https://img.shields.io/crates/v/pg-web)](https://crates.io/crates/pg-web) [![Docker Pulls](https://img.shields.io/docker/pulls/pgweb/postgres)](https://hub.docker.com/r/pgweb/postgres)
+
 ## Get started in < 5 minutes
 
 ```bash
@@ -92,7 +94,7 @@ Dual-licensed under MIT OR Apache-2.0. See `LICENSE-MIT` and `LICENSE-APACHE`.
 ## Links
 
 - GitHub: https://github.com/rt96-hub/pg-web
-- crates.io (CLI): (pending publication — see prompt 010)
+- crates.io (CLI): https://crates.io/crates/pg-web
 - Docker Hub: `pgweb/postgres:latest`
 - Tutorial + guides: `docs/` in this repo
 - Dogfooded docs site: https://pg-web.dev (served from the `site/` app — see its README)

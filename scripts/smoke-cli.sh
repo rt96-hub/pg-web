@@ -102,7 +102,7 @@ http() {
 # --- preflight ------------------------------------------------------
 
 step "Preflight"
-[[ -x "$BIN" ]] || fail "pg-web binary missing: build with \`cargo build -p pg_web_cli\` first"
+[[ -x "$BIN" ]] || fail "pg-web binary missing: build with \`cargo build -p pg-web\` first"
 docker --version >/dev/null || fail "docker not available"
 docker image inspect pgweb/postgres:latest >/dev/null \
     || fail "image pgweb/postgres:latest not found — run \`bash scripts/build-image.sh\`"

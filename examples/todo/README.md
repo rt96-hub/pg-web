@@ -15,7 +15,7 @@ Prereqs:
 - The Docker image `pgweb/postgres:latest` exists locally. From the
   pg-web repo root: `bash scripts/build-image.sh` (one-time, ~5–10 min
   cold).
-- The `pg-web` CLI is built: `cargo build -p pg_web_cli` from the repo
+- The `pg-web` CLI is built: `cargo build -p pg-web` from the repo
   root, which puts the binary at `target/debug/pg-web`.
 
 Then, from this directory (adjust the path to the `pg-web` binary as

@@ -16,7 +16,7 @@ The exhaustive layout spec is `docs/APP-LAYOUT.md`. This guide is the narrative 
 ## Install
 
 ```bash
-cargo install pg-web     # once published (see prompt 010 / crates.io)
+cargo install pg-web
 ```
 
 The published crate installs the `pg-web` CLI. The runtime (Postgres + extension) is supplied by the official Docker image `pgweb/postgres:latest` — the CLI itself does not embed Postgres.

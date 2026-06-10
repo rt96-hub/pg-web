@@ -103,13 +103,13 @@ echo "== Tier 2a — HTTP smoke (scripts/test-http.sh) =="
 bash "$REPO_ROOT/scripts/test-http.sh"
 
 echo
-echo "== Tier 2b — CLI tests (cargo test -p pg_web_cli) =="
-cargo test -p pg_web_cli
+echo "== Tier 2b — CLI tests (cargo test -p pg-web) =="
+cargo test -p pg-web
 
 echo
 echo "== Tier 3 — Docker E2E (pgweb/postgres:latest + examples/todo) =="
 ensure_image_fresh
-cargo test -p pg_web_cli --test docker_e2e -- --ignored
+cargo test -p pg-web --test docker_e2e -- --ignored
 
 # Reclaim :8080 from the pgrx dev PG before tier 4's docker stack
 # tries to bind it. (Tiers 1 + 2a leave the pgrx PG running; tiers 2b

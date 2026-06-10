@@ -2180,7 +2180,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pg_web_cli"
+name = "pg-web"
 version = "0.2.0"
 dependencies = [
  "anyhow",

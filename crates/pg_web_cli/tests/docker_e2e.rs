@@ -85,7 +85,7 @@ fn todo_app_dir() -> PathBuf {
 
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn full_todo_crud_flow() {
     preflight_or_panic();
@@ -315,7 +315,7 @@ fn post_form(client: &reqwest::blocking::Client, base: &str, path: &str, body: &
 /// Runs in one container to amortize startup cost.
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn livereload_sse_chain_end_to_end() {
     preflight_or_panic();
@@ -435,7 +435,7 @@ fn livereload_sse_chain_end_to_end() {
 /// explicit.
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn push_f1_dry_run_with_migrate_and_deployments() {
     preflight_or_panic();
@@ -637,7 +637,7 @@ fn copy_tree(src: &Path, dst: &Path) {
 /// classify (pages/*.html → Push) → push::push → BGW serves updated HTML.
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn dev_watcher_repushes_on_save() {
     preflight_or_panic();
@@ -738,7 +738,7 @@ fn dev_watcher_repushes_on_save() {
 /// proves the reserved `pgweb.pages__*(json)` namespace is owned by push.
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn push_reconciles_deleted_files() {
     preflight_or_panic();
@@ -845,7 +845,7 @@ fn push_reconciles_deleted_files() {
 /// the live extension's state.
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn push_rejects_broken_tera_template() {
     preflight_or_panic();
@@ -920,7 +920,7 @@ fn push_rejects_broken_tera_template() {
 /// the response is the rich dev page (code, title, SQLSTATE, req dump).
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn dev_error_page_surfaces_sql_exception_detail() {
     preflight_or_panic();
@@ -1036,7 +1036,7 @@ fn dev_error_page_surfaces_sql_exception_detail() {
 ///   the next request 404s.
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn static_asset_serves_with_etag_and_revalidates() {
     preflight_or_panic();
@@ -1153,7 +1153,7 @@ fn static_asset_serves_with_etag_and_revalidates() {
 /// serving whatever was there before.
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn push_rejects_missing_handler_function() {
     preflight_or_panic();
@@ -1236,7 +1236,7 @@ fn push_rejects_missing_handler_function() {
 /// AND every push lands a `pgweb.deployments` row."
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn concurrent_pushes_all_commit() {
     preflight_or_panic();
@@ -1321,7 +1321,7 @@ fn concurrent_pushes_all_commit() {
 /// in-container `127.0.0.1:5432` results in a working HTTP response.
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn cli_in_image_can_push_from_inside() {
     preflight_or_panic();
@@ -1460,7 +1460,7 @@ fn cli_in_image_can_push_from_inside() {
 /// semantics for any unhashed legacy URL that's still requested.
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn fingerprinted_assets_get_immutable_cache_control() {
     preflight_or_panic();
@@ -1579,7 +1579,7 @@ fn fingerprinted_assets_get_immutable_cache_control() {
 /// for assets >20 MiB remains Phase-2+ work.
 #[test]
 #[ignore = "tier 3 E2E — Docker + pgweb/postgres:latest required. \
-            Run via scripts/test-all.sh or `cargo test -p pg_web_cli \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
             --test docker_e2e -- --ignored`."]
 fn large_asset_below_new_cap_round_trips() {
     preflight_or_panic();

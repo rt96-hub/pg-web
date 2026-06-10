@@ -27,7 +27,8 @@ Yes — one repo, both crates. The extension and CLI evolve together; they talk 
 
 ## Where the project is right now
 
-- **Released:** `v0.2.0` (2026-04-25). Tag not yet pushed; the CI release workflow fires on `git tag v0.2.0 && git push origin v0.2.0`.
+- **Released:** `v0.2.0` (2026-04-25). Tag not yet pushed; the CI release workflow fires on `git tag vX.Y.Z && git push origin vX.Y.Z`.
+  It runs the full test suite (incl. `cargo publish --dry-run -p pg-web`), builds+pushes the Docker image (if DOCKERHUB_* secrets present), then publishes the CLI crate to crates.io (if CARGO_REGISTRY_TOKEN secret present). See `.github/workflows/release.yml` for exact guards + order.
 - **Status:** all five test tiers green at 230 Rust tests + 19-section black-box smoke.
 - **Feature surface (`v0.2.0`):** full Phase-1 framework — schema in `pgweb.*`, BGW HTTP on `:8080`, directory-as-route layout, `(req json) RETURNS json|text` handler contract, dynamic routes, dev-mode error page, browser livereload via SSE, static assets (BYTEA, 20 MiB cap, fingerprinted URLs + `Cache-Control: immutable` in production), CLI bundled in the Docker image, push retry on concurrent DDL with `pg_stat_activity` diagnostic, `application_name` tagging on every CLI connection.
 - **Next session (drafted, not started):** Phase 2 — auth + RLS bridge + realtime SSE — spec lives at `docs/sessions/session_6.md`. 20 open design questions are waiting on user decisions before implementation starts.
@@ -161,3 +162,18 @@ Captured in the per-session `docs/sessions/` files and in your auto-memory; the 
 - **Bias toward *why* in inline comments**, not *what*. Well-named symbols document themselves.
 - **`pgweb.pages__*(json) RETURNS json|text`** is the reserved push-managed namespace — user helpers must use a different signature pattern.
 - **Docker image bakes install SQL + the .so + the CLI binary** — `scripts/test-all.sh` now auto-rebuilds when extension source / Dockerfile / CLI source changes (Session 5 feature). If you bypass that script, run `bash scripts/build-image.sh` manually after any extension or Dockerfile change.
+
+## Release process & tokens (post-010)
+
+Tagging a `v*` version triggers:
+
+1. Full CI (test-all + dry-run publish check).
+2. Docker image build + optional push to Docker Hub (`DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN`).
+3. CLI crate publish to crates.io (`CARGO_REGISTRY_TOKEN`).
+
+The two publish jobs are independent (one can succeed while the other skips if its secret is absent). Configure the secrets in GitHub repo → Settings → Secrets and variables → Actions.
+
+- `CARGO_REGISTRY_TOKEN`: crates.io API token (https://crates.io/settings/tokens) with **publish** permission. The account must control the `pg-web` crate name. Use the minimal-scope token.
+- `DOCKERHUB_*`: for `pgweb/postgres` image.
+
+Never commit tokens. The workflows are written to no-op gracefully when secrets are missing (useful for forks and pre-config validation). Update CHANGELOG.md + the version in `Cargo.toml` (workspace) before tagging. The published crate version, image tag, and workspace version must match.

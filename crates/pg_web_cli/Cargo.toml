@@ -1,9 +1,32 @@
 [package]
-name = "pg_web_cli"
+name = "pg-web"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "PostgreSQL as a self-contained web application platform. The CLI for scaffolding, developing, and deploying pg-web apps."
+readme = "../../README.md"
+homepage = "https://pg-web.dev"
+documentation = "https://pg-web.dev"
+keywords = ["postgres", "web", "htmx", "tera", "pgrx", "fullstack", "cli"]
+categories = ["command-line-utilities", "web-programming", "database"]
+
+# Ensure the `init --template todo` data and the root README (pointed at by
+# the `readme` field) are packaged even though they live outside the default
+# set of files Cargo includes for a crate.
+#
+# We use a *symlink* (templates/todo -> ../../../examples/todo) so there is
+# only ever one copy of the rich example on disk. The symlink is followed at
+# compile time for include_dir! and Cargo follows it when creating the
+# published .crate tarball, so `cargo install pg-web` users still get a
+# fully working `--template todo`.
+include = [
+    "src/**/*",
+    "templates/**/*",
+    "tests/**/*",
+    "Cargo.toml",
+    "../../README.md",
+]
 
 [lib]
 name = "pg_web_cli"
@@ -45,17 +68,17 @@ tera = "1"
 # (which we'd want anyway-blocked for BYTEA-backed text).
 mime_guess = "2"
 
-# init: bundle examples/<name>/ directory trees into the CLI binary so
-# `pg-web init --template <name>` works without assuming the repo layout
-# is present on the target filesystem. Trees are embedded at compile
-# time; runtime cost is ~zero, binary size grows by template total.
+# init: bundle the todo template (a copy under templates/todo/) into the
+# CLI binary so `pg-web init --template todo` works for `cargo install pg-web`
+# users with no checkout present. The live reference copy stays at the
+# repo root examples/todo/ (used by tests, tutorial, docs, dogfooding site).
 include_dir = "0.7"
 
 # check: offline SQL validator. sqlparser is a pure-Rust SQL parser
 # with a Postgres dialect — good enough for catching typos,
 # unbalanced parens, unclosed strings, malformed DDL. Less authoritative
 # than libpg_query (which IS Postgres's own parser) but needs zero
-# system build deps, so `cargo install pg-web-cli` and CI both stay
+# system build deps, so `cargo install pg-web` and CI both stay
 # friction-free. Upgrade path: swap to pg_query if stricter parsing
 # becomes necessary (adds gcc + cmake requirements).
 sqlparser = "0.52"

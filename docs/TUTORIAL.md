@@ -15,7 +15,7 @@ You'll build a working HTMX-driven todo app from scratch. Add, toggle, and delet
 You need:
 
 1. **Docker.** `docker --version` should work.
-2. **The `pg-web` CLI.** Install from crates.io (once published) or build from source:
+2. **The `pg-web` CLI.** Install from crates.io or build from source:
    ```bash
    cargo install pg-web
    ```
