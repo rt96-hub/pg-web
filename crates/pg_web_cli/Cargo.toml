@@ -8,7 +8,7 @@ description = "PostgreSQL as a self-contained web application platform. The CLI 
 readme = "../../README.md"
 homepage = "https://pg-web.dev"
 documentation = "https://pg-web.dev"
-keywords = ["postgres", "web", "htmx", "tera", "pgrx", "fullstack", "cli"]
+keywords = ["postgres", "web", "htmx", "cli", "fullstack"]
 categories = ["command-line-utilities", "web-programming", "database"]
 
 # Ensure the `init --template todo` data and the root README (pointed at by
