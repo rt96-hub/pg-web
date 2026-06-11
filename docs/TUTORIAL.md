@@ -15,16 +15,13 @@ You'll build a working HTMX-driven todo app from scratch. Add, toggle, and delet
 You need:
 
 1. **Docker.** `docker --version` should work.
-2. **The `pg-web` CLI.** Install from crates.io or build from source:
+2. **The `pg-web` CLI.** Install from crates.io:
    ```bash
    cargo install pg-web
    ```
-   You also need the runtime image for local development:
-   ```bash
-   # From a pg-web source checkout (one-time, ~5–10 min cold; subsequent runs are fast)
-   bash scripts/build-image.sh
-   # Or in the future: docker pull pgweb/postgres:latest
-   ```
+   The runtime image (`pgweb/postgres:latest`) is published on Docker Hub.
+   `pg-web up` (and `docker compose`) will pull it automatically on first use.
+   No source checkout or manual build is required for normal app development.
    From here on the tutorial assumes `pg-web` is on your `$PATH`. The CLI talks to Postgres over the normal wire; the actual web server runs inside the `pgweb/postgres` container.
 3. **A terminal.** That's it. No Node, Python, Go, or anything else.
 

@@ -161,7 +161,7 @@ Captured in the per-session `docs/sessions/` files and in your auto-memory; the 
 - **Companion-app coverage per feature** — `examples/todo/` is the acceptance gate. New framework features need a corresponding demo path.
 - **Bias toward *why* in inline comments**, not *what*. Well-named symbols document themselves.
 - **`pgweb.pages__*(json) RETURNS json|text`** is the reserved push-managed namespace — user helpers must use a different signature pattern.
-- **Docker image bakes install SQL + the .so + the CLI binary** — `scripts/test-all.sh` now auto-rebuilds when extension source / Dockerfile / CLI source changes (Session 5 feature). If you bypass that script, run `bash scripts/build-image.sh` manually after any extension or Dockerfile change.
+- **Docker image bakes install SQL + the .so + the CLI binary** — `scripts/test-all.sh` now auto-rebuilds when extension source / Dockerfile / CLI source changes (Session 5 feature). `scripts/build-image.sh` is only for framework developers changing the extension. End users never run it — they get the published `pgweb/postgres` image from Docker Hub via `cargo install pg-web` + `pg-web up`.
 
 ## Release process & tokens (post-010)
 

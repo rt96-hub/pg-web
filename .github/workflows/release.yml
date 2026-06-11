@@ -64,8 +64,8 @@ jobs:
           # Always build; only push when we managed to log in.
           push: ${{ env.DOCKERHUB_TOKEN != '' }}
           tags: |
-            pgweb/postgres:${{ steps.version.outputs.tag }}
-            pgweb/postgres:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/pg-web:${{ steps.version.outputs.tag }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/pg-web:latest
         env:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 

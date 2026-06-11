@@ -60,12 +60,21 @@ watch_paths = ["pages", "public"]
 
 pub const DOCKER_COMPOSE: &str = r#"# One-container pg-web stack.
 #
+# The `postgres` service uses the official published runtime image
+# `rtaylor96/pg-web:latest` (Postgres 17 + the pg_web_ext extension + the
+# pg-web CLI baked in). After `cargo install pg-web` on a brand new machine
+# you can run `pg-web up` — Docker will automatically pull the image.
+# 
+# NOTE: This is using rtaylor96's personal namespace temporarily.
+# Once the official `pgweb` Docker Hub organization is available,
+# this will change to `pgweb/pg-web` or `pgweb/postgres`.
+#
 # Dev: direct access on :8080.
 # Prod: uncomment the `caddy` service below and set your domain in Caddyfile.
 
 services:
   postgres:
-    image: pgweb/postgres:latest
+    image: rtaylor96/pg-web:latest  # temporary - will become pgweb/pg-web or pgweb/postgres later
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}

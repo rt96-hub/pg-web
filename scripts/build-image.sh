@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Build the pgweb/postgres:latest Docker image from source.
 #
+# ONLY NEEDED BY FRAMEWORK DEVELOPERS who are modifying pg_web_ext.
+# Normal app developers should just `cargo install pg-web` and let
+# `pg-web up` pull the official published image from Docker Hub.
+#
 # Run from anywhere — resolves to the repo root. The first build takes a
 # while (~5-10 minutes) because it compiles pgrx + our extension against the
 # base Postgres image. Subsequent builds are fast-cached via Docker layers

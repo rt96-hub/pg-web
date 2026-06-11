@@ -9,7 +9,8 @@
 #            shared_preload_libraries wired in via docker-entrypoint-initdb.d.
 #
 # Built locally for now:
-#   docker build -t pgweb/postgres:latest .
+#   docker build -t rtaylor96/pg-web:latest .
+#   (temporary namespace; will become pgweb/pg-web or pgweb/postgres)
 # (We'll publish to GHCR / Docker Hub at v0.1 tag.)
 
 ARG PG_MAJOR=17

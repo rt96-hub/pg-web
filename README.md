@@ -10,9 +10,9 @@ pg-web embeds an async HTTP listener inside a Postgres background worker. No Nod
 - **Dev UX that doesn't lie**: `pg-web dev` watches, preflights SQL, pushes, and live-reloads the browser via SSE. Production mode serves generic 500s and immutable fingerprinted assets.
 - **Real companion app**: `examples/todo/` exercises the entire Phase 1 surface (CRUD, validation, dynamic routes, assets, live-reload, `_404`, deployments ledger, etc.).
 
-Fully open source (MIT OR Apache-2.0). The runtime ships as `pgweb/postgres:latest`.
+Fully open source (MIT OR Apache-2.0). The runtime currently ships as `rtaylor96/pg-web:latest` (temporary namespace until the official `pgweb` one is available).
 
-[![Crates.io](https://img.shields.io/crates/v/pg-web)](https://crates.io/crates/pg-web) [![Docker Pulls](https://img.shields.io/docker/pulls/pgweb/postgres)](https://hub.docker.com/r/pgweb/postgres)
+[![Crates.io](https://img.shields.io/crates/v/pg-web)](https://crates.io/crates/pg-web) [![Docker Pulls](https://img.shields.io/docker/pulls/rtaylor96/pg-web)](https://hub.docker.com/r/rtaylor96/pg-web) (temporary)
 
 ## Get started in < 5 minutes
 
@@ -20,20 +20,19 @@ Fully open source (MIT OR Apache-2.0). The runtime ships as `pgweb/postgres:late
 # 1. Install the CLI (published crate)
 cargo install pg-web
 
-# 2. Get the runtime image (Postgres 17 + pg_web_ext + the pg-web CLI inside)
-# One-time cold build from a checkout, or `docker pull pgweb/postgres:latest` once published
-bash scripts/build-image.sh
-
-# 3. Scaffold a real app (the HTMX todo list that exercises everything)
+# 2. Scaffold a real app (the HTMX todo list that exercises everything)
 pg-web init my-todos --template todo
 cd my-todos
 
-# 4. Boot + schema + code
+# 3. Boot + schema + code
+# `pg-web up` automatically pulls the official runtime image
+# (`rtaylor96/pg-web:latest` — Postgres 17 + extension + CLI inside) from Docker Hub. (temporary namespace)
+# No source checkout or local image build is required.
 pg-web up          # docker compose under the hood + readiness poll + DATABASE_URL
 pg-web migrate apply
 pg-web push
 
-# 5. Open it
+# 4. Open it
 open http://localhost:8080
 # or: curl http://localhost:8080/
 ```
@@ -95,7 +94,7 @@ Dual-licensed under MIT OR Apache-2.0. See `LICENSE-MIT` and `LICENSE-APACHE`.
 
 - GitHub: https://github.com/rt96-hub/pg-web
 - crates.io (CLI): https://crates.io/crates/pg-web
-- Docker Hub: `pgweb/postgres:latest`
+- Docker Hub: `rtaylor96/pg-web:latest` (temporary until `pgweb` namespace)
 - Tutorial + guides: `docs/` in this repo
 - Dogfooded docs site: https://pg-web.dev (served from the `site/` app — see its README)
 

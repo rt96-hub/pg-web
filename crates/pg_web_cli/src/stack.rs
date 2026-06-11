@@ -68,6 +68,25 @@ pub fn up(app_dir: &Path) -> Result<String> {
     preflight_ports_clear()?;
     let compose = ensure_compose_file(app_dir)?;
 
+    // On a fresh machine (only `cargo install pg-web`, no local source),
+    // this is the first time the official runtime image is needed.
+    // We do an explicit pull so the user sees clear progress ("Pulling...").
+    // `docker compose up -d` would pull anyway, but the explicit step + message
+    // makes the "brand new machine" experience much nicer.
+    println!("Ensuring runtime image rtaylor96/pg-web:latest is present (this may take a while on first run)...");
+    let pull_status = Command::new("docker")
+        .args(["compose", "-f"])
+        .arg(&compose)
+        .arg("pull")
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .context("spawning `docker compose pull`")?;
+    if !pull_status.success() {
+        bail!("`docker compose pull` failed (exit {:?})", pull_status.code());
+    }
+
     let status = Command::new("docker")
         .args(["compose", "-f"])
         .arg(&compose)

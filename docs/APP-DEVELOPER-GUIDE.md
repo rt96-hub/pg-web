@@ -19,9 +19,9 @@ The exhaustive layout spec is `docs/APP-LAYOUT.md`. This guide is the narrative 
 cargo install pg-web
 ```
 
-The published crate installs the `pg-web` CLI. The runtime (Postgres + extension) is supplied by the official Docker image `pgweb/postgres:latest` — the CLI itself does not embed Postgres.
+The published crate installs the `pg-web` CLI. The runtime (Postgres + extension) is supplied by the official published Docker image `pgweb/postgres:latest` on Docker Hub — the CLI itself does not embed Postgres.
 
-Plus Docker (for running Postgres + the extension locally during development). For production deploys you also use the same image.
+`pg-web up` pulls the image automatically the first time. You only need Docker. For production you use the same image.
 
 ## Create a project
 

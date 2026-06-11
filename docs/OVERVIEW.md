@@ -169,20 +169,20 @@ Feature matrix in `docs/TESTING.md` tracks which deliverables are demo-covered.
 ## Try it — the Docker path (after `cargo install pg-web`)
 
 ```bash
-# 1. Ensure the runtime image exists (one-time cold build ~5-10 min, or `docker pull pgweb/postgres:latest` once published)
-bash scripts/build-image.sh   # from a pg-web checkout
-
-# 2. Scaffold + boot (the CLI is now `pg-web` on your PATH)
+# 1. Scaffold + boot (the CLI is now `pg-web` on your PATH)
 cd /tmp
 pg-web init demo-app
 cd demo-app
+
+# `pg-web up` pulls the official published image (`pgweb/postgres:latest`)
+# from Docker Hub on first use. No source repo or local build needed.
 pg-web up                     # starts the pgweb/postgres + caddy stack, prints DATABASE_URL
 
-# 3. Schema + code
+# 2. Schema + code
 pg-web migrate apply
 pg-web push
 
-# 4. Hit it
+# 3. Hit it
 curl http://localhost:8080/
 ```
 
