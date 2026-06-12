@@ -161,11 +161,16 @@ enum EnvAction {
         dir: PathBuf,
     },
     /// Print all keys and values from `pgweb.settings` as `KEY=VALUE` lines.
+    /// Values are masked by default (security). Use --show-values to emit
+    /// the real contents (e.g. when scripting against a trusted local DB).
     List {
         #[arg(long, env = "DATABASE_URL")]
         url: Option<String>,
         #[arg(long, default_value = ".")]
         dir: PathBuf,
+        /// Print the actual secret/setting values instead of masking them.
+        #[arg(long)]
+        show_values: bool,
     },
 }
 
@@ -251,6 +256,9 @@ fn run() -> Result<ExitCode> {
             if let Some(env) = &summary.env_synced {
                 println!("{tag}  env → {env} (synced from pgweb.toml → pgweb.settings)");
             }
+            if let Some(rt) = &summary.request_timeout_synced {
+                println!("{tag}  request_timeout → {rt} (synced from pgweb.toml → pgweb.settings)");
+            }
             if summary.dry_run {
                 println!("[dry-run] transaction rolled back — no changes committed");
             }
@@ -322,11 +330,22 @@ fn run() -> Result<ExitCode> {
                     println!("— {key} not set (no-op)");
                 }
             }
-            EnvAction::List { url, dir } => {
+            EnvAction::List { url, dir, show_values } => {
                 let url = resolve_url(url, &dir)?;
                 let entries = pg_web_cli::env::list(&url)?;
                 for e in entries {
-                    println!("{}={}", e.key, e.value);
+                    if show_values {
+                        println!("{}={}", e.key, e.value);
+                    } else {
+                        // Mask like many CLIs (show a short prefix for debugging
+                        // which key it is without exfiltrating the secret).
+                        let masked = if e.value.len() <= 4 {
+                            "****".to_string()
+                        } else {
+                            format!("{}****", &e.value[..4.min(e.value.len())])
+                        };
+                        println!("{}={}", e.key, masked);
+                    }
                 }
             }
         },

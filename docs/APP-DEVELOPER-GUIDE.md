@@ -394,7 +394,7 @@ pg-web env list
 pg-web env unset STRIPE_KEY
 ```
 
-Handlers read with `pgweb.setting(key)`:
+Handlers read non-sensitive values (feature flags, the `env` marker, etc.) with `pgweb.setting(key)`:
 
 ```sql
 CREATE OR REPLACE FUNCTION pgweb.pages__checkout__post(req json) RETURNS json AS $$
@@ -407,11 +407,19 @@ CREATE OR REPLACE FUNCTION pgweb.pages__checkout__post(req json) RETURNS json AS
 $$ LANGUAGE sql;
 ```
 
-`pgweb.setting(key)` is `STABLE STRICT PARALLEL SAFE` and returns NULL on miss — `COALESCE(pgweb.setting('FOO'), 'default')` is the idiomatic way to provide a fallback.
+For credentials and other sensitive values, prefer the stricter `pgweb.secret(key)` (prompt 014). It reads from a separate `pgweb.secrets` table that the serving role cannot `SELECT` directly; access is only through a `SECURITY DEFINER` wrapper. Both helpers return NULL on miss and are safe to `COALESCE`.
 
-**Reserved keys.** The `env` key is synced from `pgweb.toml [server].env` on every `pg-web push`, so `pg-web env set env=…` is rejected at the CLI — edit the toml and re-push instead. Everything else is free-form.
+```sql
+SELECT pgweb.secret('STRIPE_SECRET_KEY');
+```
 
-**What this is not.** The CLI writes values in cleartext; encrypted secrets / KMS integration are Phase 2. Don't store anything the DB admin shouldn't be able to `SELECT`. For TLS-at-rest, use a PG instance with disk encryption; for TLS-in-transit, use `sslmode=require` on the connection URL.
+`pgweb.setting(key)` and `pgweb.secret(key)` are `STABLE STRICT PARALLEL SAFE`.
+
+**Reserved / synced keys.** The `env` key (and `request_timeout`) are managed by `pg-web push` from `pgweb.toml`; `pg-web env set env=…` is rejected. `request_timeout` (default "15s") sets the per-request `statement_timeout` bound — see "Reliability & DoS controls" below.
+
+**CLI surface & masking.** `pg-web env set` echoes only the key (never the value). `pg-web env list` masks values by default; pass `--show-values` when you need to see the real contents (local trusted DBs only). The table contents are still readable by the DB admin role.
+
+**What this is not.** Values are stored in cleartext inside the database. True encryption-at-rest / KMS is a later-phase item. Don't put anything in `pgweb.settings` or `pgweb.secrets` that the DB admin (or anyone with a privileged `DATABASE_URL`) shouldn't be able to read. For at-rest encryption of the whole cluster, use filesystem-level disk encryption on the Postgres host.
 
 ## Browser live-reload under `pg-web dev`
 

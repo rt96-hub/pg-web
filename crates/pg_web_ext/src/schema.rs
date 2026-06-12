@@ -14,6 +14,65 @@ extension_sql!(
     r#"
 CREATE SCHEMA IF NOT EXISTS pgweb;
 
+-- Execution-role floor for the HTTP serving path (prompt 014).
+-- The background worker connects as this role (see worker.rs).
+-- NOSUPERUSER + NOBYPASSRLS are load-bearing for Phase 2 RLS and for
+-- containing handler mistakes / limited injection.
+--
+-- NOLOGIN: no client (psql/libpq) session can ever authenticate as this
+-- role, under any pg_hba method (even trust/peer — InitializeSessionUserId
+-- rejects NOLOGIN roles for regular backends unconditionally). The
+-- background worker still adopts it because worker.rs initializes its
+-- connection with BGWORKER_BYPASS_ROLELOGINCHECK. That flag was added in
+-- PG 17 (absent from the PG 15/16 headers), so on those majors a NOLOGIN
+-- serving role makes the worker FATAL at connect ("role ... is not
+-- permitted to log in") and crash-loop. Accepted: per the 2026-06-12
+-- version-gate decision only the bundled image major (PG 17) must be
+-- correct at runtime; pg15/pg16 need only compile.
+--
+-- The ELSE branch re-converges attributes on every CREATE EXTENSION so a
+-- role left behind by an older install self-heals on reinstall/upgrade
+-- (including the short-lived interim "LOGIN + CONNECTION LIMIT 0" form of
+-- this block — CONNECTION LIMIT -1 below explicitly resets that variant's
+-- limit; it is meaningless under NOLOGIN but keeps pg_roles tidy).
+-- Role is cluster-global (not tied to one DB). DROP EXTENSION does not
+-- remove it; drop manually with DROP ROLE if you truly want it gone.
+DO $do$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgweb_app') THEN
+    CREATE ROLE pgweb_app
+      NOLOGIN
+      NOSUPERUSER
+      NOBYPASSRLS
+      NOCREATEDB
+      NOCREATEROLE;
+  ELSE
+    ALTER ROLE pgweb_app
+      NOLOGIN
+      NOSUPERUSER
+      NOBYPASSRLS
+      NOCREATEDB
+      NOCREATEROLE
+      CONNECTION LIMIT -1;
+  END IF;
+END
+$do$;
+
+-- Auto-grant on user objects in public so the common case (Docker image
+-- + scaffold where the same privileged role runs migrations + CREATE
+-- EXTENSION) "just works". Stricter sites manage grants by hand or via
+-- their own migration step after creating tables under a different owner.
+-- These ALTER DEFAULT PRIVILEGES affect objects created by the role that
+-- executed this block (typically the DB owner / postgres in the image).
+DO $do$
+BEGIN
+  ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO pgweb_app;
+  ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO pgweb_app;
+END
+$do$;
+
 CREATE TABLE pgweb.routes (
     path_pattern  TEXT NOT NULL,
     method        TEXT NOT NULL DEFAULT 'GET',
@@ -64,17 +123,48 @@ CREATE INDEX deployments_pushed_at_idx ON pgweb.deployments (pushed_at DESC);
 -- state and no separate config file lives inside the image. `pg-web push`
 -- syncs values from the user's `pgweb.toml` into this table.
 --
--- Currently recognized keys:
---   'env'  — 'development' enables rich error pages; 'production' serves
---            generic 500s. Default 'development' so a fresh extension
---            install is immediately debuggable; `pg-web push` overwrites
---            based on pgweb.toml's [server] env.
+-- Recognized keys (Phase 1 + 014):
+--   'env'             — 'development' | 'production'. Controls error page detail.
+--   'request_timeout' — interval literal for per-request SET LOCAL statement_timeout
+--                       (e.g. '15s'). Bounded handler execution; see prompt 014.
+--
+-- Secrets (API keys etc.) are encouraged to live in the sibling `pgweb.secrets`
+-- table and be read via the `pgweb.secret(key)` SECURITY DEFINER helper rather
+-- than pgweb.settings + pgweb.setting(). The serving role has SELECT on this
+-- table (for env + flags) but no table-level access to pgweb.secrets.
 CREATE TABLE pgweb.settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 
 INSERT INTO pgweb.settings (key, value) VALUES ('env', 'development');
+
+-- Per-request statement timeout (prompt 014). SET LOCAL inside the single
+-- SPI transaction that serves each HTTP request; the intent is to convert
+-- an unbounded pg_sleep / lock / runaway query into a 500 (SQLSTATE 57014)
+-- instead of wedging the entire single-threaded worker.
+-- KNOWN GAP (2026-06-12): setting the GUC from background-worker SPI does
+-- not arm the timer (Postgres arms statement_timeout only in the regular-
+-- backend command loop), so the bound is not yet effective; see
+-- docs/THREAT-MODEL.md "Unbounded execution" for the verified evidence and
+-- the required in-worker arming follow-up.
+-- Value is a Postgres interval literal, e.g. '15s', '30s', '5min'.
+-- Default chosen as "long enough for a slow report, short enough to bound
+-- an outage." Long-poll / SSE endpoints (/_pgweb/livereload and future
+-- Phase-2 subscribe) are served by dedicated Axum handlers outside
+-- router::serve, so they are exempt by construction.
+INSERT INTO pgweb.settings (key, value) VALUES ('request_timeout', '15s')
+ON CONFLICT (key) DO NOTHING;
+
+-- Secrets table (prompt 014). Separate from pgweb.settings so that the
+-- serving role can be granted SELECT on the latter (for 'env', feature
+-- flags, pgweb.setting()) without automatically getting every credential.
+-- Populated by operators (INSERT or future dedicated CLI); read only via
+-- the SECURITY DEFINER pgweb.secret() wrapper.
+CREATE TABLE pgweb.secrets (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 
 -- Static assets served from the `public/` tree. BYTEA-backed, capped at
 -- 20 MiB per file by a CHECK constraint so a runaway file doesn't wedge
@@ -223,6 +313,33 @@ $$;
 COMMENT ON FUNCTION pgweb.setting(TEXT) IS
     'Look up a key in pgweb.settings. Returns NULL on miss or NULL input. Set values via `pg-web env set KEY=VALUE`.';
 
+-- SECURITY DEFINER secret accessor (prompt 014). The serving role
+-- (pgweb_app) is granted EXECUTE on this function but has no SELECT
+-- privilege on pgweb.secrets. The function body runs with definer rights
+-- (the privileged role that performed CREATE EXTENSION), performing the
+-- lookup while the caller remains least-privilege. This is the intended
+-- surface for API keys, webhook secrets, etc.
+--
+-- Use from handlers:
+--   SELECT pgweb.secret('STRIPE_SECRET_KEY')
+-- or with fallback:
+--   COALESCE(pgweb.secret('FOO'), pgweb.setting('FOO_FALLBACK'))
+--
+-- For non-sensitive runtime flags prefer pgweb.setting() (it reads the
+-- readable pgweb.settings table, which the serving role may SELECT).
+-- 'env' and other push-synced keys stay in settings.
+CREATE FUNCTION pgweb.secret(p_key TEXT) RETURNS TEXT
+LANGUAGE sql STABLE STRICT PARALLEL SAFE SECURITY DEFINER
+SET search_path = pgweb, pg_temp
+AS $$
+    SELECT value FROM pgweb.secrets WHERE key = p_key
+$$;
+
+COMMENT ON FUNCTION pgweb.secret(TEXT) IS
+    'Look up a secret by key via a SECURITY DEFINER wrapper over pgweb.secrets (serving role has no direct table access). Returns NULL on miss. Use for credentials; non-sensitive values can stay in pgweb.settings + pgweb.setting().';
+
+GRANT EXECUTE ON FUNCTION pgweb.secret(TEXT) TO pgweb_app;
+
 -- Response contract v2 (prompt 013): status, headers, cookies, redirects, explicit
 -- content-type from handlers. Backward-compatible: a handler return value that
 -- does not contain a top-level "$pgweb" key is treated exactly as before (bare
@@ -323,6 +440,31 @@ $fn$;
 
 COMMENT ON FUNCTION pgweb.json(JSONB, INT, JSONB, JSONB) IS
     'Return a JSON payload with explicit Content-Type: application/json (and optional status/headers/cookies). The payload is serialized into the envelope body.';
+
+-- Serving role (pgweb_app) grants. These must come *after* all CREATE TABLE
+-- and CREATE FUNCTION statements in this bootstrap block so the objects
+-- exist when GRANT runs. This is the minimal set the request path needs
+-- (SELECT on catalog, EXECUTE on helpers and the dispatch wrapper). The
+-- user pages__* handlers are created later by `pg-web push` (admin role)
+-- and also need EXECUTE granted (done via ALTER DEFAULT or explicit in
+-- push if necessary; the role creation + public defaults cover the common case).
+GRANT USAGE ON SCHEMA pgweb TO pgweb_app;
+GRANT SELECT ON
+    pgweb.routes,
+    pgweb.templates,
+    pgweb.assets,
+    pgweb.settings
+  TO pgweb_app;
+-- (pgweb.sessions etc. will follow the same pattern in Phase 2.)
+
+GRANT EXECUTE ON FUNCTION pgweb._framework_call_handler(TEXT, JSON) TO pgweb_app;
+GRANT EXECUTE ON FUNCTION pgweb.html_escape(TEXT) TO pgweb_app;
+GRANT EXECUTE ON FUNCTION pgweb.setting(TEXT) TO pgweb_app;
+GRANT EXECUTE ON FUNCTION pgweb.secret(TEXT) TO pgweb_app;
+GRANT EXECUTE ON FUNCTION pgweb.respond(TEXT, INT, JSONB, TEXT, JSONB) TO pgweb_app;
+GRANT EXECUTE ON FUNCTION pgweb.set_cookie(TEXT, TEXT, JSONB) TO pgweb_app;
+GRANT EXECUTE ON FUNCTION pgweb.redirect(TEXT, INT, JSONB) TO pgweb_app;
+GRANT EXECUTE ON FUNCTION pgweb.json(JSONB, INT, JSONB, JSONB) TO pgweb_app;
 
 COMMENT ON SCHEMA pgweb IS 'pg-web framework tables. Managed by the extension and CLI; do not modify directly.';
 "#,

@@ -11,7 +11,9 @@ CREATE OR REPLACE FUNCTION pgweb.pages__status__index(req json) RETURNS json AS 
     jsonb_build_object(
       'status', 'ok',
       'time',   now(),
-      'note',   'response contract v2 demo'
+      'note',   'response contract v2 + 014 floor demo',
+      'current_user', current_user,
+      'request_timeout', pgweb.setting('request_timeout')
     )
   )
 $$ LANGUAGE sql STABLE;

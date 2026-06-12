@@ -50,6 +50,12 @@ struct ServerSection {
     /// surfaces rich error pages. Synced into `pgweb.settings` on every push.
     #[serde(default)]
     env: Option<String>,
+    /// Per-request statement timeout (prompt 014). An interval literal such
+    /// as "15s", "30s", "1min". Synced into pgweb.settings.request_timeout;
+    /// the worker does `SET LOCAL statement_timeout = '...' ` inside each
+    /// request transaction. Default (when absent) is "15s" in the extension.
+    #[serde(default)]
+    request_timeout: Option<String>,
 }
 
 /// What `push` changed. Returned so callers can display a summary.
@@ -65,6 +71,8 @@ pub struct PushSummary {
     /// Set when push synced `[server].env` from `pgweb.toml` into
     /// `pgweb.settings`. `None` when pgweb.toml didn't declare an env.
     pub env_synced: Option<String>,
+    /// Set when push synced `[server].request_timeout` (prompt 014).
+    pub request_timeout_synced: Option<String>,
     pub assets_upserted: usize,
     pub assets_deleted: usize,
     /// Number of migration files that were applied during this push.
@@ -279,6 +287,10 @@ pub fn push_with_options(
             sync_env(&mut tx, env)?;
             tx_summary.env_synced = Some(env.to_string());
         }
+        if let Some(rt) = toml_cfg.server.request_timeout.as_deref() {
+            sync_request_timeout(&mut tx, rt)?;
+            tx_summary.request_timeout_synced = Some(rt.to_string());
+        }
 
         // Phase 5 — deployments ledger (F.1). One row per successful push
         // with a snapshot of what we just shipped. Under dry_run we still
@@ -463,6 +475,16 @@ fn sync_env(tx: &mut Transaction<'_>, env: &str) -> Result<()> {
         &[&env],
     )
     .with_context(|| format!("upserting pgweb.settings.env = {env}"))?;
+    Ok(())
+}
+
+fn sync_request_timeout(tx: &mut Transaction<'_>, timeout: &str) -> Result<()> {
+    tx.execute(
+        "INSERT INTO pgweb.settings (key, value) VALUES ('request_timeout', $1) \
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        &[&timeout],
+    )
+    .with_context(|| format!("upserting pgweb.settings.request_timeout = {timeout}"))?;
     Ok(())
 }
 

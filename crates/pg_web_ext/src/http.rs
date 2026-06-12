@@ -78,6 +78,11 @@ pub fn app(listen_router: Arc<ListenRouter>) -> Router {
     // still be defined without colliding with livereload internals.
     // SSE carries the ListenRouter as axum state; the JS stub is
     // a static response and doesn't need state.
+    //
+    // These routes (and future Phase-2 subscribe/*) are deliberately *not*
+    // routed through router::serve / BackgroundWorker::transaction, so the
+    // per-request statement_timeout (014) never applies to them. Long-lived
+    // SSE streams must survive far past any 15s (or configured) window.
     let livereload_routes = Router::new()
         .route("/_pgweb/livereload", get(livereload::serve_livereload_sse))
         .with_state(listen_router);

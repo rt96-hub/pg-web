@@ -3,6 +3,7 @@
 [server]
 port = 8080
 env  = "development"
+# request_timeout = "15s"   # prompt 014 — per-request bound (default if omitted)
 
 [database]
 url_env = "DATABASE_URL"

@@ -148,27 +148,20 @@ User application tables live in `public` (or wherever the developer declares the
 - **Files ≥ 1 MiB** (images, fonts, video): stored in Postgres's native `pg_largeobject` system. Streamed out via SPI `lo_open` / `lo_read` so memory usage stays bounded regardless of file size.
 - Cutoff configurable in `pgweb.toml` under `[assets] large_cutoff_bytes`. Default 1048576.
 
-### Secrets management
+### Secrets management (updated by prompt 014)
 
-Never stored in `.env` files on production hosts. Developers inject them as custom Postgres GUCs:
+Runtime configuration and non-sensitive values live in the `pgweb.settings` table (key/value, managed by the CLI `pg-web env set/unset/list` and by `pg-web push` for the `env` key). Handlers read them with the `pgweb.setting(key)` helper (STABLE STRICT PARALLEL SAFE, NULL on miss).
 
-```
-pg-web env set STRIPE_SECRET_KEY=sk_live_...
-```
+Sensitive values (API keys, etc.) should use the stricter `pgweb.secrets` table + `pgweb.secret(key)` accessor:
 
-Which invokes:
+- `pgweb.secrets` is a separate table with no table-level SELECT/INSERT/etc. granted to the serving role.
+- `pgweb.secret(p_key)` is a `SECURITY DEFINER` SQL function (owned by the extension installer role) that does the lookup and is granted EXECUTE to the serving role. It runs with definer rights, so the read succeeds while the caller stays least-privilege.
+- `pg-web env` commands continue to target `pgweb.settings` (for flags like `env` and for backward compatibility). True secret isolation uses direct SQL against `pgweb.secrets` or a future dedicated CLI surface.
+- `pg-web env list` masks values by default (`--show-values` to emit real contents). `env set` already echoes only the key.
 
-```sql
-ALTER DATABASE myapp SET pgweb.STRIPE_SECRET_KEY = 'sk_live_...';
-```
+Neither mechanism is encrypted at rest (acknowledged trade-off, consistent with prior docs). The role floor (see below) + the secrets accessor are the primary blast-radius reductions. `pg_dump` exclusion and KMS-backed storage are later items.
 
-SQL handlers read them via:
-
-```sql
-SELECT current_setting('pgweb.STRIPE_SECRET_KEY');
-```
-
-GUCs live in Postgres's configuration memory. Cleared on server restart unless set at ALTER DATABASE / ALTER ROLE level. Not encrypted at rest (acknowledged trade-off — they're accessible to anyone with `pg_read_all_settings`, which in practice means anyone with DB access).
+The old "GUC via ALTER DATABASE" description in earlier versions of this document was aspirational and was never the implemented path; the table + `pgweb.setting()` (and now `pgweb.secret()`) has always been the concrete mechanism.
 
 ### HTMX form validation
 

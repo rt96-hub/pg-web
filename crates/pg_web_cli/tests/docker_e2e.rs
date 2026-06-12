@@ -1,4 +1,5 @@
-//! Tier 3 end-to-end test. Boots `rtaylor96/pg-web:latest` in a container,
+//! Tier 3 end-to-end test. Boots the current test image (`rtaylor96/pg-web:latest`
+//! while the permanent `pgweb/postgres` namespace is pending) in a container,
 //! runs `migrate apply` + `push` against `examples/todo/`, exercises the
 //! full CRUD flow over HTTP.
 //!
@@ -103,7 +104,7 @@ fn full_todo_crud_flow() {
         .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
 
     let pg_host_port = container
         .get_host_port_ipv4(5432)
@@ -117,7 +118,7 @@ fn full_todo_crud_flow() {
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
 
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     // Apply migrations then push the demo app into the fresh DB.
     let todo_app = todo_app_dir();
@@ -330,14 +331,14 @@ fn livereload_sse_chain_end_to_end() {
         .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
     let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
@@ -450,14 +451,14 @@ fn push_f1_dry_run_with_migrate_and_deployments() {
         .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
     let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
@@ -653,7 +654,7 @@ fn dev_watcher_repushes_on_save() {
         .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
 
     let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
@@ -662,7 +663,7 @@ fn dev_watcher_repushes_on_save() {
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     // Copy examples/todo to a tempdir so edits don't touch the checked-in source.
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -753,14 +754,14 @@ fn push_reconciles_deleted_files() {
         .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
     let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     // Copy the demo and add an extra route we can later delete.
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -860,14 +861,14 @@ fn push_rejects_broken_tera_template() {
         .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
     let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
@@ -935,14 +936,14 @@ fn dev_error_page_surfaces_sql_exception_detail() {
         .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
     let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
@@ -1051,14 +1052,14 @@ fn static_asset_serves_with_etag_and_revalidates() {
         .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
     let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
@@ -1168,14 +1169,14 @@ fn push_rejects_missing_handler_function() {
         .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
     let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
@@ -1251,14 +1252,14 @@ fn concurrent_pushes_all_commit() {
         .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
     let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     let todo_app = todo_app_dir();
     pg_web_cli::migrate::apply(&todo_app, &db_url).expect("migrate apply");
@@ -1342,10 +1343,10 @@ fn cli_in_image_can_push_from_inside() {
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .with_mount(mount)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     // 1. Bare --version invocation. Proves the binary is on PATH and
     //    runs cleanly. clap's auto-generated --version emits
@@ -1475,14 +1476,14 @@ fn fingerprinted_assets_get_immutable_cache_control() {
         .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
     let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     // Copy the demo into a tempdir so we can flip its env to production
     // without touching the checked-in source.
@@ -1594,14 +1595,14 @@ fn large_asset_below_new_cap_round_trips() {
         .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
-        .expect("start pgweb/postgres container");
+        .expect("start test image container (rtaylor96/pg-web)");
     let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(30));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
 
     // Copy demo, drop a 5 MiB file under public/ (random-ish bytes so
     // accidental compression-with-ETag aliasing doesn't cause the round

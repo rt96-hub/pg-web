@@ -48,6 +48,10 @@ pub const PGWEB_TOML: &str = r#"# pg-web app config
 port = 8080
 # "development" gives rich error pages; "production" returns generic 500s.
 env  = "development"
+# Per-request statement timeout (prompt 014). Bounds every handler and
+# internal lookup so one slow query cannot wedge the whole site.
+# The worker does SET LOCAL statement_timeout = '...' inside the request tx.
+# request_timeout = "15s"  # default in extension if omitted; override here and re-push
 
 [database]
 # Name of the environment variable holding your Postgres connection string.

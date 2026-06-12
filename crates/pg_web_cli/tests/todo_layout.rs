@@ -29,6 +29,8 @@ fn todo_pages_scans_cleanly() {
             // _404 stem becomes method='404' with path_pattern='/'.
             ("404".to_string(), "/".to_string()),
             ("GET".to_string(), "/".to_string()),
+            // 014 companion coverage: debug route for timeout/role floor (raw-text).
+            ("GET".to_string(), "/debug/timeout".to_string()),
             // Response contract v2 demo routes (013 companion coverage).
             ("GET".to_string(), "/seeother".to_string()),
             ("GET".to_string(), "/status".to_string()),
@@ -67,6 +69,8 @@ fn todo_pages_modes_are_as_documented() {
     // 013 v2 demos: raw-text (sql only, envelope-capable via RETURNS json).
     assert!(by_key("GET", "/seeother").is_raw_text());
     assert!(by_key("GET", "/status").is_raw_text());
+    // 014: debug timeout route (companion coverage for floor + statement_timeout).
+    assert!(by_key("GET", "/debug/timeout").is_raw_text());
 }
 
 #[test]
@@ -85,6 +89,8 @@ fn todo_handler_names_match_spec() {
             // 013 response contract v2 demo routes (raw text + envelope helpers).
             ("GET", "/seeother") => "pgweb.pages__seeother__index",
             ("GET", "/status") => "pgweb.pages__status__index",
+            // 014 companion: debug route for role floor + timeout (raw text).
+            ("GET", "/debug/timeout") => "pgweb.pages__debug__timeout__index",
             other => panic!("unexpected route {other:?}"),
         };
         assert_eq!(

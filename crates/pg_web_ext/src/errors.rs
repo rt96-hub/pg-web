@@ -89,6 +89,17 @@ pub enum ServeError {
         pattern: String,
         reason: String,
     },
+    /// Handler (or an internal lookup inside the request transaction)
+    /// was canceled by Postgres because it exceeded the per-request
+    /// `statement_timeout` (prompt 014). SQLSTATE 57014 (query_canceled).
+    /// Distinct from a generic HandlerSqlException so logs + dev page
+    /// can say "request_timeout exceeded" instead of a raw 57014.
+    RequestTimeout {
+        handler_name: String,
+        /// The timeout value that was in effect (e.g. "15s").
+        timeout: String,
+        route: String,
+    },
     /// Escape hatch for anything not yet classified. Every `Other` is a
     /// hint that we should extend the catalog.
     Other {
@@ -109,6 +120,7 @@ impl ServeError {
             Self::TemplateParseError { .. } => "PGWEB_E006_TEMPLATE_PARSE",
             Self::TemplateRenderError { .. } => "PGWEB_E007_TEMPLATE_RENDER",
             Self::RoutePatternMalformed { .. } => "PGWEB_E008_ROUTE_PATTERN_MALFORMED",
+            Self::RequestTimeout { .. } => "PGWEB_E009_REQUEST_TIMEOUT",
             Self::Other { .. } => "PGWEB_E999_OTHER",
         }
     }
@@ -124,6 +136,7 @@ impl ServeError {
             Self::TemplateParseError { .. } => "Template failed to parse",
             Self::TemplateRenderError { .. } => "Template failed to render",
             Self::RoutePatternMalformed { .. } => "Route pattern malformed",
+            Self::RequestTimeout { .. } => "Handler exceeded request_timeout",
             Self::Other { .. } => "Unclassified error",
         }
     }
@@ -177,6 +190,13 @@ impl ServeError {
                  (`:name` captures only). Re-running `pg-web push` from a clean checkout \
                  normally fixes this. If you edited `pgweb.routes` by hand, revert the bad row."
             }
+            Self::RequestTimeout { .. } => {
+                "The handler (or a lookup it triggered) ran longer than the configured \
+                 request_timeout (from pgweb.toml [server].request_timeout, stored in \
+                 pgweb.settings). Increase the value if the work is legitimately slow, or \
+                 move long work to a Phase-3 job queue. A slow handler no longer wedges the \
+                 whole site."
+            }
             Self::Other { .. } => {
                 "This error doesn't have a typed catalog entry yet. If you're seeing it often, \
                  consider opening an issue with the request context so we can classify it."
@@ -229,6 +249,17 @@ impl ServeError {
             Self::RoutePatternMalformed { pattern, reason } => {
                 format!("{}: '{pattern}' — {reason}", self.code())
             }
+            Self::RequestTimeout {
+                handler_name,
+                timeout,
+                route,
+            } => format!(
+                "{}: {} (timeout {}) on {}",
+                self.code(),
+                handler_name,
+                timeout,
+                route
+            ),
             Self::Other { message } => format!("{}: {message}", self.code()),
         }
     }
@@ -383,6 +414,15 @@ pre {{ background: #111; color: #ddd; padding: 0.85rem 1rem; border-radius: 3px;
             Self::RoutePatternMalformed { pattern, .. } => {
                 vec![("pattern", pattern.clone())]
             }
+            Self::RequestTimeout {
+                handler_name,
+                timeout,
+                route,
+            } => vec![
+                ("handler", handler_name.clone()),
+                ("timeout", timeout.clone()),
+                ("route", route.clone()),
+            ],
             Self::Other { .. } => Vec::new(),
         }
     }
@@ -416,6 +456,11 @@ pre {{ background: #111; color: #ddd; padding: 0.85rem 1rem; border-radius: 3px;
             Self::TemplateParseError { message, .. } => message.clone(),
             Self::TemplateRenderError { message, .. } => message.clone(),
             Self::RoutePatternMalformed { reason, .. } => reason.clone(),
+            Self::RequestTimeout {
+                handler_name,
+                timeout,
+                ..
+            } => format!("handler {} exceeded request_timeout={}", handler_name, timeout),
             Self::Other { message } => message.clone(),
         }
     }

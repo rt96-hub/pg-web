@@ -42,6 +42,21 @@ pub fn current_env() -> Env {
     }
 }
 
+/// Per-request statement timeout (prompt 014). Read from pgweb.settings
+/// (synced from pgweb.toml [server].request_timeout by push). Returns the
+/// literal to feed to `SET LOCAL statement_timeout = '...'`.
+///
+/// Any error or missing row → None (caller falls back to '15s').
+/// The value is an interval literal acceptable to Postgres ('15s', '30s', '1min', ...).
+pub fn current_request_timeout() -> Option<String> {
+    match Spi::get_one::<String>(
+        "SELECT value FROM pgweb.settings WHERE key = 'request_timeout' LIMIT 1",
+    ) {
+        Ok(Some(v)) if !v.trim().is_empty() => Some(v),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,41 @@
+-- GET /debug/timeout — companion flow for prompt 014 (execution role + statement_timeout).
+--
+-- This route exists so the "every feature ships with a companion-app flow" rule
+-- (CLAUDE.md) is satisfied for the per-request timeout hardening.
+--
+-- Intended behavior under default request_timeout=15s (or whatever is in
+-- pgweb.settings):
+--   - The handler calls pg_sleep(30).
+--   - The worker has done SET LOCAL statement_timeout = '...' before dispatch.
+--   - Postgres cancels with SQLSTATE 57014 (query_canceled).
+--   - router::classify_handler_error maps it to ServeError::RequestTimeout.
+--   - You get a clean 500 (dev page says "Handler exceeded request_timeout").
+--   - Other concurrent requests continue to be served (the single-threaded
+--     worker is no longer wedged forever).
+--
+-- CURRENT STATUS (2026-06-12, KNOWN GAP): the cancel does not fire yet —
+-- statement_timeout is armed only by the regular-backend command loop, which
+-- background-worker SPI never enters, so today this route blocks the worker
+-- for the full 30s and then returns 200 with the text below. It remains the
+-- manual probe for the gap: once in-worker timer arming lands (see
+-- docs/THREAT-MODEL.md "Unbounded execution"), curl here must start
+-- returning the 500 described above.
+--
+-- The route is intentionally under /debug/ and not linked from the main UI
+-- so normal users of the todo demo are not surprised by 500s.
+--
+-- To exercise manually (after `pg-web push`):
+--   curl -i http://localhost:8080/debug/timeout
+--   # expect 500 + "request_timeout exceeded" in logs / dev page
+--
+-- To make it succeed, temporarily set a longer timeout:
+--   edit pgweb.toml: request_timeout = "60s"
+--   pg-web push
+--   (then curl again; it will "succeed" after 30s of sleep and return the text)
+--
+-- This also proves the serving role (pgweb_app) can execute the handler at all
+-- (the floor did not accidentally revoke EXECUTE on user pages__* functions).
+
+CREATE OR REPLACE FUNCTION pgweb.pages__debug__timeout__index(req json) RETURNS text AS $$
+  SELECT 'you only see this if your request_timeout was >30s' FROM pg_sleep(30);
+$$ LANGUAGE sql;
