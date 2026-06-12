@@ -641,6 +641,9 @@ mod tests {
         write(&pages, "todos/post.sql", "insert");
         write(&pages, "todos/toggle/post.sql", "update");
         write(&pages, "todos/delete/post.sql", "delete");
+        // v2 response contract demo routes (prompt 013 companion coverage)
+        write(&pages, "status/index.sql", "json api via pgweb.json");
+        write(&pages, "see-other/index.sql", "redirect via pgweb.redirect");
         let got = scan(&pages).unwrap();
         let summary: Vec<(&str, &str, bool, bool)> = got
             .iter()
@@ -657,6 +660,8 @@ mod tests {
             summary,
             vec![
                 ("GET", "/", true, true),
+                ("GET", "/see-other", false, true),
+                ("GET", "/status", false, true),
                 ("POST", "/todos", true, true),
                 ("POST", "/todos/delete", false, true),
                 ("POST", "/todos/toggle", false, true),

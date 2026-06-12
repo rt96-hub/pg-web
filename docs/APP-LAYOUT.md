@@ -16,7 +16,7 @@ Which half you ship determines the pipeline:
 |------------------------|--------------------------------------------------------------|------------------------------------------|
 | `.html` only           | Render template with empty context `{}`. No SPI call.        | Static marketing / about / contact pages |
 | `.html` + `.sql`       | Handler returns `json` → Tera renders template with it.      | Most pages; auto-escape safe by default  |
-| `.sql` only            | Handler returns `text` → router sends bytes as-is.           | HTMX fragments; JSON APIs; no-content    |
+| `.sql` only            | Handler returns `text` (verbatim) *or* a response envelope → router applies status/headers/cookies/ct + body. | HTMX fragments; JSON APIs; redirects; no-content |
 
 ## Phase 1 method filenames
 
@@ -165,16 +165,23 @@ Every handler receives the same shape:
 
 `body`, `query`, and `path_params` are always objects — never `null`. `req->'body'->>'title'`, `req->'path_params'->>'id'`, etc. are always safe to write; they return NULL for missing keys.
 
-### Return type → pipeline dispatch
+### Return type → pipeline dispatch (v1 + response contract v2)
 
-The router picks the pipeline from the route row's `template_path` (populated by `push` based on filesystem):
+The router picks the pipeline from the route row's `template_path`:
 
-| `template_path` column | Handler must return | Router sends            |
-|------------------------|---------------------|-------------------------|
-| non-NULL               | `json`              | Tera(template, context) |
-| NULL                   | `text`              | handler's text verbatim |
+| `template_path` column | Handler declared return          | Router behavior |
+|------------------------|----------------------------------|-----------------|
+| non-NULL (template)    | `json` (envelope or bare context)| Tera render (or literal body if envelope supplies one) + envelope attrs |
+| NULL (raw)             | `text` (verbatim body)           | bytes as-is + envelope attrs if present |
+| NULL (raw)             | `json` (envelope or plain JSON)  | envelope (status/ct/headers/cookies) or verbatim JSON text |
 
-`pg-web push` verifies that handler return types match the filesystem mode before committing the transaction. Mismatches are loud errors, not silent coercion.
+`pg-web push` accepts:
+- template routes: only `RETURNS json`
+- raw routes: `RETURNS text` **or** `RETURNS json` (the latter enables envelopes / `pgweb.json` etc.)
+
+The router detects the v2 envelope at runtime by the presence of a top-level `"$pgweb"` key in the returned JSON. No marker = legacy byte-for-byte behavior.
+
+See the four helpers below.
 
 ### Handler examples
 
@@ -209,13 +216,46 @@ CREATE OR REPLACE FUNCTION pgweb.pages__todos__toggle__post(req json) RETURNS te
 $$ LANGUAGE sql;
 ```
 
+### Response contract v2 (status, headers, cookies, redirects, content-type)
+
+A handler may optionally return a JSON *envelope* instead of a bare body. The envelope is recognized by its reserved top-level key `"$pgweb"`. All legacy handlers (no such key) continue to work identically.
+
+Ergonomic helpers live in the `pgweb` schema (installed by the extension):
+
+```sql
+-- 303 redirect (Post-Redirect-Get)
+SELECT pgweb.redirect('/todos');
+
+-- JSON API with correct content type (raw-text route)
+SELECT pgweb.json(jsonb_build_object('todos', (SELECT json_agg(...) FROM todos)));
+
+-- General case + cookie (e.g. future login)
+SELECT pgweb.respond(
+  '', 303,
+  jsonb_build_object('Location', '/dashboard'),
+  NULL,
+  jsonb_build_array( pgweb.set_cookie('pgweb_session', 'abc123', '{"http_only":true,"same_site":"Lax"}') )
+);
+
+-- Set a custom header or cache hint on a rendered page (template route can still return an envelope)
+SELECT pgweb.respond( (SELECT json_build_object('todos', ...)), 200,
+  jsonb_build_object('Cache-Control', 'no-cache'),
+  NULL, '[]'::jsonb );
+```
+
+Cookie defaults (per the Phase 2 auth spec): `HttpOnly` + `SameSite=Lax` on by default; `Secure` only when `pgweb.settings.env = 'production'`. The caller can override `http_only` (required for the JS-readable CSRF double-submit cookie).
+
+See `pgweb.respond`, `pgweb.redirect`, `pgweb.json`, `pgweb.set_cookie` for signatures and more examples. The wire shape under `"$pgweb"` is an implementation detail; never construct it by hand.
+
+A template-mode route can return an envelope that both sets headers/cookies *and* renders its Tera template (put the context under the envelope's `"context"` key, or omit it and supply a literal `"body"` to bypass rendering).
+
 ## When to pick which mode
 
 - **Static content** (about, contact, marketing) → `.html` only. Zero SQL overhead, nothing to break.
 - **Any page showing DB data** → `.html` + `.sql`. Always safe by default (Tera auto-escape).
 - **HTMX fragment with dynamic values** → `.html` + `.sql`. Tera escaping protects you.
 - **HTMX fragment that's a literal string, or a delete returning nothing** → `.sql` only.
-- **JSON API endpoint** → `.sql` only, `RETURNS text` producing JSON. (First-class JSON content-type support may land in Phase 1.4.)
+- **JSON API endpoint** → `.sql` only. With response contract v2 you `RETURNS json` and call `pgweb.json(payload)` (or the general `pgweb.respond`) to get `Content-Type: application/json` + any status/headers. Bare `RETURNS text` still works (legacy verbatim, served as text/html unless you use the envelope). See handler contract below.
 
 ## What `pg-web push` writes
 

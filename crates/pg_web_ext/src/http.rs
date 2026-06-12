@@ -48,6 +48,30 @@ fn is_fingerprinted_url(url: &str) -> bool {
     hash_part.len() >= 8 && hash_part.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// Denylist for response headers that a handler may not set via the v2
+/// envelope "headers" object (prompt 013). Hop-by-hop headers are forbidden
+/// because they are connection-level and must be managed by the server.
+/// Content-Length and Content-Type are framework-computed from the envelope
+/// (content_type field) or body length. We silently drop rather than 500 so
+/// a typo in a custom header (X-My-Header) doesn't take the whole response down.
+/// Case-insensitive match on the wire name.
+fn is_disallowed_header(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    matches!(
+        n.as_str(),
+        "connection"
+            | "content-length"
+            | "content-type"
+            | "transfer-encoding"
+            | "keep-alive"
+            | "upgrade"
+            | "te"
+            | "trailer"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+    )
+}
+
 pub fn app(listen_router: Arc<ListenRouter>) -> Router {
     // Framework-reserved `/_pgweb/*` routes sit above the fallback so
     // a user's own GET /_pgweb/foo handler (unusual but legal) can
@@ -118,20 +142,61 @@ async fn handle(req: Request) -> Response {
     let req_for_dev_page = req_value.clone();
 
     match router::serve(&method, &path, req_value) {
-        ServeOutcome::Response { status, body } => {
+        ServeOutcome::Response {
+            status,
+            body,
+            content_type,
+            headers,
+            cookies,
+        } => {
             let code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
-            // Inject the livereload client into full HTML documents in
-            // dev mode. The helper is a no-op in production and on
-            // fragment responses (no </body>). Env is fetched via SPI
-            // once here per request.
             let env = BackgroundWorker::transaction(settings::current_env);
-            let body = livereload::inject_script_if_eligible(body, env);
-            (
-                code,
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                body,
-            )
-                .into_response()
+            let ct = content_type.unwrap_or_else(|| "text/html; charset=utf-8".to_string());
+
+            // Livereload injection is now content-type aware (prompt 013):
+            // only full HTML documents in dev get the script. A JSON or
+            // other envelope response never receives it, even if the body
+            // text happens to contain "</body>".
+            let body = if ct.starts_with("text/html") {
+                livereload::inject_script_if_eligible(body, env)
+            } else {
+                body
+            };
+
+            let mut resp = (code, body).into_response();
+            // Always set the (possibly envelope-provided) content type.
+            if let Ok(val) = ct.parse() {
+                resp.headers_mut().insert(header::CONTENT_TYPE, val);
+            } else {
+                // Fall back to safe default on a bad content_type from envelope.
+                resp.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    "text/html; charset=utf-8".parse().unwrap(),
+                );
+            }
+
+            // Apply additional headers from the envelope (denylisted ones
+            // are silently dropped — see is_disallowed_header).
+            for (k, v) in headers {
+                if !is_disallowed_header(&k) {
+                    if let (Ok(name), Ok(val)) = (
+                        header::HeaderName::from_bytes(k.as_bytes()),
+                        header::HeaderValue::from_str(&v),
+                    ) {
+                        resp.headers_mut().insert(name, val);
+                    }
+                }
+            }
+
+            // Cookies are emitted as multiple Set-Cookie headers (append, not insert).
+            // The values are already serialized by pgweb.set_cookie.
+            for c in cookies {
+                if let Ok(val) = header::HeaderValue::from_str(&c) {
+                    resp.headers_mut().append(header::SET_COOKIE, val);
+                }
+            }
+
+            resp
         }
         ServeOutcome::Asset {
             body,
@@ -229,6 +294,7 @@ fn status_plain(status: StatusCode, body: &'static str) -> Response {
 
 #[cfg(any(test, feature = "pg_test"))]
 mod tests {
+    #[allow(unused_imports)]
     use super::is_fingerprinted_url;
 
     #[test]

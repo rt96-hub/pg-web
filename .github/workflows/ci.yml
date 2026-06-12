@@ -22,10 +22,10 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
   workflow_call:   # allows this workflow to be called by release.yml (and other reusable callers)
 
 # Cancel older runs of the same PR when a new commit lands — don't

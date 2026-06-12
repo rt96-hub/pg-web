@@ -29,6 +29,9 @@ fn todo_pages_scans_cleanly() {
             // _404 stem becomes method='404' with path_pattern='/'.
             ("404".to_string(), "/".to_string()),
             ("GET".to_string(), "/".to_string()),
+            // Response contract v2 demo routes (013 companion coverage).
+            ("GET".to_string(), "/seeother".to_string()),
+            ("GET".to_string(), "/status".to_string()),
             // Dynamic route: [id] in the filesystem → :id in the pattern.
             ("GET".to_string(), "/todos/:id".to_string()),
             ("POST".to_string(), "/todos".to_string()),
@@ -61,6 +64,9 @@ fn todo_pages_modes_are_as_documented() {
     assert!(by_key("POST", "/todos/delete").is_raw_text());
     // _404: static mode (template only, no handler — push will synthesize).
     assert!(by_key("404", "/").is_static());
+    // 013 v2 demos: raw-text (sql only, envelope-capable via RETURNS json).
+    assert!(by_key("GET", "/seeother").is_raw_text());
+    assert!(by_key("GET", "/status").is_raw_text());
 }
 
 #[test]
@@ -76,6 +82,9 @@ fn todo_handler_names_match_spec() {
             ("POST", "/todos/toggle") => "pgweb.pages__todos__toggle__post",
             ("POST", "/todos/delete") => "pgweb.pages__todos__delete__post",
             ("404", "/") => "pgweb.pages___404",
+            // 013 response contract v2 demo routes (raw text + envelope helpers).
+            ("GET", "/seeother") => "pgweb.pages__seeother__index",
+            ("GET", "/status") => "pgweb.pages__status__index",
             other => panic!("unexpected route {other:?}"),
         };
         assert_eq!(

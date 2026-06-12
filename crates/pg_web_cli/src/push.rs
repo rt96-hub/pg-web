@@ -582,16 +582,23 @@ fn validate_handler(tx: &mut Transaction<'_>, entry: &RouteEntry) -> Result<()> 
         );
     }
 
-    let expected_rettype = if entry.template_path.is_some() {
-        "json"
+    // Response contract v2 (prompt 013) relaxation:
+    // - template route (sibling .html) → must still be RETURNS json (the envelope
+    //   or a bare context object for Tera are both valid JSON).
+    // - raw-text route (no .html) → RETURNS text (verbatim body) *or* json
+    //   (either a bare JSON string body or a "$pgweb" response envelope).
+    // The router disambiguates at runtime via the envelope marker; the CLI
+    // only checks the declared SQL return type is plausible for the mode.
+    let ok = if entry.template_path.is_some() {
+        rettype == "json"
     } else {
-        "text"
+        rettype == "json" || rettype == "text"
     };
-    if rettype != expected_rettype {
+    if !ok {
         let why = if entry.template_path.is_some() {
-            "sibling .html exists, so the JSON → Tera pipeline expects RETURNS json"
+            "sibling .html exists, so the JSON → Tera pipeline expects RETURNS json (envelope or bare context)"
         } else {
-            "no sibling .html, so raw-text mode expects RETURNS text"
+            "no sibling .html (raw-text mode): RETURNS text for verbatim body, or RETURNS json for a response envelope (pgweb.respond / redirect / json) or a plain JSON body"
         };
         bail!(
             "handler {} RETURNS {rettype} — {why}. Fix the RETURNS clause in {source}.",

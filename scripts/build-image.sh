@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the pgweb/postgres:latest Docker image from source.
+# Build the rtaylor96/pg-web:latest Docker image from source.
 #
 # ONLY NEEDED BY FRAMEWORK DEVELOPERS who are modifying pg_web_ext.
 # Normal app developers should just `cargo install pg-web` and let
@@ -14,7 +14,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-IMAGE="${PGWEB_IMAGE:-pgweb/postgres:latest}"
+IMAGE="${PGWEB_IMAGE:-rtaylor96/pg-web:latest}"
 
 echo "Building $IMAGE from $REPO_ROOT ..."
 docker build -t "$IMAGE" -f Dockerfile .

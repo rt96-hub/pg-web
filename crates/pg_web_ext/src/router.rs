@@ -44,8 +44,17 @@ use crate::templating;
 
 /// What the HTTP layer turns into a response.
 pub enum ServeOutcome {
-    /// 2xx or 4xx body with content-type text/html (page route).
-    Response { status: u16, body: String },
+    /// Dynamic response (page, fragment, JSON API, redirect, etc.).
+    /// Status may come from the handler envelope or the router (200/404).
+    /// content_type None → http.rs default "text/html; charset=utf-8".
+    /// headers/cookies populated only when a response envelope was returned.
+    Response {
+        status: u16,
+        body: String,
+        content_type: Option<String>,
+        headers: Vec<(String, String)>,
+        cookies: Vec<String>,
+    },
     /// Static asset response (CSS, JS, images, …). Bytes + content-type
     /// + ETag from `pgweb.assets`. `http.rs` owns the Cache-Control
     ///   header and the `If-None-Match` → 304 conversion.
@@ -103,6 +112,9 @@ fn serve_in_tx(method: &str, path: &str, mut req: Value) -> ServeOutcome {
         Ok(None) => ServeOutcome::Response {
             status: 404,
             body: DEFAULT_NOT_FOUND_BODY.to_string(),
+            content_type: None,
+            headers: vec![],
+            cookies: vec![],
         },
     }
 }
@@ -186,12 +198,117 @@ fn inject_path_params(req: &mut Value, params: &BTreeMap<String, String>) {
     }
 }
 
+/// Parsed response envelope (prompt 013). Present only when the handler return
+/// text is a JSON object containing the reserved top-level "$pgweb" key.
+/// All fields optional; absent ones fall back to framework defaults or the
+/// `status` argument passed by the router (200 or 404 for fallbacks).
+#[derive(Debug, Default)]
+struct ResponseEnvelope {
+    status: Option<u16>,
+    content_type: Option<String>,
+    headers: Vec<(String, String)>,
+    cookies: Vec<String>,
+    /// If Some, emit this string literally (bypass Tera even on template routes).
+    body: Option<String>,
+    /// If present (and no "body"), and this is a template route, render Tera
+    /// with this value as context instead of the whole return value.
+    context: Option<Value>,
+}
+
+/// Cheap probe + structured extract for the v2 response envelope.
+/// Returns None for any legacy bare-JSON or bare-text return (including
+/// a top-level JSON object that happens to contain "status" or "body" keys
+/// but *not* the "$pgweb" sentinel). This guarantees byte-for-byte
+/// compatibility for all pre-013 handlers.
+fn parse_response_envelope(handler_text: &str) -> Option<ResponseEnvelope> {
+    let val: Value = serde_json::from_str(handler_text).ok()?;
+    let obj = val.as_object()?;
+    let pgweb = obj.get("$pgweb")?.as_object()?;
+
+    let mut env = ResponseEnvelope::default();
+
+    if let Some(s) = pgweb.get("status").and_then(|v| v.as_u64()).and_then(|u| u16::try_from(u).ok()) {
+        env.status = Some(s);
+    }
+    if let Some(ct) = pgweb.get("content_type").and_then(|v| v.as_str()) {
+        env.content_type = Some(ct.to_string());
+    }
+    if let Some(h) = pgweb.get("headers").and_then(|v| v.as_object()) {
+        for (k, v) in h {
+            if let Some(vs) = v.as_str() {
+                env.headers.push((k.clone(), vs.to_string()));
+            }
+        }
+    }
+    if let Some(cs) = pgweb.get("cookies").and_then(|v| v.as_array()) {
+        for c in cs {
+            if let Some(s) = c.as_str() {
+                env.cookies.push(s.to_string());
+            }
+        }
+    }
+    if let Some(b) = obj.get("body") {
+        env.body = Some(b.as_str().unwrap_or("").to_string());
+    }
+    if let Some(c) = obj.get("context") {
+        // Only store if it is an object (Tera context must be); otherwise ignore
+        // so a weird "context": "string" doesn't explode later.
+        if c.is_object() || c.is_null() {
+            env.context = Some(c.clone());
+        }
+    }
+    Some(env)
+}
+
 fn render_route(route: &Route, req: &Value, status: u16) -> ServeOutcome {
     let handler_text = match call_handler(&route.handler_name, req) {
         Ok(s) => s,
         Err(e) => return ServeOutcome::Error(e),
     };
 
+    // Response contract v2: detect envelope *before* legacy dispatch.
+    // The "$pgweb" sentinel is the only trigger; ordinary JSON (even with
+    // "status"/"body" keys) falls through and is handled exactly as before.
+    if let Some(env) = parse_response_envelope(&handler_text) {
+        let final_status = env.status.unwrap_or(status);
+        let final_ct = env.content_type;
+        let final_headers = env.headers;
+        let final_cookies = env.cookies;
+
+        let final_body = if let Some(b) = env.body {
+            // Literal body wins in both modes (supports "render on error path,
+            // redirect on success path" from a single template-mode handler).
+            b
+        } else if let Some(tp) = &route.template_path {
+            if let Some(ctx) = env.context {
+                let template = match fetch_template(tp) {
+                    Ok(t) => t,
+                    Err(e) => return ServeOutcome::Error(e),
+                };
+                match templating::render(tp, &template, &ctx) {
+                    Ok(body) => body,
+                    Err(e) => return ServeOutcome::Error(e),
+                }
+            } else {
+                // Envelope present for headers/cookies/status but no body/context guidance.
+                String::new()
+            }
+        } else {
+            // Raw-text envelope without explicit body → empty body (the
+            // interesting part is the status/headers/cookies, e.g. redirects).
+            String::new()
+        };
+
+        return ServeOutcome::Response {
+            status: final_status,
+            body: final_body,
+            content_type: final_ct,
+            headers: final_headers,
+            cookies: final_cookies,
+        };
+    }
+
+    // Legacy path (pre-013 bare json/text returns) — byte-identical behavior.
     match &route.template_path {
         Some(tp) => {
             let template = match fetch_template(tp) {
@@ -209,13 +326,22 @@ fn render_route(route: &Route, req: &Value, status: u16) -> ServeOutcome {
                 }
             };
             match templating::render(tp, &template, &context) {
-                Ok(body) => ServeOutcome::Response { status, body },
+                Ok(body) => ServeOutcome::Response {
+                    status,
+                    body,
+                    content_type: None,
+                    headers: vec![],
+                    cookies: vec![],
+                },
                 Err(e) => ServeOutcome::Error(e),
             }
         }
         None => ServeOutcome::Response {
             status,
             body: handler_text,
+            content_type: None,
+            headers: vec![],
+            cookies: vec![],
         },
     }
 }
@@ -796,6 +922,47 @@ mod pure_tests {
     fn is_safe_ident_rejects_leading_dollar_or_digit() {
         assert!(!is_safe_ident("$foo"));
         assert!(!is_safe_ident("1foo"));
+    }
+
+    // ---- response envelope parsing (prompt 013) ----
+
+    #[test]
+    fn parse_envelope_detects_minimal_redirect() {
+        let text = r#"{"$pgweb":{"status":303,"headers":{"Location":"/dash"}}}"#;
+        let env = parse_response_envelope(text).expect("should parse as envelope");
+        assert_eq!(env.status, Some(303));
+        assert_eq!(env.headers, vec![("Location".to_string(), "/dash".to_string())]);
+        assert!(env.body.is_none());
+    }
+
+    #[test]
+    fn parse_envelope_with_body_and_cookies() {
+        let text = r#"{"$pgweb":{"content_type":"application/json","cookies":["sess=abc; HttpOnly"]},"body":"{\"ok\":1}"}"#;
+        let env = parse_response_envelope(text).expect("envelope");
+        assert_eq!(env.content_type.as_deref(), Some("application/json"));
+        assert_eq!(env.cookies, vec!["sess=abc; HttpOnly".to_string()]);
+        assert_eq!(env.body.as_deref(), Some("{\"ok\":1}"));
+    }
+
+    #[test]
+    fn parse_envelope_context_for_tera_mode() {
+        let text = r#"{"$pgweb":{"status":200},"context":{"err":"bad"}}"#;
+        let env = parse_response_envelope(text).expect("envelope");
+        assert!(env.body.is_none());
+        assert!(env.context.is_some());
+    }
+
+    #[test]
+    fn parse_plain_json_is_not_envelope() {
+        // AC6: ordinary data containing status/body must not be mis-detected.
+        let text = r#"{"status":"ok","body":"x"}"#;
+        assert!(parse_response_envelope(text).is_none());
+    }
+
+    #[test]
+    fn parse_non_json_or_bare_text_is_not_envelope() {
+        assert!(parse_response_envelope("<li>hi</li>").is_none());
+        assert!(parse_response_envelope("not json {").is_none());
     }
 }
 
