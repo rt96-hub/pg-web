@@ -17,18 +17,18 @@ It exits non-zero on any failure and prints `All tests passed.` on success. Tier
 | 1. SQL / pgrx  | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | **72** `#[pg_test]` — schema / seed / migrations / deployments ledger / settings helper / html_escape; ListenRouter + livereload; router contract + dynamic captures + asset lookup; error catalog + dev page; Tera classification; fingerprinted assets (H) |
 | 2a. HTTP smoke | `scripts/test-http.sh` (starts PG, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — seeded `GET /` renders, unknown path returns default 404 body |
 | 2b. CLI        | `cargo test -p pg-web` | **143** — path scanner, migrate, push + reconcile + flags + retry (L), init, dev, env, check, stack, asset fingerprinting (H) |
-| 3. Docker E2E  | `cargo test -p pg-web --test docker_e2e -- --ignored` (requires Docker + `pgweb/postgres:latest`) | **13** — todo CRUD + dynamic routes; watcher; reconcile; error pages; assets + ETag; F.1 ledger; livereload; concurrent push retry (L); CLI-in-image (F.3); fingerprinted cache (H); 5 MiB assets (I) |
+| 3. Docker E2E  | `cargo test -p pg-web --test docker_e2e -- --ignored` (requires Docker + `rtaylor96/pg-web:latest` — the current test image while `pgweb/postgres` namespace is pending) | **13** — todo CRUD + dynamic routes; watcher; reconcile; error pages; assets + ETag; F.1 ledger; livereload; concurrent push retry (L); CLI-in-image (F.3); fingerprinted cache (H); 5 MiB assets (I) |
 | 4. CLI smoke   | `scripts/smoke-cli.sh` | **19 sections** — full black-box walk of scaffold → up → push → 404 → dev error → prod 500 → assets → helpers → env → deployments → check → livereload (see `docs/OVERVIEW.md`) |
 
-**230+ Rust tests + 19-section smoke, all tiers green via `scripts/test-all.sh`.** Tier 3 hard-fails (no silent skip) if Docker or the published image is missing — the image *is* the runtime artifact.
+**230+ Rust tests + 19-section smoke, all tiers green via `scripts/test-all.sh`.** Tier 3 hard-fails (no silent skip) if Docker or the test image (`rtaylor96/pg-web:latest` today) is missing — the image *is* the runtime artifact.
 
-Env knobs: `PG_MAJOR=16 scripts/test-all.sh` targets a different Postgres major; the default is 17. Tier 3 panics with a remediation message if Docker or the image is missing — no silent-skip (the image is a shipped artifact; false green would undermine the tier).
+Env knobs: `PG_MAJOR=16 scripts/test-all.sh` targets a different Postgres major; the default is 17. Tier 3 panics with a remediation message if Docker or the image is missing — no silent-skip (the image is a shipped artifact; false green would undermine the tier). Note: the concrete tag is `rtaylor96/pg-web` (temporary) until the `pgweb` Docker Hub org + `pgweb/postgres` image name are finalized; the harness (build-image, test-all, smoke-cli, docker_e2e) now agree on the tag via `TEST_IMAGE` / `PGWEB_IMAGE`.
 
 ## CI integration
 
-The scripts are the CI entrypoint. A GitHub Actions workflow (not yet added) would:
+The scripts are the CI entrypoint. Machine bring-up details (macOS ICU/pkg-config gotcha, dev-DB creation for tier 2a, Docker image + port hygiene, caching strategy) live in `docs/internal/TESTING-SETUP.md` — read that before wiring a new runner or dev machine. A GitHub Actions workflow (not yet added) would:
 
-1. Install Rust + system deps (`libclang-dev`, `flex`, `bison`, `libreadline-dev`, `zlib1g-dev`, `libssl-dev`, `pkg-config`) as root.
+1. Install Rust + system deps (`libclang-dev`, `flex`, `bison`, `libreadline-dev`, `zlib1g-dev`, `libssl-dev`, `libicu-dev`, `pkg-config`) as root. (`libicu-dev` is required: PostgreSQL ≥ 16 configure hard-fails without ICU.)
 2. Create a non-root `pgweb` user, switch to it (pgrx can't run as root).
 3. Cache `~/.pgrx/` (~2 GiB compiled PG) — first run is 20-60 min, cached runs are ~2 min.
 4. Run `cargo install --locked cargo-pgrx --version ~0.18`.
@@ -251,15 +251,15 @@ fn home_renders_greeting() {
 }
 ```
 
-`start_demo_app()` boots a Postgres container with the extension, runs `pg-web dev` against the demo app, waits for the HTTP port to open, and returns a handle.
+`start_demo_app()` boots a container from the test image (rtaylor96/pg-web:latest today), runs `pg-web dev` (or direct calls) against the demo app, waits for the HTTP port to open, and returns a handle.
 
 ## CI matrix
 
 Every PR runs:
 
-- Tier 1 on PG 15, 16, 17 (parallel jobs).
+- Tier 1 on the bundled Postgres major (17). (Multi-major CI was dropped 2026-06-12 — pg-web ships Postgres in its own image, so only the bundled major is a correctness target; `pg15`/`pg16` features need only compile. See ROADMAP § Decision log.)
 - Tier 2 on current stable Rust.
-- Tier 3 against `pgweb/postgres:latest` (built from the PR).
+- Tier 3 against the current test image `rtaylor96/pg-web:latest` (built from the PR; will become `pgweb/postgres` post-namespace cutover).
 - `cargo clippy --workspace -- -D warnings`.
 - `cargo fmt --check`.
 

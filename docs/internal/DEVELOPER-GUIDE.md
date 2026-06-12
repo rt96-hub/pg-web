@@ -14,6 +14,8 @@ Platform bring-up details (exact WSL2 steps, user creation, Git Bash quirks, etc
 - Docker (required for tier 3 Docker E2E and tier 4 smoke tests; `scripts/test-all.sh` will fail loudly without the `pgweb/postgres:latest` image).
 - A non-root user for pgrx work (Postgres `initdb` refuses to run as root).
 
+Full machine bring-up for the 5-tier suite — including the macOS ICU/pkg-config `cargo pgrx init` gotcha, the tier-2a dev-database step, Docker image/port hygiene, and CI runner notes — is documented in **`docs/internal/TESTING-SETUP.md`**. Start there when a tier fails to even start.
+
 The critical one-time pgrx configuration step (not optional):
 
 ```bash
