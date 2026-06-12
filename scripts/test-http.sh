@@ -13,15 +13,30 @@
 
 set -euo pipefail
 
-PG_VERSION="${PG_VERSION:-17.9}"
-PG_MAJOR="${PG_VERSION%%.*}"
 PGRX_HOME="${PGRX_HOME:-$HOME/.pgrx}"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+PG_MAJOR="${PG_MAJOR:-17}"
+
+# Auto-detect the actual installed Postgres minor version for the requested major.
+# pgrx users often end up with 17.9, 17.10, 17.11 etc. Hard-coding 17.9 breaks
+# when the machine has a different patch level (as seen with 17.10).
+if [[ -z "${PG_VERSION:-}" ]]; then
+  pg_config_glob=$(ls -1 "$PGRX_HOME/${PG_MAJOR}."*/pgrx-install/bin/pg_config 2>/dev/null | sort -V | tail -1 || true)
+  if [[ -n "$pg_config_glob" && -x "$pg_config_glob" ]]; then
+    # e.g. /Users/.../.pgrx/17.10/pgrx-install/bin/pg_config  ->  PG_VERSION=17.10
+    PG_VERSION=$(basename "$(dirname "$(dirname "$(dirname "$pg_config_glob")")")")
+  else
+    PG_VERSION="${PG_MAJOR}.10"   # last-resort fallback; the ! -x check below will give a good message
+  fi
+fi
+PG_MAJOR="${PG_VERSION%%.*}"
+
 PG_CTL="$PGRX_HOME/$PG_VERSION/pgrx-install/bin/pg_ctl"
 PSQL="$PGRX_HOME/$PG_VERSION/pgrx-install/bin/psql"
 DATA_DIR="$PGRX_HOME/data-$PG_MAJOR"
 LOG_FILE="$PGRX_HOME/$PG_MAJOR.log"
 PG_CONFIG="$PGRX_HOME/$PG_VERSION/pgrx-install/bin/pg_config"
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 if [ ! -x "$PG_CTL" ]; then
     echo "FATAL: pg_ctl not found at $PG_CTL" >&2
@@ -69,28 +84,58 @@ done
 # fail with "wrong template body" — pointing at a code bug when the
 # real cause is environmental contamination.
 #
-# `ss` shows the listener's comm field as `postgres` (the binary name),
-# not the cmdline rewrite. So we extract the PID, then peek `ps -o args=`
-# which DOES include the rewritten "postgres: pg_web_worker" form. If
-# the rewrite isn't there, something else is on :8080. See
-# DEVELOPER-GUIDE.md pitfall #18 for the failure mode this catches.
-ss_line=$(ss -tlnp 'sport = :8080' 2>/dev/null | tail -n +2 | head -1)
-listener_pid=$(echo "$ss_line" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+# We must support macOS dev machines (no `ss`) + Linux CI.
+# Strategy: use lsof (present on macOS; often on Linux) to get a LISTENing PID,
+# fall back to ss (Linux), then netstat. Then inspect the process args for the
+# pg_web_worker rewrite that the Postgres postmaster does for BGWs.
+# See DEVELOPER-GUIDE.md pitfall #18 for the failure mode this catches.
+get_listener_pid() {
+    local port="$1"
+    # lsof is the most portable for "listening PID on TCP port" across macOS + Linux.
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1
+        return 0
+    fi
+    # Linux ss (iproute2). The original implementation.
+    if command -v ss >/dev/null 2>&1; then
+        local line
+        line=$(ss -tlnp "sport = :$port" 2>/dev/null | tail -n +2 | head -1)
+        echo "$line" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2
+        return 0
+    fi
+    # Older netstat fallback (some minimal containers/CI).
+    if command -v netstat >/dev/null 2>&1; then
+        local line pid
+        line=$(netstat -tlnp 2>/dev/null | grep -E ":$port[[:space:]]" | head -1)
+        # Linux netstat -tlnp often shows "pid/progname" or "pid/"; extract leading digits.
+        pid=$(echo "$line" | grep -oE '[0-9]+/' | head -1 | tr -d '/')
+        if [[ -n "$pid" ]]; then
+            echo "$pid"
+            return 0
+        fi
+    fi
+    echo ""
+}
+
+listener_pid=$(get_listener_pid 8080)
 if [ -z "$listener_pid" ]; then
-    # Listener exists (curl above succeeded) but ss couldn't read its
+    # Listener exists (curl above succeeded) but we couldn't read its
     # PID — cross-user case (docker-proxy is typically root-owned and
-    # invisible to non-root ss).
+    # invisible to non-root tools).
     echo "ERROR: :8080 has a listener but its process is invisible to this user (likely root-owned, e.g. docker-proxy)." >&2
-    echo "Diagnose: sudo ss -tlnp 'sport = :8080'  OR  docker ps --format 'table {{.Names}}\t{{.Ports}}' | grep 8080" >&2
+    echo "Diagnose: sudo lsof -nP -iTCP:8080 -sTCP:LISTEN  OR  docker ps --format 'table {{.Names}}\t{{.Ports}}' | grep 8080" >&2
     echo "Fix: docker stop <container-name>  (or \`pg-web down\` from the original app dir)" >&2
     exit 1
 fi
-if ! ps -p "$listener_pid" -o args= 2>/dev/null | grep -q 'pg_web_worker'; then
-    holder=$(ps -p "$listener_pid" -o args= 2>/dev/null | head -1 || echo "<gone>")
+
+# ps -o args= (or command=) + wide output works on both GNU ps and macOS/BSD ps.
+ps_args=$(ps -p "$listener_pid" -o args= -ww 2>/dev/null || ps -p "$listener_pid" -o command= 2>/dev/null || echo "")
+if ! echo "$ps_args" | grep -q 'pg_web_worker'; then
+    holder=$(echo "$ps_args" | head -1 || echo "<gone>")
     echo "ERROR: :8080 is held by PID $listener_pid (\`$holder\`), not the dev PG's pg_web_worker BGW." >&2
     echo "This is usually a leftover \`pg-web up\` Docker container shadowing the port." >&2
     echo "Diagnose:" >&2
-    echo "    ss -tlnp 'sport = :8080'" >&2
+    echo "    lsof -nP -iTCP:8080 -sTCP:LISTEN   (or ss / netstat on Linux)" >&2
     echo "    docker ps --format 'table {{.Names}}\t{{.Ports}}' | grep 8080" >&2
     echo "Fix: docker stop <container-name>  (or \`pg-web down\` from the original app dir)" >&2
     exit 1

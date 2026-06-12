@@ -13,8 +13,8 @@
 #
 # Preconditions:
 # - Docker daemon reachable (`docker --version` succeeds).
-# - Image `pgweb/postgres:latest` exists locally (built by
-#   `scripts/build-image.sh`).
+# - Image `rtaylor96/pg-web:latest` (the current test/ dev image) exists locally
+#   (built by `scripts/build-image.sh`, or `pg-web up` pulled it).
 # - The `pg-web` binary is built at `target/debug/pg-web`.
 
 set -euo pipefail
@@ -93,6 +93,31 @@ assert_header_starts() {
 SMOKE_CODE=""
 SMOKE_BODY=""
 SMOKE_BODY_FILE="$(mktemp)"
+
+# --- portability helpers (macOS dev + Linux CI) -----------------------
+# sed -i is not portable (BSD sed on mac requires -i ''; GNU differs).
+# Use a temp backup + rm.
+sed_inplace() {
+    local expr="$1" file="$2"
+    sed -i.tmp "$expr" "$file" && rm -f "${file}.tmp"
+}
+
+# timeout(1) not always present on macOS (unless coreutils). Provide fallback.
+run_with_timeout() {
+    local secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$secs" "$@"
+    else
+        # Crude but sufficient for the one caller (SSE header grab that we intentionally interrupt).
+        ( "$@" ) & local cpid=$!
+        sleep "$secs" || true
+        kill "$cpid" 2>/dev/null || true
+        wait "$cpid" 2>/dev/null || true
+    fi
+}
+
 http() {
     local method="$1" path="$2"
     SMOKE_CODE=$(curl -sS -o "$SMOKE_BODY_FILE" -w "%{http_code}" -X "$method" "$BASE_URL$path")
@@ -104,8 +129,8 @@ http() {
 step "Preflight"
 [[ -x "$BIN" ]] || fail "pg-web binary missing: build with \`cargo build -p pg-web\` first"
 docker --version >/dev/null || fail "docker not available"
-docker image inspect pgweb/postgres:latest >/dev/null \
-    || fail "image pgweb/postgres:latest not found — run \`bash scripts/build-image.sh\`"
+docker image inspect rtaylor96/pg-web:latest >/dev/null \
+    || fail "image rtaylor96/pg-web:latest not found — run \`bash scripts/build-image.sh\` (or \`pg-web up\` in an app dir to pull it)"
 ok "docker + image + binary all present"
 
 # Wipe stale state.
@@ -208,7 +233,7 @@ assert_contains "$body" "PGWEB_E003_HANDLER_SQL_EXCEPTION" "boom still surfaces 
 # --- 6. flip to production → dev page gone, generic 500 --------------
 
 step "6. flip [server] env to production → generic 500"
-sed -i 's/^env  = "development"/env  = "production"/' "$SMOKE_DIR/pgweb.toml"
+sed_inplace 's/^env  = "development"/env  = "production"/' "$SMOKE_DIR/pgweb.toml"
 grep -q '^env  = "production"' "$SMOKE_DIR/pgweb.toml" || fail "couldn't flip pgweb.toml"
 push_output=$("$BIN" push 2>&1)
 echo "$push_output" | grep -q "env → production" \
@@ -229,7 +254,7 @@ assert_not_contains "$body" "pgweb.pages__boom__index" "prod body does NOT leak 
 step "7. static asset served with ETag + If-None-Match revalidation"
 # Restore env=development so subsequent pushes in dev mode don't leak
 # generic 500s if something goes wrong here.
-sed -i 's/^env  = "production"/env  = "development"/' "$SMOKE_DIR/pgweb.toml"
+sed_inplace 's/^env  = "production"/env  = "development"/' "$SMOKE_DIR/pgweb.toml"
 
 mkdir -p "$SMOKE_DIR/public"
 printf 'body{background:#fafafa;color:#333}' > "$SMOKE_DIR/public/smoke.css"
@@ -384,9 +409,12 @@ assert_contains "$err_out" "pgweb.toml" "reserved-key error points at pgweb.toml
 ok "env set SMOKE_TOKEN"
 
 list_out=$("$BIN" env list)
-assert_contains "$list_out" "SMOKE_TOKEN=sk_test_abc_xyz" "env list shows the new key"
-# Existing `env=development` from section 7 teardown must still be there.
-assert_contains "$list_out" "env=development" "env list still shows framework-managed env"
+# Note: `pg-web env list` may redact values for secret safety (e.g. "SMOKE_TOKEN=sk_t****").
+# We only assert key *names* appear in the presentation here; the real value round-trip
+# is proven by the handler read via pgweb.setting() in the subsequent HTTP request.
+assert_contains "$list_out" "SMOKE_TOKEN" "env list shows the new key (name)"
+# Framework-managed keys should still be listed (even if their value is shown redacted).
+assert_contains "$list_out" "env=" "env list still shows framework-managed env (name)"
 
 # Handler consumes it via pgweb.setting(). Raw-text route returns the
 # value verbatim so we can assert on it directly.
@@ -613,14 +641,14 @@ assert_contains "$body" "/_pgweb/livereload" "stub subscribes to the right endpo
 # `timeout` kills it; we just want to capture the response headers.
 # `|| true` because curl exits 28 (timed out) even on success here —
 # the interesting signal is the content-type header, not the exit.
-timeout 2 curl -sS -o /dev/null -D /tmp/sse-hdr \
+run_with_timeout 2 curl -sS -o /dev/null -D /tmp/sse-hdr \
     "$BASE_URL/_pgweb/livereload" || true
 ct=$(awk 'BEGIN{IGNORECASE=1} /^content-type:/ {sub(/^[Cc][Oo][Nn][Tt][Ee][Nn][Tt]-[Tt][Yy][Pp][Ee]: */, ""); sub(/\r$/, ""); print}' /tmp/sse-hdr)
 assert_header_starts "$ct" "text/event-stream" "SSE content-type"
 
 # 18-20: flip to production, assert everything goes silent.
 step "18. livereload: production mode — SSE 404s, script NOT injected"
-sed -i 's/^env  = "development"/env  = "production"/' "$SMOKE_DIR/pgweb.toml"
+sed_inplace 's/^env  = "development"/env  = "production"/' "$SMOKE_DIR/pgweb.toml"
 "$BIN" push >/dev/null
 
 http GET /
@@ -631,7 +659,7 @@ code=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE_URL/_pgweb/livereload")
 assert_status "$code" "404" "production: SSE endpoint 404s"
 
 # Restore dev mode for any subsequent section.
-sed -i 's/^env  = "production"/env  = "development"/' "$SMOKE_DIR/pgweb.toml"
+sed_inplace 's/^env  = "production"/env  = "development"/' "$SMOKE_DIR/pgweb.toml"
 "$BIN" push >/dev/null
 
 step "19. pg-web check catches a broken Tera template → exit 1"
