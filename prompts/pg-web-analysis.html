@@ -1,0 +1,820 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pg-web — Full Codebase Analysis</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --bg-soft: #161b22;
+    --bg-card: #1b2129;
+    --bg-inset: #11151b;
+    --fg: #e6e8eb;
+    --fg-soft: #9aa4b2;
+    --fg-faint: #6b7585;
+    --accent: #4cc2a9;
+    --accent-soft: rgba(76,194,169,.12);
+    --link: #6cb6ff;
+    --border: #2b3340;
+    --crit: #f4655f;
+    --high: #f0883e;
+    --med:  #d9b13b;
+    --low:  #8b97a8;
+    --good: #57c785;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  }
+  [data-theme="light"] {
+    --bg: #f7f8fa;
+    --bg-soft: #ffffff;
+    --bg-card: #ffffff;
+    --bg-inset: #eef1f5;
+    --fg: #1c2330;
+    --fg-soft: #4b5563;
+    --fg-faint: #8a94a6;
+    --accent: #0e8f76;
+    --accent-soft: rgba(14,143,118,.10);
+    --link: #0b62c4;
+    --border: #dde3ea;
+    --crit: #c93c36;
+    --high: #c2641a;
+    --med:  #9a7b10;
+    --low:  #5b6675;
+    --good: #1f9d55;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--sans); font-size: 16px; line-height: 1.65;
+  }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono {
+    font-family: var(--mono); font-size: .86em;
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: 5px; padding: .08em .38em;
+  }
+  pre {
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px; overflow-x: auto;
+    font-family: var(--mono); font-size: .82rem; line-height: 1.55;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: 1em; }
+
+  /* ---------- layout ---------- */
+  .wrap { display: flex; max-width: 1280px; margin: 0 auto; }
+  nav.toc {
+    position: sticky; top: 0; align-self: flex-start;
+    width: 248px; flex: 0 0 248px; height: 100vh; overflow-y: auto;
+    padding: 28px 18px 40px 22px; border-right: 1px solid var(--border);
+    font-size: .86rem;
+  }
+  nav.toc .brand { font-weight: 700; font-size: 1.05rem; color: var(--fg); display:block; margin-bottom: 2px;}
+  nav.toc .brand span { color: var(--accent); }
+  nav.toc .sub { color: var(--fg-faint); font-size: .74rem; margin-bottom: 18px; }
+  nav.toc a.item {
+    display: block; color: var(--fg-soft); padding: 5px 10px; border-radius: 6px;
+    border-left: 2px solid transparent; margin: 1px 0;
+  }
+  nav.toc a.item:hover { color: var(--fg); background: var(--bg-soft); text-decoration: none; }
+  nav.toc a.item.active { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); }
+  main { flex: 1; min-width: 0; padding: 36px 48px 120px; }
+  @media (max-width: 920px) {
+    .wrap { display: block; }
+    nav.toc { position: static; width: auto; height: auto; border-right: none; border-bottom: 1px solid var(--border); }
+    main { padding: 24px 20px 80px; }
+  }
+
+  header.hero { margin-bottom: 8px; }
+  header.hero h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -.02em;}
+  header.hero h1 .accent { color: var(--accent); }
+  header.hero .tag { color: var(--fg-soft); font-size: 1.02rem; max-width: 70ch;}
+  .meta-line { color: var(--fg-faint); font-size: .8rem; margin-top: 10px; }
+  .meta-line a { color: var(--fg-faint); text-decoration: underline; }
+
+  .theme-btn {
+    position: fixed; top: 14px; right: 16px; z-index: 50;
+    background: var(--bg-card); color: var(--fg-soft); border: 1px solid var(--border);
+    border-radius: 999px; padding: 6px 14px; cursor: pointer; font-size: .8rem;
+  }
+  .theme-btn:hover { color: var(--fg); }
+
+  section { margin-top: 56px; scroll-margin-top: 24px; }
+  section > h2 {
+    font-size: 1.45rem; letter-spacing: -.015em; margin: 0 0 6px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  }
+  section > h2 .num { color: var(--accent); font-family: var(--mono); font-size: .85em; margin-right: 8px;}
+  h3 { font-size: 1.08rem; margin: 28px 0 8px; }
+  h4 { font-size: .95rem; margin: 20px 0 6px; }
+  p, li { color: var(--fg); max-width: 78ch; }
+  p.soft, li.soft, .soft { color: var(--fg-soft); }
+  ul, ol { padding-left: 22px; }
+  li { margin: 4px 0; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+
+  /* ---------- components ---------- */
+  .tldr {
+    background: var(--bg-card); border: 1px solid var(--border); border-left: 4px solid var(--accent);
+    border-radius: 10px; padding: 18px 22px; margin-top: 22px;
+  }
+  .tldr p { margin: 8px 0; }
+  .tldr .v { font-size: 1.05rem; font-weight: 600; }
+
+  .grid { display: grid; gap: 12px; margin: 18px 0; }
+  .grid.cols3 { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+  .grid.cols2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .stat {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 13px 16px;
+  }
+  .stat .k { color: var(--fg-faint); font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; }
+  .stat .v { font-size: 1.18rem; font-weight: 650; margin-top: 2px; }
+  .stat .d { color: var(--fg-soft); font-size: .78rem; margin-top: 2px; }
+
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 20px; margin: 14px 0;
+  }
+  .card h4 { margin-top: 0; }
+
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: .88rem; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--fg-soft); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em;}
+  td .mono { white-space: nowrap; }
+
+  .badge {
+    display: inline-block; font-size: .68rem; font-weight: 700; letter-spacing: .05em;
+    border-radius: 999px; padding: 2px 9px; text-transform: uppercase; vertical-align: middle;
+  }
+  .badge.crit { background: color-mix(in srgb, var(--crit) 16%, transparent); color: var(--crit); border: 1px solid color-mix(in srgb, var(--crit) 45%, transparent);}
+  .badge.high { background: color-mix(in srgb, var(--high) 14%, transparent); color: var(--high); border: 1px solid color-mix(in srgb, var(--high) 45%, transparent);}
+  .badge.med  { background: color-mix(in srgb, var(--med) 14%, transparent);  color: var(--med);  border: 1px solid color-mix(in srgb, var(--med) 45%, transparent);}
+  .badge.low  { background: color-mix(in srgb, var(--low) 14%, transparent);  color: var(--low);  border: 1px solid color-mix(in srgb, var(--low) 45%, transparent);}
+  .badge.good { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); border: 1px solid color-mix(in srgb, var(--good) 45%, transparent);}
+  .badge.info { background: var(--accent-soft); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);}
+
+  /* findings */
+  .filterbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 6px; align-items: center;}
+  .chip {
+    border: 1px solid var(--border); background: var(--bg-card); color: var(--fg-soft);
+    border-radius: 999px; padding: 4px 14px; font-size: .78rem; cursor: pointer;
+  }
+  .chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .chip.util { margin-left: auto; }
+  details.finding {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+    margin: 10px 0; overflow: hidden;
+  }
+  details.finding > summary {
+    list-style: none; cursor: pointer; padding: 13px 18px; display: flex; gap: 10px; align-items: baseline;
+  }
+  details.finding > summary::-webkit-details-marker { display: none; }
+  details.finding > summary .arrow { color: var(--fg-faint); font-size: .8rem; transition: transform .15s; }
+  details.finding[open] > summary .arrow { transform: rotate(90deg); }
+  details.finding > summary .t { font-weight: 600; }
+  details.finding .body { padding: 2px 20px 16px 40px; color: var(--fg); border-top: 1px dashed var(--border);}
+  details.finding .body p { margin: 10px 0; }
+  details.finding .ev { color: var(--fg-faint); font-size: .8rem; }
+  .hiddenf { display: none !important; }
+
+  /* score bars */
+  .scores { margin-top: 14px; }
+  .scorerow { display: grid; grid-template-columns: 220px 1fr 52px; gap: 14px; align-items: center; margin: 9px 0; }
+  @media (max-width: 700px){ .scorerow { grid-template-columns: 130px 1fr 44px; } }
+  .scorerow .lbl { font-size: .88rem; color: var(--fg); }
+  .scorerow .lbl small { display:block; color: var(--fg-faint); font-size: .72rem; }
+  .bar { background: var(--bg-inset); border: 1px solid var(--border); border-radius: 999px; height: 12px; overflow: hidden;}
+  .bar > i { display:block; height: 100%; width: 0; border-radius: 999px; transition: width 1s cubic-bezier(.2,.7,.2,1); }
+  .scorerow .n { font-family: var(--mono); font-size: .85rem; color: var(--fg-soft); text-align: right;}
+
+  .pill-list { display:flex; flex-wrap: wrap; gap: 8px; margin: 10px 0;}
+  .pill { background: var(--bg-card); border: 1px solid var(--border); border-radius: 999px; padding: 4px 13px; font-size: .8rem; color: var(--fg-soft);}
+  .pill b { color: var(--fg); font-weight: 600;}
+
+  .flow { font-family: var(--mono); font-size: .8rem; }
+  .callout {
+    border: 1px solid color-mix(in srgb, var(--high) 40%, transparent);
+    background: color-mix(in srgb, var(--high) 7%, transparent);
+    border-radius: 10px; padding: 14px 18px; margin: 16px 0;
+  }
+  .callout.good {
+    border-color: color-mix(in srgb, var(--good) 40%, transparent);
+    background: color-mix(in srgb, var(--good) 7%, transparent);
+  }
+  .callout.accent {
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    background: var(--accent-soft);
+  }
+  .callout h4 { margin: 0 0 6px; }
+  .kbd-note { font-size: .78rem; color: var(--fg-faint); }
+
+  .two-col { display:grid; grid-template-columns: 1fr 1fr; gap: 18px;}
+  @media (max-width: 820px){ .two-col { grid-template-columns: 1fr; } }
+
+  footer { margin-top: 70px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--fg-faint); font-size: .78rem;}
+
+  svg text { font-family: var(--sans); }
+  svg .boxlbl { font-size: 12px; fill: var(--fg); font-weight: 600;}
+  svg .boxsub { font-size: 10px; fill: var(--fg-soft); }
+  svg .lane   { font-size: 10px; fill: var(--fg-faint); letter-spacing: .08em; }
+  svg rect.box { fill: var(--bg-card); stroke: var(--border); rx: 8; }
+  svg rect.boxa { fill: var(--accent-soft); stroke: var(--accent); rx: 8; }
+  svg line.edge, svg path.edge { stroke: var(--fg-faint); stroke-width: 1.4; fill: none; }
+  svg .edge-lbl { font-size: 9.5px; fill: var(--fg-faint); }
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn">◐ theme</button>
+<div class="wrap">
+
+<!-- ======================= TOC ======================= -->
+<nav class="toc" id="toc">
+  <span class="brand">pg-web<span> / analysis</span></span>
+  <div class="sub">github.com/rt96-hub/pg-web · 2026-06-11</div>
+  <a class="item" href="#verdict">Executive summary</a>
+  <a class="item" href="#facts">Fact sheet</a>
+  <a class="item" href="#what">1 · What it is</a>
+  <a class="item" href="#state">2 · Where it stands</a>
+  <a class="item" href="#method">3 · How it's being built</a>
+  <a class="item" href="#strengths">4 · Strengths</a>
+  <a class="item" href="#problems">5 · Problems &amp; risks</a>
+  <a class="item" href="#landscape">6 · Competitive landscape</a>
+  <a class="item" href="#possibilities">7 · Possibilities</a>
+  <a class="item" href="#missing">8 · What's missing / future</a>
+  <a class="item" href="#scorecard">9 · Scorecard</a>
+  <a class="item" href="#bottomline">10 · Bottom line</a>
+</nav>
+
+<!-- ======================= MAIN ======================= -->
+<main>
+
+<header class="hero">
+  <h1><span class="accent">pg-web</span> — full codebase analysis</h1>
+  <p class="tag">A PostgreSQL extension that turns the database itself into the web server: an Axum HTTP listener runs inside a Postgres background worker, routes and templates live in tables, business logic is SQL, the UI is HTMX, and a Rust CLI owns the entire dev/deploy loop.</p>
+  <p class="meta-line">
+    Analyzed from a full clone of <a href="https://github.com/rt96-hub/pg-web">rt96-hub/pg-web</a> @ <code>918f40b</code> (2026-06-10) ·
+    every source file read · live checks against crates.io, Docker Hub, and pg-web.dev
+  </p>
+</header>
+
+<!-- ======================= VERDICT ======================= -->
+<section id="verdict">
+  <h2><span class="num">§</span>Executive summary</h2>
+  <div class="tldr">
+    <p class="v">pg-web is a real, working, unusually well-engineered implementation of a radical idea — and it is one week past its public launch.</p>
+    <p>The thesis ("PostgreSQL is your web server — zero hops between web tier and data") is fully realized for its Phase 1 scope: you can <code>cargo install pg-web</code>, scaffold an app, get a live-reloading dev loop, and deploy a working HTMX app as a single Docker container. The project's own documentation site at <strong>pg-web.dev is served by pg-web itself</strong>, in production mode, with fingerprinted assets — the strongest credibility signal a framework this young can have.</p>
+    <p>The engineering hygiene is far above what its size suggests: 230 tests across five mandatory tiers, a typed error catalog, a dated architectural decision log, honest "known limitations" sections, and a fully documented AI-agent-driven development process (this repo is as much a showcase of disciplined LLM-assisted engineering as it is a web framework).</p>
+    <p>Its ceilings are equally real: <strong>requests are processed one at a time</strong> on a single thread with no timeout; <strong>every handler runs as the Postgres superuser</strong>; and handlers <strong>cannot set status codes, headers, cookies, or content types</strong> — which quietly blocks the planned Phase 2 auth work and the advertised "JSON API" use case. None of these are fatal, all are fixable, and most are already named somewhere in the project's own roadmap. The gap between the vision's ambition and the runtime's current capabilities is the central tension of the project.</p>
+    <p><strong>Verdict:</strong> a promising, genuinely differentiated framework in the "Postgres-as-platform" wave — today best treated as an excellent tool for small self-hosted apps, internal tools, and agent-era experiments, with a credible (but security- and concurrency-gated) path to more.</p>
+  </div>
+</section>
+
+<!-- ======================= FACTS ======================= -->
+<section id="facts">
+  <h2><span class="num">§</span>Fact sheet</h2>
+  <div class="grid cols3">
+    <div class="stat"><div class="k">Version</div><div class="v">v0.2.0</div><div class="d">Phase 1 "Synchronous Core" complete + polish</div></div>
+    <div class="stat"><div class="k">Language / stack</div><div class="v">Rust (pgrx)</div><div class="d">Axum · Tokio · Tera · clap · sqlparser</div></div>
+    <div class="stat"><div class="k">Code size</div><div class="v">~10.9k LoC Rust</div><div class="d">~21k lines total incl. docs, scripts, examples</div></div>
+    <div class="stat"><div class="k">Tests</div><div class="v">230 + smoke</div><div class="d">72 pg_test · 143 CLI · 13 Docker E2E · 2 HTTP · 19-section black-box</div></div>
+    <div class="stat"><div class="k">History</div><div class="v">75 commits</div><div class="d">First commit 2026-04-17 · v0.1.0 in 7 days · solo author</div></div>
+    <div class="stat"><div class="k">License</div><div class="v">MIT OR Apache-2.0</div><div class="d">Rust-ecosystem standard dual license</div></div>
+    <div class="stat"><div class="k">Postgres support</div><div class="v">15 / 16 / 17</div><div class="d">pgrx 0.18.0 pinned · reference image is PG 17</div></div>
+    <div class="stat"><div class="k">Distribution</div><div class="v">Live as of this week</div><div class="d">crates.io v0.2.0 (Jun 10) · Docker Hub rtaylor96/pg-web (Jun 11) · pg-web.dev serving</div></div>
+    <div class="stat"><div class="k">Traction (day 1)</div><div class="v">2 ★ · 12 ⬇ · 25 pulls</div><div class="d">GitHub stars · crate downloads · image pulls — pre-announcement numbers</div></div>
+  </div>
+  <p class="soft">Workspace: two strictly-decoupled crates — <code>pg_web_ext</code> (the extension: HTTP worker, router, Tera, SSE livereload) and <code>pg-web</code> (the CLI: init/up/down/dev/push/migrate/env/check). They communicate only through six framework tables in the <code>pgweb</code> schema: <code>routes</code>, <code>templates</code>, <code>assets</code>, <code>migrations</code>, <code>settings</code>, <code>deployments</code>.</p>
+</section>
+
+<!-- ======================= WHAT ======================= -->
+<section id="what">
+  <h2><span class="num">1</span>What the project is</h2>
+
+  <p>pg-web collapses the standard four-layer web stack (browser → load balancer → app server → ORM → database) into one process tree. When Postgres boots, the extension registers a <em>background worker</em> — a dedicated OS process forked by the postmaster — which runs a single-threaded Tokio runtime serving HTTP on <code>:8080</code>. Every request is resolved by querying framework tables over <strong>SPI</strong> (Postgres's in-process Server Programming Interface): look up the route, fetch the Tera template, call the user's SQL handler function, render, respond. No TCP between web tier and database, no connection pool, no ORM.</p>
+
+  <h3>Architecture at a glance</h3>
+  <svg viewBox="0 0 880 320" style="width:100%;max-width:880px;display:block;margin:10px 0;" role="img" aria-label="pg-web architecture diagram">
+    <!-- lanes -->
+    <text class="lane" x="20" y="22">DEVELOPER MACHINE</text>
+    <text class="lane" x="318" y="22">VPS / DOCKER CONTAINER</text>
+    <!-- divider -->
+    <line x1="290" y1="10" x2="290" y2="310" stroke="var(--border)" stroke-dasharray="4 5"/>
+    <!-- CLI box -->
+    <rect class="box" x="20" y="44" width="240" height="118"/>
+    <text class="boxlbl" x="36" y="68">pg-web CLI (Rust binary)</text>
+    <text class="boxsub" x="36" y="88">init · up/down · dev (watch + preflight)</text>
+    <text class="boxsub" x="36" y="104">push (validate → upsert → reconcile)</text>
+    <text class="boxsub" x="36" y="120">migrate apply · env · check</text>
+    <text class="boxsub" x="36" y="142">pages/*.sql + *.html + public/ ⇒ rows</text>
+    <!-- browser box -->
+    <rect class="box" x="20" y="210" width="240" height="64"/>
+    <text class="boxlbl" x="36" y="236">Browser (HTMX)</text>
+    <text class="boxsub" x="36" y="254">hypermedia UI · SSE live-reload in dev</text>
+    <!-- caddy -->
+    <rect class="box" x="318" y="210" width="120" height="64"/>
+    <text class="boxlbl" x="334" y="236">Caddy</text>
+    <text class="boxsub" x="334" y="254">TLS :443</text>
+    <!-- postgres outer -->
+    <rect class="box" x="318" y="40" width="542" height="140"/>
+    <text class="boxlbl" x="334" y="62">PostgreSQL postmaster</text>
+    <!-- bgw -->
+    <rect class="boxa" x="334" y="74" width="290" height="92"/>
+    <text class="boxlbl" x="348" y="94">pg_web_worker (BGW process)</text>
+    <text class="boxsub" x="348" y="110">Tokio (1 thread) · Axum fallback handler</text>
+    <text class="boxsub" x="348" y="124">router → SPI → handler() → Tera render</text>
+    <text class="boxsub" x="348" y="138">SSE /_pgweb/livereload · LISTEN fan-out</text>
+    <text class="boxsub" x="348" y="156">⚠ runs as superuser · 1 request at a time</text>
+    <!-- tables -->
+    <rect class="box" x="644" y="74" width="200" height="92"/>
+    <text class="boxlbl" x="658" y="94">pgweb.* tables</text>
+    <text class="boxsub" x="658" y="110">routes · templates · assets</text>
+    <text class="boxsub" x="658" y="124">migrations · settings</text>
+    <text class="boxsub" x="658" y="138">deployments (ledger)</text>
+    <text class="boxsub" x="658" y="156">+ your app tables (public.*)</text>
+    <!-- edges -->
+    <path class="edge" d="M260 103 H 470 V 74" marker-end="url(#arr)"/>
+    <text class="edge-lbl" x="300" y="97">:5432 wire protocol (push/migrate)</text>
+    <path class="edge" d="M624 120 H 644" marker-end="url(#arr)"/>
+    <text class="edge-lbl" x="600" y="113" text-anchor="middle">SPI</text>
+    <path class="edge" d="M140 210 V 186 H 305 V 242 H 318" marker-end="url(#arr)"/>
+    <text class="edge-lbl" x="160" y="200">HTTPS</text>
+    <path class="edge" d="M438 242 H 470 V 166" marker-end="url(#arr)"/>
+    <text class="edge-lbl" x="447" y="236">:8080</text>
+    <defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--fg-faint)"/>
+      </marker>
+    </defs>
+  </svg>
+
+  <h3>The developer contract</h3>
+  <p>Apps are pure SQL + HTML + a small TOML file. The filesystem layout <em>is</em> the router:</p>
+  <pre><code>my-app/
+  pages/
+    index.html + index.sql          → GET /          (JSON → Tera pipeline)
+    todos/post.sql + post.html      → POST /todos    (HTMX fragment response)
+    todos/[id]/index.sql            → GET /todos/:id (req.path_params.id)
+    _404.html                       → custom 404
+  public/styles.css                 → BYTEA-backed asset, ETag/fingerprint cached
+  migrations/0001_create_todos.sql  → forward-only raw SQL, ledgered
+  pgweb.toml                        → env = development | production</code></pre>
+  <p>Every handler is a Postgres function with one uniform signature: <code>pgweb.pages__&lt;name&gt;(req json) RETURNS json|text</code>, where <code>req</code> carries <code>body</code>, <code>query</code>, <code>method</code>, <code>path</code>, <code>path_params</code>. If an <code>.html</code> sibling exists, the JSON return feeds a Tera template; if not, the text return is sent as-is. Validation is delegated to database constraints, with PL/pgSQL <code>EXCEPTION</code> blocks turning <code>check_violation</code> into inline HTMX error fragments — a genuinely elegant pattern the demo app exercises.</p>
+
+  <h3>What a request costs</h3>
+  <p class="soft">Per GET: one SPI transaction wrapping (a) a full scan + specificity sort of all routes for the method, (b) a template fetch, (c) the handler call through a PL/pgSQL wrapper that catches exceptions structurally — plus a second small transaction to read <code>pgweb.settings.env</code> for live-reload injection, and a fresh <code>Tera::one_off</code> parse of the template every time. All documented as deliberate Phase 1 simplicity with named re-evaluation triggers (e.g., "revisit the route scan above 1,000 routes").</p>
+</section>
+
+<!-- ======================= STATE ======================= -->
+<section id="state">
+  <h2><span class="num">2</span>Where it stands right now</h2>
+
+  <h3>Shipped (Phase 1 complete, v0.1.0 → v0.2.0)</h3>
+  <div class="pill-list">
+    <span class="pill"><b>Runtime</b> BGW + Axum + SPI + Tera</span>
+    <span class="pill"><b>Routing</b> directory-as-route, <code>[id]</code> captures, specificity sort, _404 fallback</span>
+    <span class="pill"><b>Dev loop</b> watcher (200ms debounce + Blake3 dedupe) · SQL preflight · browser live-reload via SSE + LISTEN/NOTIFY</span>
+    <span class="pill"><b>Errors</b> typed catalog PGWEB_E001–E999 · rich dev page · opaque prod 500</span>
+    <span class="pill"><b>Deploy</b> reconciling transactional push · --dry-run · --with-migrate · retry on concurrent DDL · deployments ledger</span>
+    <span class="pill"><b>Assets</b> ETag/304 · content-hash fingerprints + immutable cache in prod · 20 MiB cap</span>
+    <span class="pill"><b>Config</b> pgweb.settings + pg-web env + pgweb.setting() SQL helper</span>
+    <span class="pill"><b>Validation</b> pg-web check (layout/Tera/SQL/migrations) as CI gate</span>
+    <span class="pill"><b>Packaging</b> all-in-one Docker image with CLI baked in · crates.io CLI</span>
+  </div>
+
+  <h3>Verified live infrastructure</h3>
+  <ul>
+    <li><strong>crates.io:</strong> <code>pg-web</code> v0.2.0 published 2026-06-10 (the todo template is vendored into the crate so <code>init --template todo</code> works without a checkout).</li>
+    <li><strong>Docker Hub:</strong> <code>rtaylor96/pg-web</code> pushed 2026-06-11 — explicitly a temporary namespace pending the official <code>pgweb</code> org.</li>
+    <li><strong>pg-web.dev:</strong> live, HTTP 200, serving <code>/styles.cc173fa2.css</code> — i.e., the production fingerprint pipeline is running in the wild, on a Hetzner VPS bootstrapped by a script in <code>site/scripts/</code>. The docs site is a pg-web app in <code>site/</code> in this repo.</li>
+    <li><strong>CI:</strong> GitHub Actions runs all five test tiers + a <code>cargo publish --dry-run</code> on every push; a tag-driven release workflow builds/publishes the image and crate, secrets-gated so forks can't accidentally publish.</li>
+  </ul>
+
+  <h3>Actively in motion (from git history + open prompt specs)</h3>
+  <ul>
+    <li>Public-launch tail work: README/namespace cleanup, docs-site content updates, deploy automation for pg-web.dev (prompts 009–012, commits of Jun 8–10).</li>
+    <li><strong>Phase 2 spec drafted</strong> (<code>docs/internal/sessions/session_6.md</code>): cookie sessions + login, an RLS bridge via a per-request <code>pgweb.user_id</code> GUC, CSRF double-submit, and realtime SSE subscriptions on by default — with ~15 open design questions explicitly listed.</li>
+    <li><strong>Open exploration prompts</strong> queued as work orders: JSON API + MCP support (005), live-dev-DB validation to replace sqlparser guessing (004), request access logging (006), Tera render-error ergonomics (007).</li>
+  </ul>
+
+  <div class="callout good">
+    <h4>Quality signals that stand out</h4>
+    <p>Docker E2E tests are <em>mandatory</em> (the suite hard-fails if Docker or the image is missing — no silent skip-green). Every feature must be exercised by a companion app before it counts as shipped. The decision log records dates, rationale, and rejected alternatives. The docs distinguish public surface from <code>docs/internal/</code> maintainer material. Conservative defaults appear where they matter: an unreadable <code>env</code> setting falls back to <em>production</em> (don't leak internals), <code>env set</code> echoes only the key (don't log secrets), dry-run output tags every line.</p>
+  </div>
+</section>
+
+<!-- ======================= METHOD ======================= -->
+<section id="method">
+  <h2><span class="num">3</span>How it's being built — the agentic development model</h2>
+  <p>This repo is one of the cleaner public examples of LLM-driven engineering with real guardrails, and that's worth analyzing in its own right:</p>
+  <ul>
+    <li><code>CLAUDE.md</code> is a genuine north-star prompt: seven numbered architectural invariants ("one HTTP request = one SPI transaction", "extension ↔ CLI strictly decoupled", "no raw FFI"), coding practices, commit conventions, and session rituals ("if your change touches an invariant, raise a flag and wait for human confirmation").</li>
+    <li><code>prompts/001–012</code> are numbered work orders — each a structured spec (status, context, research tasks, constraints) for a future agent session. Several explicitly instruct the agent to research and <em>discuss with Robert before designing anything</em>.</li>
+    <li><code>docs/internal/sessions/session_1–6.md</code> are session logs: what shipped, what was deferred and why, plus a numbered pitfalls catalog (#1–18) of environment landmines (pgrx ICEs, Git Bash path mangling, port shadowing) so future sessions don't rediscover them.</li>
+    <li>The cadence it produced: v0.1.0 — a usable framework with five test tiers — in <strong>seven calendar days</strong> across 4 sessions; v0.2.0 the next day; then a ~5-week pause; then a 2-week public-launch push.</li>
+  </ul>
+  <p>Two honest caveats. First, single-author + agent-generated means the code has likely never had an adversarial human review — consistency is excellent, but consistent blind spots are exactly what this process produces (the superuser-execution issue in §5 is a plausible example). Second, session logs and prompts double the repo's documentation mass; the discipline of keeping <code>OVERVIEW.md</code> regenerated at milestones is currently holding, but doc drift is already visible in small ways (the architecture doc claims a <code>pgweb.port</code> GUC that doesn't exist yet).</p>
+</section>
+
+<!-- ======================= STRENGTHS ======================= -->
+<section id="strengths">
+  <h2><span class="num">4</span>Strengths</h2>
+  <div class="two-col">
+    <div class="card">
+      <h4>1 · The whole loop actually works</h4>
+      <p>Not a tech demo: <code>cargo install pg-web</code> → <code>init --template todo</code> → <code>up</code> → <code>migrate apply</code> → <code>push</code> → working app. Dev mode adds watch, content-hash dedupe, SQL preflight in <code>BEGIN…ROLLBACK</code>, and browser live-reload (CSS changes hot-swap without a reload). The deploy story (Caddy + compose + SSH-tunneled push) is documented end-to-end and demonstrably used for pg-web.dev.</p>
+    </div>
+    <div class="card">
+      <h4>2 · Push is a real deploy tool</h4>
+      <p>One transaction: validate templates pre-DB, upsert routes/templates/handlers/assets, <em>verify every handler exists with the right signature</em>, reconcile-delete anything no longer on disk, sync settings, append a deployments-ledger row. Plus <code>--dry-run</code> (rollback), a migration gate (refuses to push past pending migrations), jittered retry on concurrent-DDL races, and a <code>pg_stat_activity</code>-powered diagnostic that names the sibling pusher and the exact <code>kill</code> command. This is more operational care than many funded frameworks ship.</p>
+    </div>
+    <div class="card">
+      <h4>3 · Error experience</h4>
+      <p>A flat, typed error catalog (PGWEB_E001–E999) where every variant carries a stable code, title, remedy text, and a hand-rendered (deliberately Tera-free) dev page showing SQLSTATE/MESSAGE/DETAIL/HINT/CONTEXT plus the request dump — all HTML-escaped. Production mode logs the full picture and serves an opaque 500. The classification even distinguishes Tera parse errors from render errors so the fix hint differs.</p>
+    </div>
+    <div class="card">
+      <h4>4 · Testing discipline</h4>
+      <p>Five tiers with explicit philosophy: pgrx tests against real Postgres (never mocked), HTTP smoke, CLI unit/integration, testcontainers Docker E2E against the actual shipped image, and a 19-section black-box CLI smoke script. E2E covers the ugly paths: broken templates rejected at push, prod-mode information hiding, ETag/304, concurrent-push retry, livereload SSE end-to-end.</p>
+    </div>
+    <div class="card">
+      <h4>5 · Architectural restraint</h4>
+      <p>Axum used as a deliberately thin shell (one fallback handler) so migrating off it stays cheap. Naïve route scan chosen <em>with a written re-evaluation trigger</em>. No premature caching, no premature abstraction, dead code kept only with a documented Phase-2 reason. The "decision log with rejected alternatives" habit means future contributors inherit the reasoning, not just the result.</p>
+    </div>
+    <div class="card">
+      <h4>6 · Honest documentation</h4>
+      <p>The docs repeatedly flag their own gaps: "push is localhost-only until F.2", "live-reload lacks bfcache simulation tests", "sqlparser is less authoritative than Postgres's own parser", "secrets are not encrypted at rest." Prompt 005 even documents a docs-vs-reality contradiction (advertised JSON APIs vs. hardcoded text/html). This level of self-awareness materially raises trust in everything else the docs claim.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= PROBLEMS ======================= -->
+<section id="problems">
+  <h2><span class="num">5</span>Problems &amp; risks</h2>
+  <p class="soft">Each finding is graded by impact on the project's stated ambitions (a production-deployable multi-user framework). Click to expand. File references point into the repo at <code>918f40b</code>.</p>
+
+  <div class="filterbar" id="filters">
+    <button class="chip on" data-sev="all">All <span id="cAll"></span></button>
+    <button class="chip" data-sev="crit">Critical</button>
+    <button class="chip" data-sev="high">High</button>
+    <button class="chip" data-sev="med">Medium</button>
+    <button class="chip" data-sev="low">Low</button>
+    <button class="chip util" id="expandAll">expand all</button>
+    <button class="chip" id="collapseAll">collapse all</button>
+  </div>
+
+  <h3>Architecture &amp; performance</h3>
+
+  <details class="finding" data-sev="crit">
+    <summary><span class="arrow">▶</span><span class="badge crit">critical</span><span class="t">The server handles exactly one request at a time — and a slow handler stalls everything, forever</span></summary>
+    <div class="body">
+      <p>The worker builds a <code>current_thread</code> Tokio runtime (required: only the SPI-attached thread may touch Postgres), and every request runs <code>BackgroundWorker::transaction(...)</code> — a <em>synchronous, blocking</em> call — directly on that one event-loop thread. While any handler's SQL runs, nothing else makes progress: not other page requests, not asset serving, not livereload SSE keepalives.</p>
+      <p>Compounding it, there is <strong>no per-request timeout</strong> — no <code>statement_timeout</code> is set around handler calls. A handler that hits a lock, a slow plan, or a <code>pg_sleep()</code> wedges the entire web tier indefinitely. The docs acknowledge external-API blocking as a Phase-3 item, but the actual behavior is stricter than documented: it isn't "blocks the worker thread", it's "serializes the whole site."</p>
+      <p>The VISION target of 1,000 req/s on 1 vCPU may still be reachable for sub-millisecond SPI handlers <em>sequentially</em>, but tail latency under mixed traffic will be poor, and no benchmark exists yet. Paths forward exist (N background workers sharing the port via <code>SO_REUSEPORT</code>, each with its own SPI backend; or a bounded queue with backpressure — already sketched as Phase 3 "internal concurrency management"), but this is the framework's load-bearing constraint.</p>
+      <p class="ev">Evidence: <code>crates/pg_web_ext/src/worker.rs:63-76</code> (current_thread runtime), <code>src/router.rs:67-71</code> (blocking transaction per request), <code>src/http.rs:120</code> (await-free dispatch); no statement_timeout anywhere in the ext crate.</p>
+    </div>
+  </details>
+
+  <details class="finding" data-sev="crit">
+    <summary><span class="arrow">▶</span><span class="badge crit">critical</span><span class="t">Every handler executes as the Postgres superuser — which also quietly breaks the Phase 2 RLS plan</span></summary>
+    <div class="body">
+      <p>The worker attaches to SPI with <code>connect_worker_to_spi(Some(&amp;db), None)</code> — a NULL username, which in Postgres means the background worker runs as the bootstrap superuser. Consequences:</p>
+      <ul>
+        <li>Any SQL injection bug in <em>user-written handler code</em> (string-concatenated SQL in someone's PL/pgSQL) is instantly a full-cluster compromise — there is no privilege floor beneath app code.</li>
+        <li>Every handler can read <code>pgweb.settings</code> (where the framework tells you to put Stripe keys), drop schemas, or alter the framework's own tables.</li>
+        <li><strong>Superusers bypass Row-Level Security entirely.</strong> The drafted Phase 2 RLS bridge (set <code>pgweb.user_id</code> GUC, write <code>USING (author_id = current_setting('pgweb.user_id')::bigint)</code> policies) will silently not enforce anything unless the execution role changes first. Session 6's open question B1 leans "GUC over SET ROLE" — that lean is incompatible with the current connection model. The fix (connect as, or <code>SET LOCAL ROLE</code> to, a dedicated non-superuser <code>pgweb_app</code> role with explicit grants) needs to land <em>before</em> auth ships, and it will surface grant-management work the roadmap hasn't budgeted.</li>
+      </ul>
+      <p class="ev">Evidence: <code>crates/pg_web_ext/src/worker.rs:56</code>; PG docs on <code>BackgroundWorkerInitializeConnection</code> NULL-user semantics; <code>docs/internal/sessions/session_6.md</code> Track B.</p>
+    </div>
+  </details>
+
+  <details class="finding" data-sev="crit">
+    <summary><span class="arrow">▶</span><span class="badge crit">critical</span><span class="t">Handlers can't set status codes, headers, cookies, redirects, or content types — and Phase 2 depends on all of these</span></summary>
+    <div class="body">
+      <p>The response contract is: body string, status 200 (or 404/500 chosen by the framework), <code>Content-Type: text/html</code> always. There is no way for an app to:</p>
+      <ul>
+        <li>Issue a redirect (no 302/303 + <code>Location</code> — Post/Redirect/Get is impossible; HTMX swaps paper over this but plain-form fallbacks break),</li>
+        <li>Set or read cookies (so even hand-rolled auth is impossible in userland today),</li>
+        <li>Return <code>application/json</code> — despite <code>docs/APP-LAYOUT.md</code> advertising "JSON APIs" as a raw-text-route use case (prompt 005 documents this docs-vs-reality gap candidly),</li>
+        <li>Control caching for dynamic pages, send 201/204/4xx semantics, etc.</li>
+      </ul>
+      <p>The hidden cost: the Phase 2 spec's login flow says the POST handler "sets cookie via Set-Cookie header in the response" — a mechanism that does not exist. <strong>A response-contract redesign (envelope return type, e.g. <code>{status, headers, body}</code> or a <code>pgweb.respond(...)</code> helper) is an unacknowledged prerequisite on the auth critical path</strong>, and it touches the router, the HTTP layer, push validation, <code>check</code>, and the docs simultaneously. Better to do it once, deliberately, before Phase 2 — not as a patch during it.</p>
+      <p class="ev">Evidence: <code>crates/pg_web_ext/src/http.rs:120-135</code> (hardcoded content-type), <code>src/router.rs:46-60</code> (ServeOutcome has no headers), <code>prompts/005_json_api_and_mcp_support.md</code>, <code>docs/internal/sessions/session_6.md</code> Track A.</p>
+    </div>
+  </details>
+
+  <details class="finding" data-sev="high">
+    <summary><span class="arrow">▶</span><span class="badge high">high</span><span class="t">Per-request overhead is unmeasured and structurally heavy: full route scan + fresh template parse + 2–3 transactions per request</span></summary>
+    <div class="body">
+      <p>Each page request: opens a transaction, <em>loads and sorts every route for the method</em>, fetches the template text, runs the handler, parses the template from scratch with <code>Tera::one_off</code> (no parsed-template cache), then opens a <em>second</em> transaction just to read the <code>env</code> setting for livereload injection (and another for assets/errors). All of these are documented decisions with re-evaluation triggers, and at 20 routes none of it matters — but the combination means the 1k req/s success criterion is doing a lot of unverified work. A routes/templates snapshot cache invalidated by LISTEN/NOTIFY (infrastructure that already exists for livereload) is the obvious, cheap v0.3 win.</p>
+      <p class="ev">Evidence: <code>router.rs:382-465</code> (per-request fetch+sort), <code>templating.rs:19</code> (one_off), <code>http.rs:127,165,203</code> (extra env transactions); VISION.md "1,000 req/s — to be benchmarked."</p>
+    </div>
+  </details>
+
+  <details class="finding" data-sev="high">
+    <summary><span class="arrow">▶</span><span class="badge high">high</span><span class="t">No graceful-shutdown path for the HTTP worker</span></summary>
+    <div class="body">
+      <p>The worker registers SIGHUP/SIGTERM wake flags, then parks forever in <code>rt.block_on(axum::serve(...))</code> — nothing ever checks the signal flags or wires them into Axum's graceful-shutdown future. On <code>pg_ctl stop</code> the postmaster's SIGTERM is likely ignored until escalation, meaning slow shutdowns/restarts of the whole database because of the web worker. Low effort to fix (a <code>with_graceful_shutdown</code> future polling <code>BackgroundWorker::sigterm_received()</code>); meaningful operational papercut until then.</p>
+      <p class="ev">Evidence: <code>crates/pg_web_ext/src/worker.rs:48-112</code>.</p>
+    </div>
+  </details>
+
+  <h3>Security posture</h3>
+
+  <details class="finding" data-sev="high">
+    <summary><span class="arrow">▶</span><span class="badge high">high</span><span class="t">The trust model is "anyone who can reach :8080 runs your SQL as superuser, with no rate limit, no CSRF, and no security headers"</span></summary>
+    <div class="body">
+      <p>Today that's a coherent Phase-1 position for personal apps behind Caddy — there are no sessions to steal and the demo is anonymous-by-design. But several layers are absent at once: no CSRF protection (a cross-site form can POST to any pg-web app; the todo demo is writable by any page you visit), no rate limiting or login throttling (planned only as a documented recipe), no CSP/X-Frame-Options/etc. defaults, and a 2 MiB body cap as essentially the only abuse control. Combined with single-threaded serving, a trivial slow-POST or expensive-query loop is a one-curl denial of service. Phase 2 plans CSRF properly; the rest needs an explicit hardening pass and a threat-model doc — adopters putting an HTTP listener <em>inside</em> their database will ask for exactly that document first.</p>
+      <p class="ev">Evidence: <code>http.rs</code> (no security headers, MAX_BODY_BYTES only), session_6.md CSRF section (planned), DEPLOYMENT.md security checklist (host-level only).</p>
+    </div>
+  </details>
+
+  <details class="finding" data-sev="med">
+    <summary><span class="arrow">▶</span><span class="badge med">medium</span><span class="t">Secrets sit in a plain table readable by every handler and every DB session</span></summary>
+    <div class="body">
+      <p><code>pg-web env set STRIPE_KEY=…</code> writes plaintext into <code>pgweb.settings</code>. Acknowledged as a trade-off in ARCHITECTURE.md, but the consequences compound with superuser execution: any handler, any SQL injection, any <code>pg_dump</code>, and any future <code>pg-web export</code> can exfiltrate all secrets. Even without encryption-at-rest, separating secrets into a table with column-level grants for a dedicated role (post-role-split), excluding them from dumps/exports by default, and masking <code>env list</code> output would close most of the practical gap.</p>
+      <p class="ev">Evidence: <code>schema.rs:72-77</code>, <code>env.rs</code>, ARCHITECTURE.md "Secrets management."</p>
+    </div>
+  </details>
+
+  <details class="finding" data-sev="low">
+    <summary><span class="arrow">▶</span><span class="badge low">low</span><span class="t">Hand-rolled SQL quoting on the request path (a documented workaround, but a standing footgun)</span></summary>
+    <div class="body">
+      <p>Route/template/asset lookups interpolate values via a local <code>quote_literal()</code> (doubling single quotes) instead of SPI parameter binding — the team hit a rustc 1.95 ICE with pgrx's <code>DatumWithOid</code> arrays and documented the workaround (pitfall catalog). The escaping is correct under default <code>standard_conforming_strings=on</code>, and handler names are additionally gated by a strict identifier allowlist before being spliced into the wrapper call. Risk today is theoretical; the cleanup (return to bound parameters when toolchain allows) should be tracked so the workaround doesn't fossilize into five more call sites.</p>
+      <p class="ev">Evidence: <code>router.rs:322-357</code> (quote_literal / is_safe_ident), <code>schema.rs:131-163</code> (_framework_call_handler uses EXECUTE … USING for the JSON — good), OVERVIEW.md gotcha #7.</p>
+    </div>
+  </details>
+
+  <h3>Capability gaps that bite users early</h3>
+
+  <details class="finding" data-sev="high">
+    <summary><span class="arrow">▶</span><span class="badge high">high</span><span class="t">GET and POST only — no PUT/PATCH/DELETE, no file uploads, no Range/compression</span></summary>
+    <div class="body">
+      <p>The layout scanner reserves <code>put/patch/delete/head/options</code> stems for "Phase 2+", so HTMX's own <code>hx-delete</code>/<code>hx-put</code> attributes are unusable; the demo routes deletion through <code>POST /todos/delete</code>. Multipart bodies aren't parsed (forms only, 2 MiB cap) so file upload — table stakes for CRUD apps — has no story. Assets are served whole from memory with no gzip/brotli and no Range support (video/PDF seeking breaks). Individually small; together they define the line between "demo apps" and "real apps", and most are wiring rather than architecture.</p>
+      <p class="ev">Evidence: <code>paths.rs:141-178</code> (reserved stems), <code>http.rs:29-32,98-102</code> (form-only parsing, body cap), <code>http.rs:158-194</code> (no Range/encoding).</p>
+    </div>
+  </details>
+
+  <details class="finding" data-sev="med">
+    <summary><span class="arrow">▶</span><span class="badge med">medium</span><span class="t">`pg-web check` validates Postgres SQL with a non-Postgres parser — a structural source of false positives</span></summary>
+    <div class="body">
+      <p>The offline validator uses the generic <code>sqlparser</code> crate. Real-world Postgres SQL keeps escaping its grammar: two field bugs already shipped and were fixed (dollar-quoted <code>COMMENT ON</code> bodies; <code>gin_trgm_ops</code> opclasses), each patched by carving out tolerant bypasses — <code>CREATE EXTENSION</code> and <code>CREATE INDEX</code> statements now skip parsing entirely, which also means <em>real</em> typos in those statements pass. The team knows: prompt 004 proposes validating against an ephemeral live dev database instead, and the doc comments openly call the checks "intentionally approximate". The upgrade path (libpg_query bindings, or the live-DB preflight) should come before users learn to ignore red checks.</p>
+      <p class="ev">Evidence: <code>check.rs:1-60</code> (scope disclaimers), commits <code>10d415d</code>, <code>30c1235</code>, <code>3c7fe3b</code>; <code>prompts/004_live_dev_db_for_check_validation.md</code>.</p>
+    </div>
+  </details>
+
+  <details class="finding" data-sev="med">
+    <summary><span class="arrow">▶</span><span class="badge med">medium</span><span class="t">One worker serves one database; multi-app or multi-tenant hosting means one container per app</span></summary>
+    <div class="body">
+      <p>The BGW connects to a single database chosen by <code>PGWEB_DATABASE</code>/<code>POSTGRES_DB</code> at boot, binds one hardcoded port, and serves that app. Hosting two apps on one Postgres = two clusters/containers. Fine for the single-VPS target persona; a real constraint for the "platform" ambitions (and for anyone hoping to use spare capacity of an existing cluster). Worth an explicit roadmap position: per-database workers with per-database ports/hostnames, or a stated non-goal.</p>
+      <p class="ev">Evidence: <code>worker.rs:20-37</code>.</p>
+    </div>
+  </details>
+
+  <h3>Operational &amp; consistency issues</h3>
+
+  <details class="finding" data-sev="med">
+    <summary><span class="arrow">▶</span><span class="badge med">medium</span><span class="t">No extension upgrade path between versions</span></summary>
+    <div class="body">
+      <p>There are no <code>pg_web_ext--0.1.0--0.2.0.sql</code> upgrade scripts; installs are bootstrap-only. Today schema churn is invisible (v0.2 changed a CHECK constraint via fresh installs), but the moment a real user has data in a v0.2 container and Phase 2 adds <code>pgweb.sessions</code>, upgrades become "dump, recreate, restore" unless ALTER EXTENSION paths ship. Also note the runtime coupling: upgrading the web server now means replacing the Postgres image and restarting the database — worth documenting as an accepted cost of the architecture.</p>
+      <p class="ev">Evidence: extension SQL emitted only as bootstrap (<code>schema.rs</code> <code>extension_sql!</code>), single versioned install file in the image.</p>
+    </div>
+  </details>
+
+  <details class="finding" data-sev="med">
+    <summary><span class="arrow">▶</span><span class="badge med">medium</span><span class="t">No health endpoint, no metrics, no persisted request log — and the Docker healthcheck runs your homepage</span></summary>
+    <div class="body">
+      <p><code>/_pgweb/health</code> and Prometheus metrics are Phase 3/4 items; meanwhile the image's HEALTHCHECK curls <code>GET /</code>, so a bug in the <em>user's</em> index handler marks the whole container unhealthy (restart loops under orchestrators). Request logging exists only as stdout tracing; prompt 006 (access logging) is open. For a framework whose pitch includes "ops visibility" (the deployments ledger is great), the runtime side is still blind.</p>
+      <p class="ev">Evidence: <code>Dockerfile</code> HEALTHCHECK, ROADMAP Phase 3/4, <code>prompts/006</code>.</p>
+    </div>
+  </details>
+
+  <details class="finding" data-sev="low">
+    <summary><span class="arrow">▶</span><span class="badge low">low</span><span class="t">Doc/code drift: the configurable port that isn't, and a self-violated invariant</span></summary>
+    <div class="body">
+      <p>ARCHITECTURE.md says the port is "configurable via the <code>pgweb.port</code> GUC"; the code hardcodes 8080 (<code>worker.rs:21</code>, "will become a GUC later") and <code>pgweb.toml [server].port</code> is read by nothing at runtime. Separately, CLAUDE.md invariant #5 forbids the extension opening TCP connections back to Postgres — which is exactly what the livereload LISTEN task does (tokio-postgres to loopback), with good reasons, dev-only today… but Phase 2 realtime makes that connection always-on in production. The invariant should be amended rather than silently excepted. Minor, but invariant documents only work if they're kept true.</p>
+      <p class="ev">Evidence: <code>worker.rs:21,127-143</code>, <code>listen_router.rs:150</code>, CLAUDE.md §invariants, ARCHITECTURE.md §background worker.</p>
+    </div>
+  </details>
+
+  <details class="finding" data-sev="low">
+    <summary><span class="arrow">▶</span><span class="badge low">low</span><span class="t">Small correctness nits</span></summary>
+    <div class="body">
+      <ul>
+        <li><code>lookup_fallback</code> issues two separate queries for one row's two columns (<code>router.rs:470-486</code>).</li>
+        <li><code>HEAD /</code> returns the 404 fallback (only GET/POST routes exist; Axum's fallback receives HEAD verbatim) — surprising for probes.</li>
+        <li>Tokio is compiled with <code>rt-multi-thread</code> feature while only the current-thread runtime is used — harmless dependency residue.</li>
+        <li>The ROADMAP admits live-reload SSE lacks automated bfcache/navigation-leak tests after fixing exactly that bug class — the regression test is a string-assertion on the JS, not a behavioral test.</li>
+        <li>OVERVIEW.md's code map lists ROADMAP/ARCHITECTURE twice and omits newer modules (livereload, errors, settings) — cosmetic drift.</li>
+      </ul>
+    </div>
+  </details>
+
+  <h3>Project-level risks</h3>
+
+  <details class="finding" data-sev="high">
+    <summary><span class="arrow">▶</span><span class="badge high">high</span><span class="t">Adoption headwinds: bus factor of one, a skeptical DBA culture, and a narrow eligible audience</span></summary>
+    <div class="body">
+      <p>The eligible user must: own their Postgres host (no RDS/Cloud SQL/Supabase — custom extensions are banned there), accept HTMX-only UI, write business logic in SQL/PL/pgSQL, and be comfortable running an HTTP listener inside the same process tree as their data. Each filter is defensible; multiplied, they define a niche-of-a-niche. Meanwhile the strongest cultural antibody — "nothing extra runs in my database" — comes precisely from the operations people who'd have to approve it; a bug in the HTTP path lives in the database's process tree (own process, but shared fate on crashes via the postmaster's 5s restart policy, shared CPU/RAM). Add a single anonymous-ish maintainer, zero external contributors, and an agent-driven process with no second reviewer, and the project's survival currently depends on one person's continued attention. None of this is a code flaw; all of it shapes what the project can credibly promise. The mitigations are the classic ones: ruthless honesty docs (already strong), a benchmark + threat model, and making the first 10 external users heroically successful.</p>
+    </div>
+  </details>
+</section>
+
+<!-- ======================= LANDSCAPE ======================= -->
+<section id="landscape">
+  <h2><span class="num">6</span>Competitive landscape — where it sits</h2>
+  <table>
+    <thead><tr><th>Project</th><th>Thesis</th><th>How pg-web differs</th></tr></thead>
+    <tbody>
+      <tr><td><b>SQLPage</b></td><td>Rust binary beside the DB; <code>.sql</code> files render to server-side pages via prebuilt components.</td><td>Closest DX cousin. pg-web moves the server <em>inside</em> Postgres (SPI, zero hops), uses free-form Tera+HTMX instead of a component catalog, and stores the app <em>in</em> the database. SQLPage is more mature, multi-DB, and lower-risk; pg-web is more radical and more integrated (migrations, env, check, ledger, live-reload).</td></tr>
+      <tr><td><b>PostgREST / Supabase</b></td><td>Auto-generated REST API over your schema; Supabase wraps it in a managed platform with auth/realtime.</td><td>Different layer: they emit JSON for an external frontend; pg-web emits the <em>UI itself</em>. Supabase's auth/RLS/realtime feature set is precisely pg-web's Phase 2 roadmap — strong prior art to borrow from, and proof the patterns (GUC + RLS, LISTEN-based realtime) work at scale. pg-web's wedge is self-hosters Supabase's cloud can't serve (custom extensions).</td></tr>
+      <tr><td><b>Omnigres</b></td><td>"Postgres as application platform" — a suite of extensions including an in-database HTTP server.</td><td>The most direct thesis rival. Omnigres is broader and more infrastructural; pg-web is opinionated and product-shaped: one app model (pages/ + HTMX), one CLI, one image, a tutorial that works. The competition here is DX coherence, and pg-web's is currently sharper.</td></tr>
+      <tr><td><b>Rails/Django/Laravel + HTMX</b></td><td>The boring alternative: a mature framework with HTMX sprinkled in.</td><td>pg-web's honest pitch against these isn't features (it loses today) — it's the collapsed operational model: one container, one backup file, one mental model, zero N+1/ORM tax. That trade only wins for small teams who already think in SQL.</td></tr>
+    </tbody>
+  </table>
+  <p class="soft">Timing tailwinds: the HTMX/hypermedia revival, the "just use Postgres" movement (queues, search, vectors in PG), and growing distrust of managed-cloud lock-in all blow in pg-web's direction. The headwind is that each of those movements has cheaper on-ramps than installing a C-ABI extension into your database.</p>
+</section>
+
+<!-- ======================= POSSIBILITIES ======================= -->
+<section id="possibilities">
+  <h2><span class="num">7</span>Possibilities — what this could open up</h2>
+
+  <div class="card">
+    <h4>1 · The killer artifact: your entire app is one <code>pg_dump</code></h4>
+    <p>Because routes, templates, assets, handlers, settings, schema, and data all live in one database, a single dump file <em>is</em> the application — code and state, restorable into a fresh container as a running system. The roadmap's Phase 4 trio (<code>pg-web backup</code>, code-only export, and a <code>pgweb.sources</code> schema mirroring the working tree and even git history into tables) would make pg-web the only web framework where "hand someone a file" equals "hand someone the whole product." This is the most marketable, least-contested idea in the repo: nothing mainstream offers clone-prod-to-laptop as one command. It deserves to be pulled forward from Phase 4.</p>
+  </div>
+
+  <div class="card">
+    <h4>2 · An agent-native backend (the prompt-005 vision)</h4>
+    <p>The queued JSON API + MCP exploration reframes pg-web for the agent era: the same SQL handlers serving humans HTML could expose typed MCP tools and sparse JSON to LLM agents — making a pg-web app a transactional "memory layer" for agent swarms, with RLS as the permission system and LISTEN/NOTIFY as the event bus. The project's own development process (CLAUDE.md invariants, prompt work orders) doubles as evidence the author understands agent ergonomics. Paired with the parked "docs MCP" idea (agents writing pg-web apps get authoritative, current framework docs as tools), this is a coherent and early position almost no web framework currently occupies.</p>
+  </div>
+
+  <div class="card">
+    <h4>3 · Database-native realtime with zero extra infrastructure</h4>
+    <p>The channel-aware <code>ListenRouter</code> (one LISTEN connection fanning out to N SSE tabs in memory) already works for live-reload. Phase 2's planned <code>&lt;div hx-ext="sse" sse-connect="/_pgweb/subscribe/orders.user.42"&gt;</code> + <code>pgweb.notify_app()</code> would give CRUD apps push updates with no Redis, no websocket service, no message broker — the database's own pub/sub doing the work. For the target persona (small self-hosted apps), that's a feature normally costing two more containers.</p>
+  </div>
+
+  <div class="card">
+    <h4>4 · Concrete niches it could own near-term</h4>
+    <ul>
+      <li><b>Internal tools &amp; admin panels</b> — SQL-literate teams shipping CRUD against existing Postgres data, one container, behind the VPN.</li>
+      <li><b>Single-tenant deployments</b> — one customer = one container = one dump; a compliance-friendly isolation story that multi-tenant SaaS frameworks fight to fake.</li>
+      <li><b>pgvector-era demos and small AI products</b> — embeddings, search, business logic, and the UI in literally one process tree.</li>
+      <li><b>Teaching</b> — the cleanest "SQL is enough" pedagogy vehicle since PostgREST; the tutorial already reads like a course module.</li>
+      <li><b>Spin-offs</b> — the planned native-Rust <code>pg_catalog</code> schema-diff engine (Phase 2.5) would be valuable to the whole ecosystem as a standalone crate, framework aside.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ======================= MISSING ======================= -->
+<section id="missing">
+  <h2><span class="num">8</span>What's missing &amp; what to add next</h2>
+
+  <h3>Already on their roadmap (with my read on sequencing)</h3>
+  <table>
+    <thead><tr><th>Item</th><th>Their phase</th><th>Assessment</th></tr></thead>
+    <tbody>
+      <tr><td>Auth: cookie sessions, login, password helpers, CSRF</td><td>Phase 2 (spec drafted)</td><td>Right next move — but blocked behind the response-contract rework (Set-Cookie) and the execution-role fix (RLS). Sequence those two first or Phase 2 will ship compromised.</td></tr>
+      <tr><td>RLS bridge via <code>pgweb.user_id</code> GUC</td><td>Phase 2</td><td>Correct industry pattern (Supabase/PostgREST-proven) — <em>iff</em> handlers stop running as superuser.</td></tr>
+      <tr><td>Realtime SSE subscriptions</td><td>Phase 2</td><td>Infrastructure already exists; high differentiation per unit effort. Watch the single-thread interaction: many idle SSE connections are fine, but event fan-out competes with request serving on one thread.</td></tr>
+      <tr><td>Declarative schema diff (<code>migrate create</code>, native Rust)</td><td>Phase 2.5 (punted)</td><td>Well-reasoned approach doc (rejected Prisma/DBML/migra with rationale). Biggest single engineering lift on the roadmap; fine to defer.</td></tr>
+      <tr><td>Async job queue + second BGW</td><td>Phase 3</td><td>Also the de-facto fix for "handlers can't call external APIs" — arguably more urgent than its phase number suggests.</td></tr>
+      <tr><td>Dashboard, request log, metrics, backup/export CLI</td><td>Phase 4</td><td>Backup/export deserves promotion (see Possibilities #1); a minimal <code>/_pgweb/health</code> shouldn't wait for Phase 3.</td></tr>
+      <tr><td>SSH-tunneled remote push (<code>--target</code>), app test framework (<code>pg-web test</code>), docs MCP, agent bug-reporting</td><td>Deferred / parked</td><td>All sensible; <code>pg-web test</code> will matter the moment two real apps exist.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Missing from the roadmap entirely (recommended additions)</h3>
+  <ol>
+    <li><b>Response contract v2</b> — status/headers/cookies/redirect/content-type from handlers. The single most leveraged change in the repo: unblocks auth, fixes the JSON-API docs gap, enables PRG, and is the foundation prompt 005 needs. Do it as its own session with a migration story for existing handlers.</li>
+    <li><b>Execution-role hardening</b> — dedicated non-superuser <code>pgweb_app</code> role, explicit grants, <code>SET LOCAL statement_timeout</code> per request, and a written threat model. This is the price of admission for anyone security-reviewing "an HTTP server inside my database."</li>
+    <li><b>The benchmark</b> — publish numbers for the 1k req/s claim (and tail latency under a slow-query mix) before someone else does. Honesty docs are this project's brand; extend it to performance.</li>
+    <li><b>Caching layer</b> — parsed-template cache + routes snapshot, invalidated via the existing NOTIFY plumbing. Cheap, large win, zero contract change.</li>
+    <li><b>Concurrency plan</b> — even just the written design: N workers via <code>SO_REUSEPORT</code> vs. bounded queue. Adopters need to know the ceiling is a plan, not a wall.</li>
+    <li><b>Extension upgrade scripts</b> (<code>ALTER EXTENSION … UPDATE</code>) before v0.3 changes the schema — the first real user with data makes this retroactively urgent.</li>
+    <li><b>Full method set + multipart uploads + compression/Range</b> — the "real app" capability floor.</li>
+    <li><b>Ecosystem motions</b> — a second flagship example beyond todo (a blog with auth would dogfood Phase 2), a "pg-web vs SQLPage vs PostgREST" honesty page, PGXN/pgxman packaging for non-Docker installs, and seeding GitHub issues from the roadmap so newcomers see a living project (0 open issues currently reads as "nothing to do" rather than "perfect").</li>
+  </ol>
+</section>
+
+<!-- ======================= SCORECARD ======================= -->
+<section id="scorecard">
+  <h2><span class="num">9</span>Scorecard</h2>
+  <p class="soft">Subjective 0–10, calibrated against what a framework at v0.2 credibly needs — not against Rails.</p>
+  <div class="scores" id="scores">
+    <div class="scorerow"><span class="lbl">Vision &amp; coherence <small>clear thesis, disciplined non-goals</small></span><div class="bar"><i data-w="90" style="background:var(--good)"></i></div><span class="n">9.0</span></div>
+    <div class="scorerow"><span class="lbl">Documentation <small>spec, tutorial, honesty, decision log</small></span><div class="bar"><i data-w="95" style="background:var(--good)"></i></div><span class="n">9.5</span></div>
+    <div class="scorerow"><span class="lbl">Testing discipline <small>5 mandatory tiers, 230 tests, E2E on shipped image</small></span><div class="bar"><i data-w="90" style="background:var(--good)"></i></div><span class="n">9.0</span></div>
+    <div class="scorerow"><span class="lbl">Code quality <small>idiomatic, commented, restrained</small></span><div class="bar"><i data-w="85" style="background:var(--good)"></i></div><span class="n">8.5</span></div>
+    <div class="scorerow"><span class="lbl">Developer experience <small>init→dev→push loop, errors, check</small></span><div class="bar"><i data-w="85" style="background:var(--good)"></i></div><span class="n">8.5</span></div>
+    <div class="scorerow"><span class="lbl">Differentiation <small>zero-hop + app-in-DB + dogfooded</small></span><div class="bar"><i data-w="85" style="background:var(--accent)"></i></div><span class="n">8.5</span></div>
+    <div class="scorerow"><span class="lbl">Production readiness <small>upgrades, observability, ops surface</small></span><div class="bar"><i data-w="40" style="background:var(--med)"></i></div><span class="n">4.0</span></div>
+    <div class="scorerow"><span class="lbl">Security posture <small>superuser execution, no CSRF/limits yet</small></span><div class="bar"><i data-w="35" style="background:var(--high)"></i></div><span class="n">3.5</span></div>
+    <div class="scorerow"><span class="lbl">Performance &amp; scalability <small>serialized requests, unbenchmarked</small></span><div class="bar"><i data-w="30" style="background:var(--high)"></i></div><span class="n">3.0</span></div>
+    <div class="scorerow"><span class="lbl">Ecosystem &amp; community <small>day-one public, bus factor 1</small></span><div class="bar"><i data-w="20" style="background:var(--low)"></i></div><span class="n">2.0</span></div>
+  </div>
+  <p class="soft" style="margin-top:14px">The shape of this chart is the story: everything a solo builder controls is excellent; everything that needs either architectural surgery (concurrency, privileges) or other people (community) is where the risk lives.</p>
+</section>
+
+<!-- ======================= BOTTOM LINE ======================= -->
+<section id="bottomline">
+  <h2><span class="num">10</span>Bottom line</h2>
+
+  <p><strong>What it is promising:</strong> a credible bet that for a meaningful class of applications — small, self-hosted, SQL-centric, hypermedia-driven — the database can absorb the entire web stack, and that the payoff (one artifact, one backup, zero hops, an app you can <code>pg_dump</code>) outweighs the heresy. Phase 1 proves the mechanics; the live dogfooded docs site proves the sincerity; the roadmap proves the author can see most of the gaps without outside help.</p>
+
+  <p><strong>What stands between it and that promise</strong>, in priority order:</p>
+  <ol>
+    <li><b>Response contract v2</b> (headers/status/cookies/content-type) — the hidden prerequisite under Phase 2 and the JSON/MCP future. Highest leverage per line changed.</li>
+    <li><b>Privilege floor</b> — non-superuser execution role + per-request timeout + threat model. Without this, the security conversation with any serious adopter ends early, and the RLS bridge won't actually enforce.</li>
+    <li><b>Concurrency honesty</b> — benchmark, publish, then either ship the multi-worker design or scope the framework explicitly to low-concurrency apps. Both are respectable; ambiguity isn't.</li>
+    <li><b>Auth</b> (Phase 2 as specced) — the gate between "demo framework" and "app framework."</li>
+    <li><b>Pull the backup/export story forward</b> — it's the feature nobody else can match and it's currently parked in Phase 4.</li>
+  </ol>
+
+  <div class="callout accent">
+    <h4>Recommended one-line positioning</h4>
+    <p>"The web framework you can <code>pg_dump</code>" — lead with the artifact story and the dogfooded site; let zero-hop latency be the supporting act rather than the headline, since the single-threaded runtime can't yet cash the performance check the vision writes.</p>
+  </div>
+
+  <p class="soft">Use today for: internal tools, single-tenant deployments, HTMX prototypes, agent-backend experiments, and as a reference for disciplined agent-driven development. Hold off for: anything multi-user (until Phase 2 + role hardening), anything latency-SLO'd or traffic-spiky (until concurrency lands), anything where a DBA must sign off (until the threat model exists).</p>
+</section>
+
+<footer>
+  Generated 2026-06-11 by Claude Code from a full read of <code>rt96-hub/pg-web</code> @ <code>918f40b</code> — all 24 Rust source files, docs, examples, CI, prompt specs, and session logs — plus live checks of crates.io, Docker Hub, GitHub API, and pg-web.dev. Findings reference file:line in that revision. Single self-contained file; no external resources.
+</footer>
+
+</main>
+</div>
+
+<script>
+(function(){
+  // ---------- theme ----------
+  var root = document.documentElement;
+  var stored = null;
+  try { stored = localStorage.getItem('pgweb-analysis-theme'); } catch(e){}
+  var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+  function setTheme(t){
+    if (t === 'light') root.setAttribute('data-theme','light');
+    else root.removeAttribute('data-theme');
+    try { localStorage.setItem('pgweb-analysis-theme', t); } catch(e){}
+  }
+  setTheme(stored || (prefersLight ? 'light' : 'dark'));
+  document.getElementById('themeBtn').addEventListener('click', function(){
+    setTheme(root.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
+  });
+
+  // ---------- scrollspy ----------
+  var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a.item'));
+  var sections = links.map(function(a){ return document.querySelector(a.getAttribute('href')); });
+  function spy(){
+    var pos = window.scrollY + 120, active = 0;
+    for (var i = 0; i < sections.length; i++) {
+      if (sections[i] && sections[i].offsetTop <= pos) active = i;
+    }
+    links.forEach(function(a, i){ a.classList.toggle('active', i === active); });
+  }
+  window.addEventListener('scroll', spy, {passive:true});
+  spy();
+
+  // ---------- severity filter ----------
+  var findings = Array.prototype.slice.call(document.querySelectorAll('details.finding'));
+  document.getElementById('cAll').textContent = '(' + findings.length + ')';
+  var chips = Array.prototype.slice.call(document.querySelectorAll('#filters .chip[data-sev]'));
+  chips.forEach(function(chip){
+    chip.addEventListener('click', function(){
+      chips.forEach(function(c){ c.classList.remove('on'); });
+      chip.classList.add('on');
+      var sev = chip.getAttribute('data-sev');
+      findings.forEach(function(f){
+        f.classList.toggle('hiddenf', sev !== 'all' && f.getAttribute('data-sev') !== sev);
+      });
+    });
+  });
+  document.getElementById('expandAll').addEventListener('click', function(){
+    findings.forEach(function(f){ if (!f.classList.contains('hiddenf')) f.open = true; });
+  });
+  document.getElementById('collapseAll').addEventListener('click', function(){
+    findings.forEach(function(f){ f.open = false; });
+  });
+
+  // ---------- score bars animate on view ----------
+  var bars = Array.prototype.slice.call(document.querySelectorAll('.bar > i'));
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if (en.isIntersecting) {
+          var el = en.target;
+          el.style.width = el.getAttribute('data-w') + '%';
+          io.unobserve(el);
+        }
+      });
+    }, {threshold: .4});
+    bars.forEach(function(b){ io.observe(b); });
+  } else {
+    bars.forEach(function(b){ b.style.width = b.getAttribute('data-w') + '%'; });
+  }
+})();
+</script>
+</body>
+</html>
