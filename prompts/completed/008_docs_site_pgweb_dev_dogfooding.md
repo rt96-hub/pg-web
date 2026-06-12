@@ -1,6 +1,6 @@
 # 008 — Set up pg-web.dev as a real, dogfooded pg-web application
 
-**Status:** Handoff prompt — ready to execute  
+**Status:** ✅ Completed (moved to `prompts/completed/` 2026-06-12)  
 **Priority:** High (foundational for open source launch + credibility)  
 **Owner decision (2026-06):** License stays fully open (MIT OR Apache-2.0). The documentation website for the project **must itself be a pg-web application**. We will dogfood the framework for its own public docs site on the domain the owner already controls (`pg-web.dev`).
 

@@ -70,7 +70,7 @@ After 014:
 - The written threat model exists.
 - ROADMAP/ARCHITECTURE contradictions on the RLS bridge mechanism are resolved (GUC + non-superuser serving role is the chosen path; `SET ROLE` per user is dropped as unscalable and still unsafe without the floor).
 
-See also: `docs/ARCHITECTURE.md` (secrets section updated), `docs/ROADMAP.md` (Phase 2 RLS wording + decision log), `CLAUDE.md` (invariants), and the acceptance criteria in `prompts/014_*.md`.
+See also: `docs/ARCHITECTURE.md` (secrets section updated), `docs/ROADMAP.md` (Phase 2 RLS wording + decision log), `CLAUDE.md` (invariants), and the acceptance criteria in `prompts/014_execution_role_hardening_and_threat_model.md` (prompt still active — `statement_timeout` arming is a known follow-up).
 
 ---
 

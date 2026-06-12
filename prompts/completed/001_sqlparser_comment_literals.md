@@ -1,6 +1,6 @@
 # 001 — Fix `pg-web check` SQL parser limitations on dollar-quoted and escaped literals in COMMENT statements
 
-**Status:** Open improvement / future session prompt  
+**Status:** ✅ Completed (moved to `prompts/completed/` 2026-06-12)  
 **Date opened:** 2026-05-27  
 **Discovered in:** Real-world usage of pg-web by the trucking-carriers application (external project)
 

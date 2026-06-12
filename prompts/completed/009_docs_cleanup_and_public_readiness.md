@@ -1,6 +1,6 @@
 # 009 — Docs cleanup and public/open-source readiness
 
-**Status:** ✅ Executed (Session ~6 / post-v0.2.0 open-source prep)
+**Status:** ✅ Completed — executed Session ~6 / post-v0.2.0 (moved to `prompts/completed/` 2026-06-12)
 **Priority:** High (required before credible open source launch)  
 **Context:** We have decided to stay fully open source under MIT OR Apache-2.0. The project will be published to crates.io (CLI), GitHub will be the primary home, and `pg-web.dev` will be dogfooded as a real pg-web app (see sibling prompt 008). Before any announcement or external contributors, the documentation tree must be welcoming, scannable, and clearly separate "for users/app developers" from "for framework maintainers / project history."
 

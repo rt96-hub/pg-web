@@ -1,6 +1,6 @@
 # 013 — Response Contract v2: status codes, headers, cookies, redirects, and content negotiation
 
-**Status:** Open work order — high priority; keystone prerequisite for Phase 2
+**Status:** ✅ Completed (moved to `prompts/completed/` 2026-06-12)
 **Date opened:** 2026-06-11
 **Author:** Handoff prompt (derived from external codebase analysis, 2026-06-11)
 **Prerequisites:** none (this is itself a prerequisite for 014 auth, 017 uploads, 020 site-v2, and prompt 005 JSON/MCP)

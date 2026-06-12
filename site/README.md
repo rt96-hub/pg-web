@@ -99,7 +99,7 @@ The `docker-compose.yml` and `Caddyfile` in this directory are the source of tru
 - When editing docs in `docs/`, also update the corresponding page(s) under `site/pages/` (or note that a follow-up pass will reconcile). Keep the prose close to the source for now; deep rewriting can happen incrementally.
 - The long-term ideal is that the live site is the primary user-facing docs, while `docs/` in the monorepo remains the detailed spec + historical record.
 
-See the original handoff prompt at `site/008_docs_site_pgweb_dev_dogfooding.md` for the full charter, success criteria, and constraints.
+See the completed handoff prompt at `prompts/completed/008_docs_site_pgweb_dev_dogfooding.md` for the full charter, success criteria, and constraints.
 
 ## References
 

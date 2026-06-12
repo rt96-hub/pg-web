@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-11 (harness execution on 2026-06-12)
 
-This document is the Step 1 deliverable of `prompts/015_concurrency_throughput_and_benchmark.md`. It measures the single-threaded / single-SPI-backend reality of the current worker and either validates or corrects the v1.0 success criterion in `VISION.md:58`.
+This document is the Step 1 deliverable of `prompts/015_concurrency_throughput_and_benchmark.md` (Step 2 multi-worker remains open). It measures the single-threaded / single-SPI-backend reality of the current worker and either validates or corrects the v1.0 success criterion in `VISION.md:58`.
 
 The benchmark harness lives in `bench/` (reproducible with only Docker + a checkout) and is the source of the numbers below. Raw `oha` outputs are in `bench/results/` on the machine that ran the harness.
 

@@ -2,8 +2,9 @@
 
 Work-order specs for upcoming pg-web work, written in the project's own
 `prompts/` house style (status / context / options-with-**Lean** / research
-tasks / acceptance criteria / open questions) and numbered **013–020** so they
-slot directly behind the repo's existing `prompts/001–012`.
+tasks / acceptance criteria / open questions).
+
+**Completed work orders** live in [`completed/`](completed/) (001–003, 008–010, 013 as of 2026-06-12). Everything else in this directory is still active.
 
 They were derived from a full external read of the codebase on **2026-06-11**.
 Each prompt's claims were re-verified against the actual source before it was
@@ -25,7 +26,6 @@ written; `file:line` citations point into the repo at commit `918f40b`.
 
 | # | Title | Theme | Severity from analysis |
 |---|---|---|---|
-| **013** | Response Contract v2 — status/headers/cookies/redirects/content-type | Architecture (keystone) | Critical |
 | **014** | Execution-role hardening, per-request `statement_timeout`, threat model | Security | Critical |
 | **015** | Concurrency & throughput — benchmark first, then multi-worker | Performance | Critical |
 | **016** | Request-path caching (templates + routes) + graceful shutdown | Performance | High |

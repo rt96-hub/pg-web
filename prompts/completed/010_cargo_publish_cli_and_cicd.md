@@ -1,6 +1,6 @@
 # 010 — Cargo / crates.io publishing for the CLI + CI/CD automation (including release integration)
 
-**Status:** Handoff prompt — ready to execute  
+**Status:** ✅ Completed (moved to `prompts/completed/` 2026-06-12)  
 **Priority:** High (required for "getting it on cargo so it can be used directly")  
 **Date / Context:** Post v0.2.0, fully open source decision (MIT OR Apache-2.0), preparing for public launch. We want normal Rust developers to be able to do `cargo install pg-web` and immediately get the `pg-web` binary that drives the entire developer experience.
 

@@ -1,6 +1,6 @@
 # 003 — sqlparser in `pg-web check` rejects valid Postgres extension opclass syntax (gin_trgm_ops etc.)
 
-**Status:** Ready for implementation  
+**Status:** ✅ Completed (moved to `prompts/completed/` 2026-06-12)  
 **Priority:** Medium-High  
 **Triggered by:** Sibling app `trucking-carriers` (the primary real-world consumer of the framework) adding its first extension-dependent DDL in `migrations/0002_add_fleet_size_ints_and_trgm_indexes.sql`
 
@@ -35,7 +35,7 @@ Migrations:
 - The same SQL works in `psql`.
 - Only the offline `pg-web check` command hard-fails.
 
-This is the second time the same sibling app has hit a limitation in the offline SQL validator (see `prompts/001_sqlparser_comment_literals.md` for the previous rich `COMMENT ON` case).
+This is the second time the same sibling app has hit a limitation in the offline SQL validator (see `prompts/completed/001_sqlparser_comment_literals.md` for the previous rich `COMMENT ON` case).
 
 ---
 
@@ -128,7 +128,7 @@ You have full permission to read the sibling `trucking-carriers` repository whil
 Start by reading:
 - This prompt in full.
 - `crates/pg_web_cli/src/check.rs` (the entire file).
-- The previous related prompt: `prompts/001_sqlparser_comment_literals.md`.
+- The previous related prompt: `prompts/completed/001_sqlparser_comment_literals.md`.
 
 The subagent that produced the detailed code map in this document stayed strictly read-only and made 51 tool calls. Its findings are already folded into this prompt.
 
