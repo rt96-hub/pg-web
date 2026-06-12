@@ -71,7 +71,7 @@ sed -i 's/env  = "development"/env  = "production"/' pgweb.toml || true
 cat > docker-compose.yml << 'COMPOSEEOF'
 services:
   postgres:
-    image: pgweb/postgres:latest
+    image: rtaylor96/pg-web:latest
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: \${POSTGRES_PASSWORD:-devpassword}
@@ -114,11 +114,11 @@ EOD
 
 echo "==> Now ensuring the image is built on the remote (if the published one isn't available)"
 ssh "$SSH_HOST" "
-  if ! docker image inspect pgweb/postgres:latest >/dev/null 2>&1; then
+  if ! docker image inspect rtaylor96/pg-web:latest >/dev/null 2>&1; then
     echo 'Image not present locally on VPS — building it now (5-12 min)...'
     cd $APP_DIR && bash scripts/build-image.sh
   else
-    echo 'pgweb/postgres:latest already present on VPS'
+    echo 'rtaylor96/pg-web:latest already present on VPS'
   fi
 "
 

@@ -15,7 +15,7 @@
 
 services:
   postgres:
-    image: pgweb/postgres:latest
+    image: rtaylor96/pg-web:latest
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
