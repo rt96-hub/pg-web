@@ -1,0 +1,6 @@
+[server]
+port = 8080
+env = "production"   # prod mode for clean benches (no dev error pages, no livereload)
+
+[database]
+url_env = "DATABASE_URL"

@@ -3,3 +3,7 @@
 Cargo.lock.bak
 .env
 .DS_Store
+
+# 015 benchmark harness artifacts (reproducible, but not committed)
+/bench/bin/
+/bench/results/

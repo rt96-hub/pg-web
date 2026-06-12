@@ -25,7 +25,9 @@ pg-web/
 │   ├── ROADMAP.md
 │   ├── ARCHITECTURE.md
 │   ├── TESTING.md
+│   ├── BENCHMARKS.md             # 015 performance measurements + harness usage (re-run for hot-path changes)
 │   └── internal/                 # Maintainer-only: DEVELOPER-GUIDE, HANDOFF, sessions/, prompts/
+├── prompts/                      # Active work orders (015 benchmark harness + concurrency design is the canonical example)
 ├── CLAUDE.md                     # Agent north-star (this file) + internal/ copies of maintainer docs
 └── examples/
     └── todo/                     # Companion todo app — tier 3 E2E target (and docs-site dogfood target)
@@ -48,7 +50,9 @@ pg-web/
 - **No premature abstraction.** Three duplicated lines beats the wrong trait. The extension is small; keep modules flat until patterns genuinely emerge.
 - **Error handling on the request path.** No `unwrap()` / `expect()` in the HTTP handler. Fatal SQL exceptions → generic 500 in prod, rich debug page in dev (mode from the `pgweb.env` GUC).
 - **Every feature ships with a companion-app flow.** If a feature isn't exercised in `examples/todo/`, it isn't done. See `docs/TESTING.md`.
-- **Phase discipline.** We are in **Phase 1** (Synchronous Core). Do not add Phase 2+ features (auth/RLS, job queues, dashboard) into Phase 1 code paths. Stage them properly.
+- **Performance characterization is part of the process.** The `bench/` harness (`bench/run.sh`, `docs/BENCHMARKS.md`) is the reproducible way to measure throughput, tail latency, and head-of-line blocking on the real serving path (using `oha`, dedicated workloads, and Docker resource constraints for the 1-vCPU/2-GiB tier). It is opt-in (`RUN_BENCH=1`) because full runs are heavy, but it is the required check for request-path, SPI, or concurrency changes and before any latency/throughput claims. The HOLB experiment is the key validation artifact for the current single-worker model and for future multi-worker work. Re-run it (and update BENCHMARKS.md) as the primary "before/after" proof when the worker architecture changes.
+- **Handoff prompts (prompts/)**: Active work orders (013–020) live here. 015 (this benchmark harness + the multi-worker design) is the model: the benchmark step is independently valuable and was done first; the design is written up even if implementation is deferred. When implementing something from a prompt, also update the "bibles" (this file + `docs/internal/DEVELOPER-GUIDE.md`) with any new rituals, constraints, or gotchas.
+- **Phase discipline.** We are in **Phase 1** (Synchronous Core). Do not add Phase 2+ features (auth/RLS, job queues, dashboard) into Phase 1 code paths. Stage them properly. Prompt 015 benchmark work is phase-neutral and was deliberately done early.
 
 ## Commit style
 
@@ -60,7 +64,7 @@ pg-web/
 
 - **Before writing non-trivial code** — read the relevant `docs/*.md` section first. If your change touches an invariant above, raise a flag and wait for human confirmation.
 - **Before finishing a feature** — confirm the demo app in `examples/todo/` exercises it. If not, add the flow.
-- **Before committing** — run `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and the relevant `cargo pgrx test pgXX` for whichever Postgres version is current.
+- **Before committing** — run `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, and the relevant `cargo pgrx test pgXX` for whichever Postgres version is current. For any change that touches the HTTP request path, SPI usage per request, response generation, Tera, routing, or concurrency behavior, also run the performance benchmark harness (`RUN_BENCH=1 scripts/test-all.sh` or directly `bash bench/run.sh` + the constrained 1-vCPU/2GiB variant). The HOLB experiment in the harness is the primary empirical check for the single-threaded worker model.
 
 ## Current phase & milestones
 
@@ -96,8 +100,9 @@ Session 5 picks up the deferred polish: H (content-hash assets), F.2 (SSH-tunnel
 
 See `docs/ARCHITECTURE.md` and `docs/ROADMAP.md` for current defaults.
 
-- Asset size cutoff (BYTEA vs pg_largeobject): 1 MiB default — not benchmarked.
-- Dynamic-route pattern matching algorithm (naïve scan vs trie): TBD in Session 3 when `[id]` captures land.
-- Hash-based vs ETag-only asset caching: TBD in Session 3.
+- Concurrency model (single background worker + single-threaded Tokio runtime): fully measured by the `bench/` harness (prompt 015 / `docs/BENCHMARKS.md`). The HOLB experiment quantifies the serialization / tail-latency problem. Multi-worker design (more processes via `SO_REUSEPORT`, each still single-threaded + own SPI backend) + per-worker bounded queue exists as the path forward (see prompt 015 and `BENCHMARKS.md`). Default worker count, livereload fan-out, and `max_connections` budgeting are the main open parameters.
+- Asset size cutoff (BYTEA vs pg_largeobject): 1 MiB default — the general benchmark harness now exists to re-evaluate if needed.
+- Dynamic-route pattern matching algorithm (naïve scan vs trie): still the naïve specificity-sorted scan (see `router.rs`).
+- Request-path caching (templates, routes, env) and graceful shutdown: scoped in prompt 016; will reduce per-request SPI round-trips that the 015 benchmark characterized.
 
-When one of these is resolved, update this file and the corresponding doc in the same commit.
+When any of these move, update this file and the corresponding doc in the same commit. Re-run the benchmark harness (`bench/run.sh`) as part of the validation when the change affects the hot path or the single-worker assumptions.

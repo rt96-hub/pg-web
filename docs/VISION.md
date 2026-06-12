@@ -55,5 +55,5 @@ That's the whole dev loop. No Node install. No ORM learning curve. No build step
 
 - A developer can go from `pg-web init` to serving real HTMX traffic in under 5 minutes on a fresh Linux VPS.
 - The demo companion app at `examples/todo/` runs the full feature surface on every commit to `main`.
-- A 1-vCPU / 2 GiB VPS can sustain 1,000 req/s of "fetch and render" traffic against the demo app. (Target — to be benchmarked.)
+- A 1-vCPU / 2 GiB VPS sustains a few thousand req/s of tiny "fetch and render" traffic at low concurrency with sub-millisecond p50 (and far lower at 10 k-row responses or high concurrency). The single-threaded worker is the measured ceiling for tail latency and isolation under mixed load — see `docs/BENCHMARKS.md` (prompt 015). The old "1 000 req/s (Target — to be benchmarked.)" claim is retired in favor of the published numbers.
 - The entire app framework is deployable with `docker compose up` and a 20-line `Caddyfile`.

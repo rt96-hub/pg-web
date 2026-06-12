@@ -279,8 +279,8 @@ Breaking any of these blocks merge.
 
 ## Performance benchmarks (Phase 1+)
 
-Separate from correctness tests. Use `criterion` for Rust-level micro-benchmarks:
+See `docs/BENCHMARKS.md` (prompt 015) for the published, reproducible numbers against the real serving path.
 
-- `cargo bench -p pg_web_ext` — SPI lookup latency, Tera render throughput.
+The harness is `bench/run.sh` (uses `oha`, dedicated `bench/app/`, Docker resource constraints for the 1 vCPU/2 GiB tier, open-model HOLB experiment, etc.). It is opt-in via `RUN_BENCH=1` precisely because a full matrix is minutes long.
 
-Product-level benchmarks run against the demo app with `wrk` or `bombardier` in CI on release commits. Target: 1 vCPU / 2 GiB VPS sustains ≥1000 req/s on the post-listing route.
+Micro-benchmarks (if added later) would live under `cargo bench -p pg_web_ext`. The product-level story is the `bench/` one, not ad-hoc `wrk` against the todo demo.

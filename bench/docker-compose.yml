@@ -1,0 +1,38 @@
+# Bench stack for 015 concurrency/throughput measurements.
+# Shape reuses examples/todo/docker-compose.yml (pgweb/postgres:latest,
+# POSTGRES_DB=app, :8080 published for load gen on host).
+#
+# Resource-constrained runs (the 1-vCPU/2-GiB primary tier) are achieved
+# by passing limits at start time or via `docker update` from the harness.
+# The `deploy.resources` block below is honored by recent `docker compose`
+# on cgroups v2 hosts (including Docker Desktop). For explicit pinning
+# the run.sh uses a combination of compose + post-start `docker update`.
+#
+# Usage from repo root:
+#   bash bench/run.sh            # full-power comparison tier on this box
+#   BENCH_CPUS=1 BENCH_MEM=2g bash bench/run.sh   # constrained primary tier
+
+services:
+  postgres:
+    image: rtaylor96/pg-web:latest
+    restart: "no"
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"   # for pg-web push from harness (uses in-container CLI too)
+      - "8080:8080"   # load generator hits this from host
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Mount the bench app source so the *in-image* `pg-web` CLI can push it
+      # via `docker compose exec postgres pg-web push --dir /bench` (F.3).
+      # The harness also supports host-side `pg-web push` against the published 5432.
+      - ./app:/bench:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "${BENCH_CPUS:-}"
+          memory: "${BENCH_MEM:-}"
+
+volumes:
+  pgdata:

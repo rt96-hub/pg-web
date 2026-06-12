@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>bench-todos</title></head>
+<body>
+<h1>Bench Todos ({{ todos | length }} rows)</h1>
+<ul>
+{% for t in todos %}
+  <li>{{ t.id }}: {{ t.title }} (done={{ t.done }})</li>
+{% else %}
+  <li>empty</li>
+{% endfor %}
+</ul>
+</body>
+</html>

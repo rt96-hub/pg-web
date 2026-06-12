@@ -122,5 +122,18 @@ echo
 echo "== Tier 4 — CLI black-box smoke (scripts/smoke-cli.sh) =="
 bash "$REPO_ROOT/scripts/smoke-cli.sh"
 
+# 015 benchmark (opt-in, heavy). Full matrix with oha under constrained + unconstrained
+# tiers + HOLB experiment. A future lightweight bench-smoke (short duration + generous
+# p99 bound) could be added behind RUN_BENCH_SMOKE=1 without bloating every CI run.
+# The goal is catching accidental throughput regressions before they reach prod.
+if [[ "${RUN_BENCH:-}" == "1" ]]; then
+  echo
+  echo "== Opt-in Tier (015) — Concurrency/throughput benchmark (bench/run.sh) =="
+  # Run unconstrained first (comparison), then the 1c/2g primary tier that the VISION
+  # claim was about. The harness itself documents hardware, tool, and caveats.
+  bash "$REPO_ROOT/bench/run.sh"
+  BENCH_CPUS=1 BENCH_MEM=2g bash "$REPO_ROOT/bench/run.sh"
+fi
+
 echo
 echo "All tests passed."
