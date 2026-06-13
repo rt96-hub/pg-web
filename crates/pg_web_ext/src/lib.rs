@@ -12,6 +12,7 @@ mod http;
 mod listen_router;
 mod livereload;
 mod logging;
+mod request_timeout;
 mod router;
 mod schema;
 mod settings;

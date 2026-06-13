@@ -11,6 +11,7 @@ Work orders that have landed in the repo. Kept here so `prompts/` stays focused 
 | **009** | `009_docs_cleanup_and_public_readiness.md` | 2026-06 (commit `ce90dc1`) | Root README, LICENSE, CONTRIBUTING; `docs/internal/` split. |
 | **010** | `010_cargo_publish_cli_and_cicd.md` | 2026-06 (commits `c1b1c7f` + release workflow) | `cargo install pg-web`; crates.io publish on tag. |
 | **013** | `013_response_contract_v2.md` | 2026-06 (commits `b580ff4`, `a24e287`) | `pgweb.respond`/`redirect`/`json`/`set_cookie`; todo companion flows at `/status`, `/seeother`. |
+| **014** | `014_execution_role_hardening_and_threat_model.md` | 2026-06-13 | Role floor (`pgweb_app`), `request_timeout.rs` timer arming, secrets + threat model; `/debug/timeout` E2E verified. |
 
 ## Still active (not moved)
 
@@ -22,6 +23,5 @@ Work orders that have landed in the repo. Kept here so `prompts/` stays focused 
 | **007** | Tera boolean-leakage / complex-list-handler DX not addressed. |
 | **011** | Ongoing content polish stub for pg-web.dev. |
 | **012** | Deploy runbook — operational reference, not a one-shot deliverable. |
-| **014** | Role floor + threat model landed (`7240c16`), but **statement_timeout arming** is a documented known gap (`docs/THREAT-MODEL.md`). |
 | **015** | Step 1 benchmark harness + `docs/BENCHMARKS.md` done (`a370856`); Step 2 multi-worker design/impl still open. |
 | **016–025** | Not started or in progress. |

@@ -13,13 +13,8 @@
 --   - Other concurrent requests continue to be served (the single-threaded
 --     worker is no longer wedged forever).
 --
--- CURRENT STATUS (2026-06-12, KNOWN GAP): the cancel does not fire yet —
--- statement_timeout is armed only by the regular-backend command loop, which
--- background-worker SPI never enters, so today this route blocks the worker
--- for the full 30s and then returns 200 with the text below. It remains the
--- manual probe for the gap: once in-worker timer arming lands (see
--- docs/THREAT-MODEL.md "Unbounded execution"), curl here must start
--- returning the 500 described above.
+-- The worker arms statement_timeout after SET LOCAL (request_timeout.rs) so
+-- curl here should return the 500 described above under default request_timeout.
 --
 -- The route is intentionally under /debug/ and not linked from the main UI
 -- so normal users of the todo demo are not surprised by 500s.

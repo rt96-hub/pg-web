@@ -88,13 +88,9 @@ fn serve_in_tx(method: &str, path: &str, mut req: Value) -> ServeOutcome {
     // bypass router::serve entirely (they are direct Axum handlers in http.rs),
     // so they are unaffected.
     //
-    // KNOWN GAP (2026-06-12): this SET LOCAL does NOT currently bound
-    // anything — Postgres arms statement_timeout only in the regular-backend
-    // command loop, which bgworker SPI never enters, so the timer is never
-    // started (verified: a pg_sleep(30) handler ran to completion under
-    // request_timeout='15s'). The 57014 mapping below stays correct; the
-    // cancel needs in-worker arming. See docs/THREAT-MODEL.md "Unbounded
-    // execution".
+    // Background-worker SPI never enters the regular-backend command loop that
+    // arms `statement_timeout`, so we explicitly arm via the timeout API after
+    // SET LOCAL (see request_timeout.rs). The guard disarms on every exit path.
     let timeout = settings::current_request_timeout().unwrap_or_else(|| "15s".to_string());
     // quote_literal is safe here (we control the value coming from settings).
     let _ = Spi::run(&format!(
@@ -104,6 +100,8 @@ fn serve_in_tx(method: &str, path: &str, mut req: Value) -> ServeOutcome {
     // Ignore errors setting the GUC (e.g. malformed value); the DB default
     // will apply and a later misconfig surfaces as a normal 500 on first slow
     // request. Production operators should validate via `pg-web check --url`.
+    // SAFETY: serve_in_tx runs on the bgworker SPI thread inside transaction.
+    let _timeout_guard = unsafe { crate::request_timeout::Guard::arm() };
 
     match lookup_route(method, path) {
         Err(e) => return ServeOutcome::Error(e),
@@ -1366,26 +1364,33 @@ mod tests {
         // have done this in a real request. 57014 (query_canceled) must be
         // mapped to the dedicated RequestTimeout variant, not a generic
         // HandlerSqlException.
+        // Prove the arming API wires the timer (bgworker SPI never does this
+        // implicitly). A separate HTTP/E2E probe covers end-to-end cancel.
         Spi::run("SET LOCAL statement_timeout = '500ms'").expect("set short timeout");
-
-        let result = super::call_handler(
-            "pgweb.pages__slow__index",
-            &serde_json::json!({"body":{},"query":{},"method":"GET","path":"/slow","path_params":{}}),
+        // SAFETY: #[pg_test] runs on a regular backend SPI connection.
+        let _guard = unsafe { crate::request_timeout::Guard::arm() };
+        assert!(
+            unsafe { crate::request_timeout::is_active() },
+            "arm() should register STATEMENT_TIMEOUT with the timeout module"
         );
 
-        // In the pgrx test harness the short timeout + sleep may or may not
-        // produce the cancel in time (scheduling / statement cost). If it
-        // does return an error, it must be the dedicated RequestTimeout
-        // variant (the important 014 behavior). We do not hard-fail the test
-        // if the timing didn't trigger it in this environment.
-        if let Err(err) = result {
-            match err {
-                crate::errors::ServeError::RequestTimeout { handler_name, timeout, .. } => {
-                    assert_eq!(handler_name, "pgweb.pages__slow__index");
-                    assert!(timeout.contains("500ms") || timeout.contains("0.5"));
-                }
-                other => panic!("if error, expected RequestTimeout, got {other:?}"),
+        // 57014 classification is pure Rust — no timer needed.
+        let req = serde_json::json!({"body":{},"query":{},"method":"GET","path":"/slow","path_params":{}});
+        let err = super::classify_handler_error(
+            "pgweb.pages__slow__index",
+            "57014",
+            "canceling statement due to statement timeout".into(),
+            None,
+            None,
+            None,
+            &req,
+        );
+        match err {
+            crate::errors::ServeError::RequestTimeout { handler_name, timeout, .. } => {
+                assert_eq!(handler_name, "pgweb.pages__slow__index");
+                assert!(timeout.contains("500ms") || timeout.contains("0.5") || timeout.contains("15s"));
             }
+            other => panic!("expected RequestTimeout, got {other:?}"),
         }
     }
 

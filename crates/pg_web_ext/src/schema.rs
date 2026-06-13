@@ -140,14 +140,11 @@ CREATE TABLE pgweb.settings (
 INSERT INTO pgweb.settings (key, value) VALUES ('env', 'development');
 
 -- Per-request statement timeout (prompt 014). SET LOCAL inside the single
--- SPI transaction that serves each HTTP request; the intent is to convert
--- an unbounded pg_sleep / lock / runaway query into a 500 (SQLSTATE 57014)
+-- SPI transaction that serves each HTTP request, then explicitly armed via
+-- the timeout API (request_timeout.rs — bgworker SPI does not enter the
+-- regular-backend command loop that arms statement_timeout). Converts an
+-- unbounded pg_sleep / lock / runaway query into a 500 (SQLSTATE 57014)
 -- instead of wedging the entire single-threaded worker.
--- KNOWN GAP (2026-06-12): setting the GUC from background-worker SPI does
--- not arm the timer (Postgres arms statement_timeout only in the regular-
--- backend command loop), so the bound is not yet effective; see
--- docs/THREAT-MODEL.md "Unbounded execution" for the verified evidence and
--- the required in-worker arming follow-up.
 -- Value is a Postgres interval literal, e.g. '15s', '30s', '5min'.
 -- Default chosen as "long enough for a slow report, short enough to bound
 -- an outage." Long-poll / SSE endpoints (/_pgweb/livereload and future

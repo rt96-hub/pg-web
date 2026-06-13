@@ -1,7 +1,8 @@
 # 014 — Execution-role hardening, per-request statement_timeout, and a threat model
 
-**Status:** Open work order — security-critical; prerequisite for the Phase 2 RLS bridge
+**Status:** Completed (2026-06-13) — execution-role floor (`pgweb_app`), per-request `statement_timeout` arming (`request_timeout.rs`), secrets hardening, and `docs/THREAT-MODEL.md`. End-to-end verified: `GET /debug/timeout` cancels within `request_timeout` (default 15s).
 **Date opened:** 2026-06-11
+**Date completed:** 2026-06-13
 **Author:** Handoff prompt (derived from external codebase analysis, 2026-06-11)
 **Prerequisites:** none, but should land before Phase 2 auth (session_6) and pairs with 013 (response contract)
 **Context:** The pg-web background worker connects to SPI with a NULL username, so every user-written SQL handler currently executes with bootstrap-superuser rights. There is no privilege floor under app code and no per-request `statement_timeout`. Both facts silently break the Phase 2 RLS bridge (superusers bypass RLS) and leave the web tier wedge-able by a single slow handler. This prompt specifies a privilege-floor design, a per-request timeout, pragmatic secret-handling hardening, and the project's first written threat model.
