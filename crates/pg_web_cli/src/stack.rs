@@ -70,21 +70,34 @@ pub fn up(app_dir: &Path) -> Result<String> {
 
     // On a fresh machine (only `cargo install pg-web`, no local source),
     // this is the first time the official runtime image is needed.
-    // We do an explicit pull so the user sees clear progress ("Pulling...").
-    // `docker compose up -d` would pull anyway, but the explicit step + message
-    // makes the "brand new machine" experience much nicer.
-    println!("Ensuring runtime image rtaylor96/pg-web:latest is present (this may take a while on first run)...");
-    let pull_status = Command::new("docker")
-        .args(["compose", "-f"])
-        .arg(&compose)
-        .arg("pull")
+    // We do an explicit pull *only* when the image is missing locally.
+    // This preserves dev-built images (test-all.sh etc) and avoids the
+    // "pull clobber" integrity hazard where `pg-web up` would silently
+    // replace a just-built local tag with the published Hub image.
+    // Fresh-machine UX is unchanged: first run still pulls with visible progress.
+    let image_ref = "rtaylor96/pg-web:latest";
+    let have_local = Command::new("docker")
+        .args(["image", "inspect", image_ref])
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
-        .context("spawning `docker compose pull`")?;
-    if !pull_status.success() {
-        bail!("`docker compose pull` failed (exit {:?})", pull_status.code());
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !have_local {
+        println!("Ensuring runtime image {image_ref} is present (this may take a while on first run)...");
+        let pull_status = Command::new("docker")
+            .args(["compose", "-f"])
+            .arg(&compose)
+            .arg("pull")
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .context("spawning `docker compose pull`")?;
+        if !pull_status.success() {
+            bail!("`docker compose pull` failed (exit {:?})", pull_status.code());
+        }
     }
 
     let status = Command::new("docker")

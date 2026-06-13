@@ -61,6 +61,22 @@ if "$PG_CTL" -D "$DATA_DIR" status >/dev/null 2>&1; then
 fi
 "$PG_CTL" -D "$DATA_DIR" -l "$LOG_FILE" start >/dev/null
 
+# Self-heal tier 2a bootstrap (prompt 025 #5):
+# - create the dev DB if it doesn't exist (idempotent; the one-time `createdb`
+#   after cargo pgrx init is now automatic).
+# - ensure shared_preload_libraries contains pg_web_ext in the conf; if we
+#   had to append it, bounce PG so the BGW actually registers.
+if ! "$PSQL" -p 28817 -h localhost -d pg_web_ext -c "SELECT 1" >/dev/null 2>&1; then
+    echo "  tier2a: database pg_web_ext missing — creating (self-heal)"
+    "$PGRX_HOME/$PG_VERSION/pgrx-install/bin/createdb" -h localhost -p 28817 pg_web_ext || true
+fi
+if ! grep -q "shared_preload_libraries.*pg_web_ext" "$DATA_DIR/postgresql.conf" 2>/dev/null; then
+    echo "  tier2a: appending shared_preload_libraries = 'pg_web_ext' to $DATA_DIR/postgresql.conf (self-heal)"
+    echo "shared_preload_libraries = 'pg_web_ext'" >> "$DATA_DIR/postgresql.conf"
+    "$PG_CTL" -D "$DATA_DIR" -m immediate stop >/dev/null 2>&1 || true
+    "$PG_CTL" -D "$DATA_DIR" -l "$LOG_FILE" start >/dev/null
+fi
+
 # Reset extension so we get fresh seed data (route /, template, handler)
 "$PSQL" -p 28817 -h localhost -d pg_web_ext -v ON_ERROR_STOP=1 \
     -c "DROP EXTENSION IF EXISTS pg_web_ext CASCADE; CREATE EXTENSION pg_web_ext;" \

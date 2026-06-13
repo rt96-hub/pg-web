@@ -29,6 +29,37 @@ if [[ -z "${PGWEB_CAFFEINATED:-}" ]] && command -v caffeinate >/dev/null 2>&1; t
     exec caffeinate -is bash "$0" "$@"
 fi
 
+# Opt-in per-line timestamps (TEST_TS=1). Uses a tiny awk stamper so any stall
+# (macOS sleep, blocked I/O, etc.) becomes visible in wall time.
+# Always-on: per-tier wall durations and the end-of-run status table.
+if [[ "${TEST_TS:-}" == "1" ]]; then
+    if command -v gawk >/dev/null 2>&1; then
+        exec > >(gawk '{ print strftime("[%F %T]"), $0; fflush(); }' ) 2>&1
+    else
+        # Portable fallback (perl one-liner); not as pretty but sufficient.
+        exec > >(perl -ne 'chomp; print "[" . localtime() . "] $_\n"; $|=1;' ) 2>&1
+    fi
+fi
+
+# Timing + status table (prompt 025). We always emit a one-line summary per tier
+# at the end, plus wall durations. STRICT (or CI) turns any soft failure into
+# a non-zero exit while still running later tiers for signal.
+declare -a TIER_NAME TIER_STATUS TIER_DUR
+record_tier() {
+    local name="$1" status="$2" dur="$3"
+    TIER_NAME+=("$name")
+    TIER_STATUS+=("$status")
+    TIER_DUR+=("$dur")
+}
+print_summary_table() {
+    echo
+    echo "== Per-tier summary =="
+    local i
+    for i in "${!TIER_NAME[@]}"; do
+        printf "  %-6s %s (%ss)\n" "${TIER_NAME[$i]}" "${TIER_STATUS[$i]}" "${TIER_DUR[$i]}"
+    done
+}
+
 PG_MAJOR="${PG_MAJOR:-17}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -160,14 +191,38 @@ PY
     if [[ -n "$newest_src" && "$newest_src" -gt "$image_epoch" ]]; then
         echo "  source newer than image (image=$image_iso) — rebuilding $TEST_IMAGE"
         PGWEB_IMAGE="$TEST_IMAGE" bash "$REPO_ROOT/scripts/build-image.sh" >/dev/null
+        return 0
+    fi
+
+    # Content-hash staleness (prompt 025 #2). mtime above was a fast path;
+    # now compare the actual content hash of the build inputs against the
+    # label baked into the image at build time. Catches:
+    # - git checkout / branch switch / stash pop (mtimes may not advance)
+    # - post-pull clobber (published image has no pgweb.src_hash or a different one)
+    # - any content edit whose mtime didn't win the "newer" test
+    local want_hash have_hash
+    want_hash=$(find \
+        crates/pg_web_ext/src \
+        crates/pg_web_cli/src \
+        Dockerfile .dockerignore \
+        docker/init-pgweb.sh \
+        Cargo.toml Cargo.lock \
+        examples \
+        -type f 2>/dev/null | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1)
+    have_hash=$(docker image inspect "$TEST_IMAGE" --format '{{index .Config.Labels "pgweb.src_hash"}}' 2>/dev/null || echo "")
+    if [[ -z "$have_hash" || "$have_hash" != "$want_hash" ]]; then
+        echo "  image src_hash mismatch or missing (have=${have_hash:0:12} want=${want_hash:0:12}) — rebuilding $TEST_IMAGE"
+        PGWEB_IMAGE="$TEST_IMAGE" bash "$REPO_ROOT/scripts/build-image.sh" >/dev/null
     fi
 }
 
 echo "== Tier 1 — SQL tests (cargo pgrx test pg$PG_MAJOR) =="
+t1_start=$(date +%s)
 set +e
 ( cd crates/pg_web_ext && cargo pgrx test "pg$PG_MAJOR" )
 tier1_rc=$?
 set -e
+t1_dur=$(( $(date +%s) - t1_start ))
 if [[ $tier1_rc -ne 0 ]]; then
   echo "  [Tier 1 SKIPPED/FAILED — pgrx dev Postgres for pg$PG_MAJOR is not ready]"
   echo "    This is normal on dev machines. The local pgrx-managed PG (the one under ~/.pgrx)"
@@ -177,6 +232,9 @@ if [[ $tier1_rc -ne 0 ]]; then
   echo "      # edit ~/.pgrx/data-$PG_MAJOR/postgresql.conf and add:"
   echo "      shared_preload_libraries = 'pg_web_ext'"
   echo "    Then re-run this script. Tiers 2b + 3 + 4 continue below regardless."
+  record_tier "tier1" "FAIL/SKIP" "$t1_dur"
+else
+  record_tier "tier1" "PASS" "$t1_dur"
 fi
 
 echo
@@ -185,34 +243,97 @@ echo "== Tier 2a — HTTP smoke (scripts/test-http.sh) =="
 # +x bit. Edit-via-UNC-mount writes from Claude tools land as 0644
 # root-owned, dropping +x; using `bash <script>` sidesteps that
 # without needing manual chmod after every doc-touching commit.
+t2a_start=$(date +%s)
 set +e
 bash "$REPO_ROOT/scripts/test-http.sh"
 tier2a_rc=$?
 set -e
+t2a_dur=$(( $(date +%s) - t2a_start ))
 if [[ $tier2a_rc -ne 0 ]]; then
   echo "  [Tier 2a SKIPPED/FAILED — usually the same pgrx dev PG readiness issue as Tier 1]"
   echo "    If Tier 1 was green, it's one of the tier-2a-specific causes instead:"
   echo "      - 'database \"pg_web_ext\" does not exist'  → one-time: ~/.pgrx/<ver>/pgrx-install/bin/createdb -h localhost -p 288$PG_MAJOR pg_web_ext"
   echo "      - ':8080 TIMEOUT' with a FATAL loop in the dumped PG log → the BGW itself is crashing (extension code, not setup)"
   echo "    See docs/internal/TESTING-SETUP.md § Diagnosing. Continuing to the rest of the suite..."
+  record_tier "tier2a" "FAIL/SKIP" "$t2a_dur"
+else
+  record_tier "tier2a" "PASS" "$t2a_dur"
 fi
 
 echo
 echo "== Tier 2b — CLI tests (cargo test -p pg-web) =="
+t2b_start=$(date +%s)
 cargo test -p pg-web
+t2b_dur=$(( $(date +%s) - t2b_start ))
+record_tier "tier2b" "PASS" "$t2b_dur"
 
 echo
 echo "== Tier 3 — Docker E2E ($TEST_IMAGE + examples/todo) =="
 ensure_image_fresh
-set +e
-# Run sequentially (--test-threads=1) to avoid 13 containers starting at once on dev machines (Docker Desktop + macOS especially struggles with the concurrent startup + 30s wait per test).
-cargo test -p pg-web --test docker_e2e -- --ignored --test-threads=1
-tier3_rc=$?
-set -e
+t3_start=$(date +%s)
+
+# Canary preflight (prompt 025 #4): boot *one* container and give it a short
+# ~30s deadline. If / never answers, print the container logs tail and abort
+# tier 3 immediately. This turns "broken worker → 13 × 60 s of identical
+# timeouts" into a <90 s failure with the root cause (e.g. role nologin,
+# missing preload, crash loop) visible in the harness output.
+do_tier3_canary() {
+    local cname="pgweb-canary-$$"
+    docker run --rm -d --name "$cname" \
+        -e POSTGRES_PASSWORD=testpw -e POSTGRES_DB=app \
+        -P "$TEST_IMAGE" >/dev/null 2>&1 || {
+        echo "  canary: docker run failed to start probe container"
+        return 1
+    }
+    # Resolve the mapped HTTP port (testcontainers-style -P random).
+    local http_mapped
+    http_mapped=$(docker port "$cname" 8080/tcp 2>/dev/null | head -1 | cut -d: -f2 || echo "")
+    if [[ -z "$http_mapped" ]]; then
+        # Fallback: try the default in case of --expose without -P mapping quirks.
+        http_mapped=8080
+    fi
+    local dl=$(( $(date +%s) + 30 ))
+    local ready=0
+    while [ "$(date +%s)" -lt "$dl" ]; do
+        if curl -sf "http://127.0.0.1:${http_mapped}/" >/dev/null 2>&1; then
+            ready=1
+            break
+        fi
+        sleep 0.5
+    done
+    if [[ "$ready" == "1" ]]; then
+        docker rm -f "$cname" >/dev/null 2>&1 || true
+        return 0
+    else
+        echo "=== TIER 3 CANARY FAILED: / never answered within 30 s ==="
+        echo "=== Last 30 lines of container logs (for $cname) ==="
+        docker logs --tail 30 "$cname" 2>&1 || true
+        docker rm -f "$cname" >/dev/null 2>&1 || true
+        echo "=== (see logs above for the real BGW failure: role nologin, preload, crash, etc.) ==="
+        return 1
+    fi
+}
+
+echo "  tier3 canary preflight (fast-fail on non-serving worker)..."
+if ! do_tier3_canary; then
+    echo "  [Tier 3 ABORTED by canary — broken worker; logs printed above]"
+    tier3_rc=1
+    # Do not run the 13 tests (they would each burn another 60 s).
+else
+    set +e
+    # Run sequentially (--test-threads=1) to avoid 13 containers starting at once on dev machines (Docker Desktop + macOS especially struggles with the concurrent startup + 30s wait per test).
+    cargo test -p pg-web --test docker_e2e -- --ignored --test-threads=1
+    tier3_rc=$?
+    set -e
+fi
+t3_dur=$(( $(date +%s) - t3_start ))
 if [[ $tier3_rc -ne 0 ]]; then
   echo "  [Tier 3 had failures (E2E tests against the image)]"
   echo "    This can happen transiently after a fresh image rebuild, under load, or due to real app bugs."
   echo "    The script will continue to Tier 4 (black-box smoke) so you still get useful signals."
+  record_tier "tier3" "FAIL" "$t3_dur"
+else
+  record_tier "tier3" "PASS" "$t3_dur"
 fi
 
 # Reclaim :8080 from the pgrx dev PG before tier 4's docker stack
@@ -224,7 +345,10 @@ stop_pgrx_dev_pg
 
 echo
 echo "== Tier 4 — CLI black-box smoke (scripts/smoke-cli.sh) =="
+t4_start=$(date +%s)
 bash "$REPO_ROOT/scripts/smoke-cli.sh"
+t4_dur=$(( $(date +%s) - t4_start ))
+record_tier "tier4" "PASS" "$t4_dur"
 
 # 015 benchmark (opt-in, heavy). Full matrix with oha under constrained + unconstrained
 # tiers + HOLB experiment. A future lightweight bench-smoke (short duration + generous
@@ -241,7 +365,12 @@ fi
 
 echo
 echo "== Test run complete =="
+print_summary_table
+
+# Compute overall soft-fail status. Hard tiers (2b,4) already aborted via set -e if they failed.
+overall_rc=0
 if [[ ${tier1_rc:-0} -ne 0 || ${tier2a_rc:-0} -ne 0 || ${tier3_rc:-0} -ne 0 ]]; then
+  overall_rc=1
   echo "Note: One or more early tiers had issues or were skipped."
   echo "      You can STILL run 'bash scripts/test-all.sh' ANYTIME you need."
   echo "      Tier 2b (CLI tests) + Tier 4 (smoke) always run; Tier 3 (Docker E2E) is attempted."
@@ -249,3 +378,12 @@ if [[ ${tier1_rc:-0} -ne 0 || ${tier2a_rc:-0} -ne 0 || ${tier3_rc:-0} -ne 0 ]]; 
 else
   echo "All tiers completed successfully."
 fi
+
+# STRICT mode (or CI=...) : any tier failure => non-zero exit for the suite.
+# This makes the script safe as a CI entrypoint while preserving the dev
+# "keep going, show all signal" behavior by default.
+if [[ "${STRICT:-}" == "1" || -n "${CI:-}" ]]; then
+  exit "$overall_rc"
+fi
+# Non-strict (typical local dev): exit 0 so the developer can iterate even if
+# a pgrx setup tier is red. The table above is the actionable summary.

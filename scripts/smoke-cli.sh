@@ -133,6 +133,11 @@ docker image inspect rtaylor96/pg-web:latest >/dev/null \
     || fail "image rtaylor96/pg-web:latest not found — run \`bash scripts/build-image.sh\` (or \`pg-web up\` in an app dir to pull it)"
 ok "docker + image + binary all present"
 
+# Snapshot the *local* image ID we intend to test (prompt 025 integrity).
+# After `up` we assert the compose stack is running exactly this image,
+# not whatever `docker compose pull` (or a prior tag) would have resolved to.
+EXPECTED_IMAGE_ID=$(docker image inspect rtaylor96/pg-web:latest --format '{{.Id}}' 2>/dev/null || echo "")
+
 # Wipe stale state.
 rm -rf "$SMOKE_DIR"
 
@@ -145,6 +150,23 @@ ok "scaffolded $SMOKE_DIR"
 cd "$SMOKE_DIR"
 "$BIN" up >/dev/null
 ok "stack up"
+
+# Integrity postcondition (prompt 025 #1): the container actually running
+# must be the local image ID captured at preflight (i.e. the one
+# test-all.sh's ensure_image_fresh just prepared). This hard-fails tier 4
+# if an unconditional pull (or manual `pg-web up`) clobbered the tag.
+if [[ -n "$EXPECTED_IMAGE_ID" ]]; then
+    pg_container=$(docker compose ps -q postgres 2>/dev/null || true)
+    if [[ -n "$pg_container" ]]; then
+        running_id=$(docker inspect "$pg_container" --format '{{.Image}}' 2>/dev/null || echo "")
+        if [[ "$running_id" != "$EXPECTED_IMAGE_ID" ]]; then
+            echo "  running container image: $running_id" >&2
+            echo "  expected (local build):  $EXPECTED_IMAGE_ID" >&2
+            fail "tier 4 is validating the wrong artifact (image ID mismatch — pull clobber?)"
+        fi
+        ok "stack using the expected local image ID (integrity check passed)"
+    fi
+fi
 
 push_output=$("$BIN" push 2>&1)
 echo "$push_output" | grep -q "env → development" \
@@ -566,7 +588,7 @@ assert_contains "$check_out" "CRATE" "diagnostic surfaces the parser's unexpecte
 # Clean up so subsequent sections (if any) see a clean state.
 rm "$SMOKE_DIR/migrations/0999_typo.sql"
 
-step "16. pg-web check accepts rich dollar-quoted + adjacent literal COMMENTs → exit 0"
+step "16a. pg-web check accepts rich dollar-quoted + adjacent literal COMMENTs → exit 0"
 # This is the regression case from the original sqlparser limitation report.
 # Migrations with high-quality documentation using $$...$$, $tag$...$tag$,
 # and adjacent string literals ('foo' 'bar') must not cause false-positive

@@ -16,10 +16,32 @@ cd "$REPO_ROOT"
 
 IMAGE="${PGWEB_IMAGE:-rtaylor96/pg-web:latest}"
 
-echo "Building $IMAGE from $REPO_ROOT ..."
-docker build -t "$IMAGE" -f Dockerfile .
+# Compute a content hash over the exact inputs that affect the produced image
+# (prompt 025). Sorted paths + per-file sha256sum, then aggregate sha.
+# This is robust to mtime noise (branch switch, checkout, re-tag) and detects
+# real content changes (including uncommitted edits during dev).
+compute_src_hash() {
+    # The set must match what test-all.sh ensure_image_fresh watches (plus examples/,
+    # which Dockerfile COPYs for the baked `pg-web init --template todo` payload).
+    find \
+        crates/pg_web_ext/src \
+        crates/pg_web_cli/src \
+        Dockerfile .dockerignore \
+        docker/init-pgweb.sh \
+        Cargo.toml Cargo.lock \
+        examples \
+        -type f 2>/dev/null | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1
+}
+
+SRC_HASH=$(compute_src_hash)
+echo "Building $IMAGE from $REPO_ROOT (src_hash=${SRC_HASH:0:12}...)"
+docker build \
+    --build-arg "PGWEB_SRC_HASH=${SRC_HASH}" \
+    -t "$IMAGE" \
+    -f Dockerfile \
+    .
 echo
-echo "✓ built $IMAGE"
+echo "✓ built $IMAGE (pgweb.src_hash=${SRC_HASH})"
 echo
 echo "Next steps:"
 echo "  cd /tmp && pg-web init my-app && cd my-app"

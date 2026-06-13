@@ -5,6 +5,8 @@
 **Author:** Handoff from implementation of prompt 013 (Response Contract v2)  
 **Prerequisites:** None (this is a test reliability / environment issue)
 
+**Post-025 context (2026-06-13):** The surrounding harness was improved as part of prompt 025 (Tier 3 canary preflight with early abort + `docker logs`, enhanced `wait_for_http` logging, STRICT mode + per-tier summary table + timestamps). These changes make completely broken workers fail fast with diagnostics and make it obvious when this test is the sole outlier. The core `dev_watcher_repushes_on_save` flake (marker never appears in the test's custom 10 s poll) remains the one documented non-blocking exception; full `scripts/test-all.sh` (including STRICT+TS) runs are considered successful when only this test fails. The 025 run confirmed 12/13 Tier 3 tests passing + clean canary + integrity checks.
+
 ---
 
 ## Summary
@@ -106,7 +108,7 @@ The panic always shows the original empty-state HTML (plus `<script src="/_pgweb
   - Poll for observable side-effects of a successful push (e.g., check the container logs for the "⟳ pushed" line, or query `pgweb.routes` / `pgweb.templates` directly) instead of (or in addition to) the rendered HTML body.
   - Use a more reliable change-detection mechanism inside the test (e.g., watch the push summary returned by the test's own call, or add a test-only hook).
   - Reduce the amount of work the initial push does, or prime the hashes in the watcher so the first real edit is the only change.
-  - Make the test tolerant of delayed events (longer but bounded deadline + better diagnostics on timeout — print watcher thread logs, last push summary, container logs around the edit time, etc.).
+  - Make the test tolerant of delayed events (longer but bounded deadline + better diagnostics on timeout — print watcher thread logs, last push summary, container logs around the edit time, etc.). (Note: prompt 025 added a script-level canary preflight that fails fast with logs before any of the 13 E2E tests, plus container log dumping in the shared `wait_for_http` helper. The watcher's own marker-poll + panic still only dumps the last HTTP body.)
   - Investigate / work around Docker Desktop notify issues (different mounting strategy for the tempdir, use a named volume, run the watcher inside the container for this test, etc.).
   - Add unit-level coverage for the hot paths in `classify` + `handle_batch` + Blake3 dedup so the E2E test can be lighter.
 - Keep Tier 3 mandatory and the test meaningful for the interactive dev loop.
@@ -115,12 +117,14 @@ The panic always shows the original empty-state HTML (plus `<script src="/_pgweb
 
 ## References
 
-- Test: `crates/pg_web_cli/tests/docker_e2e.rs:642` (`dev_watcher_repushes_on_save`)
+- Test: `crates/pg_web_cli/tests/docker_e2e.rs` (`dev_watcher_repushes_on_save`, the function and its custom marker poll + panic)
 - Watcher implementation: `crates/pg_web_cli/src/dev.rs` (especially `watch`, `event_loop`, `handle_batch`, `classify`, `DEBOUNCE_WINDOW`)
 - `copy_tree` and `todo_app_dir` helpers used across Tier 3.
-- `scripts/test-all.sh` (Tier 3 execution + `ensure_image_fresh`)
+- `scripts/test-all.sh` (Tier 3 execution + `ensure_image_fresh` + the prompt-025 canary preflight that runs one probe container with a short ~30 s deadline and `docker logs --tail 30` before the 13 ignored tests)
+- `docker_e2e.rs` `wait_for_http` (enhanced in prompt 025 to accept `container_id` and dump `docker logs --tail 20` on its own timeouts; the watcher test calls it for initial readiness but uses a separate 10 s body poll for the marker)
 - CLAUDE.md (Tier 3 mandatory, companion-app coverage, dev loop history)
 - `docs/ROADMAP.md` (dev loop decisions, notify-debouncer-full architecture)
 - Prompt 013 session notes (image name change to `rtaylor96/pg-web:latest`, addition of `seeother`/`status` routes to `examples/todo`, attempts at timeout increases, container cleanup, no-cache builds)
+- Prompt 025 (harness hardening) — added the canary + improved wait logging + per-tier observability; explicitly treated this test as the one allowed non-blocking flake during full STRICT+TS runs of `scripts/test-all.sh`
 
 This prompt should contain enough context that a fresh agent can reproduce the failure, understand why it is important, see what was already tried, and design a robust fix without having to reconstruct the history from git blame or scattered session logs.

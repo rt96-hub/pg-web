@@ -4,7 +4,7 @@ How to configure a machine so that **all five tiers of `scripts/test-all.sh` act
 
 Scope: macOS (Apple Silicon) dev machines and Linux CI. The original WSL2 bring-up lives in `docs/internal/HANDOFF.md`; this doc supersedes it for the testing-environment parts.
 
-Last verified green: 2026-06-12 (see § Verified configuration record).
+Last verified green: 2026-06-13 (prompt 025 harness hardening; see § Verified configuration record).
 
 ## What each tier needs from the machine
 
@@ -149,29 +149,25 @@ Other state worth knowing:
 
 **Guard.** `scripts/test-all.sh` now re-execs itself under `caffeinate -is` on macOS (no-op on Linux/CI, gated by the `PGWEB_CAFFEINATED` env var to prevent re-exec loops). For other long-running work — `bench/run.sh`, manual `cargo pgrx test` marathons, image builds — wrap them yourself: `caffeinate -is bash bench/run.sh`. To verify the assertion is held: `pmset -g assertions | grep -i caffeinate`.
 
-## Known harness-integrity gotcha: `pg-web up` re-pulls the published image
+## Harness-integrity fixes (prompt 025, landed 2026-06-13)
 
-**Discovered 2026-06-12, currently unfixed.** Tier 4 (`scripts/smoke-cli.sh`) drives the real CLI, and `pg-web up` runs an explicit `docker compose pull` before `up` (`crates/pg_web_cli/src/stack.rs`, "so the user sees clear progress"). On a machine with registry access this **replaces the local `rtaylor96/pg-web:latest` tag with whatever is published on Docker Hub**, demoting the image `test-all.sh` just built to a dangling `<none>`.
+The unconditional `docker compose pull` in `pg-web up` (stack.rs) and the mtime-only staleness check have been fixed:
 
-Consequences observed in practice:
+- `stack.rs:up` now does `docker image inspect` first and only pulls when the image is *absent* locally. Fresh-machine UX is identical (first `pg-web up` or after `docker image rm` still shows the pull progress); subsequent `up`s after a local `test-all.sh` build no longer clobber the tag.
+- `smoke-cli.sh` now snapshots the expected image ID at preflight and asserts (hard-fail) after `up` that the running compose stack's postgres container is using exactly that ID. This makes tier 4 a true validator of the artifact under test.
+- `ensure_image_fresh` (test-all.sh) keeps the mtime fast-path but now also computes a content hash (`sha256sum` aggregate over the watched inputs + examples/) and compares it to the `pgweb.src_hash` LABEL baked by the build. Rebuilds on hash mismatch (covers git checkout noise, re-tags, published images that lack our label, and content edits that didn't advance mtime).
+- `Dockerfile` and `build-image.sh` now pass and embed the hash via BuildKit `--build-arg` + `LABEL pgweb.src_hash=...`.
+- `STRICT=1` (auto when `CI` is set) turns any tier failure (including soft 1/2a/3) into a non-zero final exit while still running later tiers for signal. A one-line per-tier status table is always printed at the end.
+- Canary preflight + `docker logs` on timeout in both the bash harness (before the 13) and in `wait_for_http` panics (enriched with tail) so a broken worker fails the suite in <90 s with the crash reason visible.
+- Tier 2a is now self-healing: `test-http.sh` does an idempotent `createdb` for `pg_web_ext` and will append `shared_preload_libraries` + bounce PG if the line is missing after a fresh `cargo pgrx init`.
+- `TEST_TS=1` pipes all script output through a timestamp stamper. Per-tier start/end/dur are always recorded.
 
-1. **Tier 4 can false-green** — it validates the *published* image, not the code under test. On 2026-06-12 the locally-built image had a BGW bug that failed all 13 tier-3 tests, while tier 4 passed every assertion against the previous day's Hub image. The two tiers silently tested different artifacts in the same `test-all.sh` run.
-2. **Perpetual rebuilds** — after the pull, `latest` is older than the sources again, so the next `test-all.sh` always re-triggers `ensure_image_fresh`'s rebuild (a few minutes per run).
-3. Any manual `pg-web up` between a build and a test run does the same thing.
+The "pull clobber" / "tier4 validated the wrong artifact" hazard is **resolved**. Tier 4 now means "the image we just built/tested is good".
 
-**Detection.** A pulled image has a `RepoDigests` entry; a local-only build has none:
-
+Detection (forensics only; harness no longer needs it):
 ```bash
-docker image inspect rtaylor96/pg-web:latest --format '{{.RepoDigests}} {{.Created}}'
-# non-empty RepoDigests, or a Created older than your build ⇒ the tag was clobbered by a pull
+docker image inspect rtaylor96/pg-web:latest --format '{{.RepoDigests}} {{.Config.Labels}}'
 ```
-
-**Remediation options** (maintainer decision pending — this changes `pg-web up` product behavior):
-
-- Make `stack.rs` pull only when the image is missing locally (`docker image inspect` first) — preserves the fresh-machine UX without clobbering dev builds.
-- And/or have tier 4 pin the image by ID: tag the just-built image to a run-local name and point the scaffold at it via `PGWEB_IMAGE`-style override.
-
-Until one of those lands, read tier-4 results as "the published image still works", not as validation of the current tree, whenever the Hub tag is ahead of/behind your local build.
 
 ## Environment knobs
 
@@ -231,6 +227,15 @@ Verification runs that day (the WIP tree had a known app-level bug — the promp
 | 2 | ✅ 89 | ran, ❌ :8080 (app WIP — machine fix verified) | ✅ 150 | ran, 0/13 (app WIP) | ✅ 19 sections* | 78 min — **38 min was Maintenance Sleep** (→ caffeinate guard) |
 | 3 (caffeinated, per-line timestamps) | ✅ 89 (13 s) | ran, ❌ :8080 (app WIP) | ✅ 150 (<1 s warm) | ran, 0/13 in 794 s (app WIP) | ✅ 19 sections* (7 s) | **13 m 54 s** |
 
-\* Tier 4 "green" in all three runs was against the **Docker Hub image**, not the locally built one — the pull-clobber gotcha above, visible in run 3's timestamped log (`13:37:00` image built → `13:50:15` tier 4 pulls and re-tags from Hub). Treat it accordingly until `stack.rs` is fixed.
+\* Tier 4 "green" in all three runs was against the **Docker Hub image**, not the locally built one — the pull-clobber gotcha above, visible in run 3's timestamped log (`13:37:00` image built → `13:50:15` tier 4 pulls and re-tags from Hub). Treat it accordingly until `stack.rs` is fixed. (Resolved by prompt 025.)
 
-Machine-fix takeaway: with warm caches and no image rebuild the five-tier suite costs ~14 minutes, of which ~13 are tier 3's 13 × 60 s HTTP deadlines against the crash-looping WIP worker — that drops back to ~2–3 min once the worker serves again.
+### Post-025 verification (harness hardening run, 2026-06-13)
+After the integrity + speed + self-heal + observability changes:
+
+| Run | Tier 1 | Tier 2a | Tier 2b | Tier 3 | Tier 4 | Wall clock | Notes |
+|---|---|---|---|---|---|---|---|
+| 2026-06-13 hardening (caffeinated, TEST_TS=1, STRICT=1) | ✅ 91 (3 s) | ✅ self-healed (2 s) | ✅ 130 (<1 s) | 12 pass + 1 flake (25 s) | ✅ 19 + integrity assert (8 s) | ~2 min (warm layers) | Full matrix under STRICT; canary passed (no 30 s abort); src_hash + BuildKit caches used; smoke postcondition "using the expected local image ID" asserted; only failure = documented dev_watcher_repushes_on_save (tier 3 E2E, allowed per prompt 024/025). |
+
+Machine-fix takeaway (updated): target warm all-green ≤ 5 min. A deliberately broken-worker tree now fails tier 3 in < 90 s (canary + logs) instead of ~13 min of repeated timeouts. The single-command `scripts/test-all.sh` and `STRICT=1 scripts/test-all.sh` are both required to be green (modulo the documented watcher flake) before claiming prompt 025 complete.
+
+Update the table with real wall times + per-tier after the final acceptance run.

@@ -61,8 +61,11 @@ fn preflight_or_panic() {
 
 /// Poll `base_url/` until it returns any response (200 or 404 both count —
 /// 404 before `push` is expected because the seeded route has been
-/// replaced). Panic after the deadline.
-fn wait_for_http(base_url: &str, deadline: Instant) {
+/// replaced). Panic after the deadline. If container_id is provided,
+/// the last ~20 lines of `docker logs` for that container are printed
+/// on timeout (prompt 025) so a BGW crash reason is visible without
+/// having to manually re-run a probe.
+fn wait_for_http(base_url: &str, deadline: Instant, container_id: Option<&str>) {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_millis(500))
         .build()
@@ -72,6 +75,13 @@ fn wait_for_http(base_url: &str, deadline: Instant) {
             return;
         }
         if Instant::now() >= deadline {
+            if let Some(cid) = container_id {
+                eprintln!("=== wait_for_http timeout; last 20 lines of container {} logs ===", cid);
+                let _ = std::process::Command::new("docker")
+                    .args(["logs", "--tail", "20", cid])
+                    .status();
+                eprintln!("=== (end container logs) ===");
+            }
             panic!("HTTP server not ready at {base_url} within deadline");
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -118,7 +128,7 @@ fn full_todo_crud_flow() {
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
 
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     // Apply migrations then push the demo app into the fresh DB.
     let todo_app = todo_app_dir();
@@ -338,7 +348,7 @@ fn livereload_sse_chain_end_to_end() {
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
@@ -458,7 +468,7 @@ fn push_f1_dry_run_with_migrate_and_deployments() {
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
@@ -663,7 +673,7 @@ fn dev_watcher_repushes_on_save() {
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     // Copy examples/todo to a tempdir so edits don't touch the checked-in source.
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -761,7 +771,7 @@ fn push_reconciles_deleted_files() {
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     // Copy the demo and add an extra route we can later delete.
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -868,7 +878,7 @@ fn push_rejects_broken_tera_template() {
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
@@ -943,7 +953,7 @@ fn dev_error_page_surfaces_sql_exception_detail() {
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
@@ -1059,7 +1069,7 @@ fn static_asset_serves_with_etag_and_revalidates() {
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
@@ -1176,7 +1186,7 @@ fn push_rejects_missing_handler_function() {
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
@@ -1259,7 +1269,7 @@ fn concurrent_pushes_all_commit() {
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     let todo_app = todo_app_dir();
     pg_web_cli::migrate::apply(&todo_app, &db_url).expect("migrate apply");
@@ -1346,7 +1356,7 @@ fn cli_in_image_can_push_from_inside() {
         .expect("start test image container (rtaylor96/pg-web)");
     let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     // 1. Bare --version invocation. Proves the binary is on PATH and
     //    runs cleanly. clap's auto-generated --version emits
@@ -1483,7 +1493,7 @@ fn fingerprinted_assets_get_immutable_cache_control() {
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     // Copy the demo into a tempdir so we can flip its env to production
     // without touching the checked-in source.
@@ -1602,7 +1612,7 @@ fn large_asset_below_new_cap_round_trips() {
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
     let base_url = format!("http://127.0.0.1:{http_host_port}");
-    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60));
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
     // Copy demo, drop a 5 MiB file under public/ (random-ish bytes so
     // accidental compression-with-ETag aliasing doesn't cause the round

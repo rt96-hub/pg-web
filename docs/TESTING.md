@@ -24,6 +24,11 @@ It exits non-zero on any failure and prints `All tests passed.` on success. Tier
 
 Env knobs: `PG_MAJOR=16 scripts/test-all.sh` targets a different Postgres major; the default is 17. Tier 3 panics with a remediation message if Docker or the image is missing — no silent-skip (the image is a shipped artifact; false green would undermine the tier). Note: the concrete tag is `rtaylor96/pg-web` (temporary) until the `pgweb` Docker Hub org + `pgweb/postgres` image name are finalized; the harness (build-image, test-all, smoke-cli, docker_e2e) now agree on the tag via `TEST_IMAGE` / `PGWEB_IMAGE`.
 
+Additional harness controls (prompt 025):
+- `STRICT=1 scripts/test-all.sh` (default when `CI` is set) — any tier failure produces a non-zero exit (while still running later tiers for signal).
+- `TEST_TS=1` — prefix every line of test-all.sh output with a wall-clock timestamp (aids stall diagnosis).
+- `REBUILD_IMAGE=1`, `SKIP_IMAGE_CHECK=1` — force or bypass the (now content-hash + mtime) image freshness gate.
+
 ## CI integration
 
 The scripts are the CI entrypoint. Machine bring-up details (macOS ICU/pkg-config gotcha, dev-DB creation for tier 2a, Docker image + port hygiene, caching strategy) live in `docs/internal/TESTING-SETUP.md` — read that before wiring a new runner or dev machine. A GitHub Actions workflow (not yet added) would:

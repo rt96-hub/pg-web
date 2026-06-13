@@ -59,7 +59,11 @@ COPY crates ./crates
 COPY examples ./examples
 
 WORKDIR /src/crates/pg_web_ext
-RUN cargo pgrx install --release \
+# BuildKit cache mounts for the extension compile (pgrx install builds the cdylib).
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo pgrx install --release \
       --features pg${PG_MAJOR} --no-default-features \
       --pg-config /usr/bin/pg_config
 
@@ -67,7 +71,18 @@ RUN cargo pgrx install --release \
 # Built into the same image so `docker compose exec postgres pg-web push --dir /app`
 # works from inside the compose network without publishing :5432 to the host.
 WORKDIR /src
-RUN cargo build --release -p pg-web
+# BuildKit cache mounts (prompt 025): reuse cargo registry/git (and a side
+# target dir) across builds. We build into a cache-mounted CARGO_TARGET_DIR
+# then cp the final binary out to the normal /src/target path so the
+# subsequent runtime stage's `COPY --from=builder ... /src/target/release/pg-web`
+# can find it (mount contents are not part of the layer diff otherwise).
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target-cache \
+    CARGO_TARGET_DIR=/src/target-cache \
+    cargo build --release -p pg-web && \
+    mkdir -p /src/target/release && \
+    cp /src/target-cache/release/pg-web /src/target/release/pg-web
 
 # ---------- Stage 2: runtime ----------
 FROM postgres:17-bookworm
@@ -107,3 +122,9 @@ LABEL org.opencontainers.image.title="pg-web/postgres"
 LABEL org.opencontainers.image.description="PostgreSQL with the pg_web_ext extension preinstalled — HTTP server runs inside PG."
 LABEL org.opencontainers.image.licenses="MIT OR Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/rt96-hub/pg-web"
+
+# Content hash of the watched build inputs (src, Dockerfile, Cargo.*, init script, examples).
+# Written by build-image.sh via --build-arg; used by test-all.sh ensure_image_fresh
+# to decide staleness (replaces pure mtime, which was fooled by git ops / re-tags).
+ARG PGWEB_SRC_HASH=unknown
+LABEL pgweb.src_hash="${PGWEB_SRC_HASH}"
