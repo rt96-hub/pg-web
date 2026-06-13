@@ -2,7 +2,7 @@
 
 Snapshot of what's implemented right now and what's next. Re-generated at milestone boundaries. Read this first; chase into `APP-DEVELOPER-GUIDE.md`, `APP-LAYOUT.md`, `ARCHITECTURE.md`, `ROADMAP.md` for depth.
 
-> **Last updated:** 2026-04-25 / `v0.2.0` (Phase 1 complete). Polish track shipped: push retry on concurrent DDL (L), CLI bundled in `pgweb/postgres:latest` (F.3), content-hash asset filenames + immutable `Cache-Control` (H), BYTEA cap raised to 20 MiB. SSH-tunneled remote push (F.2) deferred to Session 6. True `pg_largeobject` streaming deferred to Phase 2+. Full shipping log in `docs/internal/sessions/`. See also `CHANGELOG.md`.
+> **Last updated:** 2026-04-25 / `v0.2.0` (Phase 1 complete). Polish track shipped: push retry on concurrent DDL (L), CLI bundled in `rtaylor96/pg-web:latest` (F.3), content-hash asset filenames + immutable `Cache-Control` (H), BYTEA cap raised to 20 MiB. SSH-tunneled remote push (F.2) deferred to Session 6. True `pg_largeobject` streaming deferred to Phase 2+. Full shipping log in `docs/internal/sessions/`. See also `CHANGELOG.md`.
 
 ---
 
@@ -15,7 +15,7 @@ pg-web is a PostgreSQL extension that runs an HTTP server *inside* a Postgres ba
 3. Serve HTML rendered from a database-stored Tera template merged with a SQL-function-returned JSON payload.
 4. Return `404` for any unmatched path.
 
-A CLI (`pg-web`) scaffolds apps (`init`), applies forward-only SQL migrations (`migrate apply`), and syncs the `pages/` tree into the DB (`push`). A prebuilt Docker image (`pgweb/postgres:latest`) packages PG 17 + the extension for one-command bringup.
+A CLI (`pg-web`) scaffolds apps (`init`), applies forward-only SQL migrations (`migrate apply`), and syncs the `pages/` tree into the DB (`push`). A prebuilt Docker image (`rtaylor96/pg-web:latest`) packages PG 17 + the extension for one-command bringup.
 
 Everything a browser sees comes out of a single OS process tree rooted at the Postgres postmaster. No Node, no Python, no external app server.
 
@@ -40,7 +40,7 @@ Later phases (2 auth/RLS, 3 async jobs, 4 observability) are tracked in `docs/RO
 - **B** ✅ Directory-as-route layout: `paths::scan()` + `push.rs` walker (`21cc831`)
 - **C** ✅ Router `(req json)` + text-return dispatch + `_404` fallback (`af50911`)
 - **D** ✅ `examples/todo/` todo app + `docs/TUTORIAL.md` (`7fed892`)
-- **E** ✅ Docker E2E tier against `pgweb/postgres:latest` (`c2c4985`)
+- **E** ✅ Docker E2E tier against `rtaylor96/pg-web:latest` (`c2c4985`)
 
 **Session 3 — M1.2 components** (see `docs/sessions/session_3.md` for the recap table):
 - `pg-web up` / `pg-web down` + port-shadowing preflight
@@ -63,7 +63,7 @@ Later phases (2 auth/RLS, 3 async jobs, 4 observability) are tracked in `docs/RO
 
 **Session 5 — v0.2 polish** (full shipping log in `docs/sessions/session_5.md`):
 - **L** ✅ Push retry on concurrent DDL + sibling-pusher diagnostic (`ed55de4`)
-- **F.3** ✅ CLI bundled in `pgweb/postgres:latest` (`7eaf724`)
+- **F.3** ✅ CLI bundled in `rtaylor96/pg-web:latest` (`7eaf724`)
 - **H** ✅ Content-hash asset filenames + `immutable` Cache-Control (`62c8cd7`)
 - **I** ✅ Larger asset cap (BYTEA 2 MiB → 20 MiB) — cap-raise variant of the planned `pg_largeobject` work (`db6fb0d`)
 - **F.2** ⬜ deferred to Session 6 — needs real remote infra to validate
@@ -81,7 +81,7 @@ Later phases (2 auth/RLS, 3 async jobs, 4 observability) are tracked in `docs/RO
 pg-web/
 ├── CLAUDE.md                         # Agent north-star: invariants + coding rules
 ├── Cargo.toml                        # Workspace (resolver 2, panic = unwind)
-├── Dockerfile                        # pgweb/postgres:latest image
+├── Dockerfile                        # rtaylor96/pg-web:latest image
 ├── scripts/
 │   ├── test-all.sh                   # One-command CI entry: SQL + HTTP + CLI
 │   ├── test-http.sh                  # Starts PG if needed, runs http_smoke
@@ -174,9 +174,9 @@ cd /tmp
 pg-web init demo-app
 cd demo-app
 
-# `pg-web up` pulls the official published image (`pgweb/postgres:latest`)
+# `pg-web up` pulls the official published image (`rtaylor96/pg-web:latest`)
 # from Docker Hub on first use. No source repo or local build needed.
-pg-web up                     # starts the pgweb/postgres + caddy stack, prints DATABASE_URL
+pg-web up                     # starts the rtaylor96/pg-web + caddy stack, prints DATABASE_URL
 
 # 2. Schema + code
 pg-web migrate apply

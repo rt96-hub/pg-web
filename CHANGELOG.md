@@ -22,7 +22,7 @@ changes may land in minor releases.
   Matches the Docker Hub guard pattern; no accidental publishes from forks.
 - Docs + scripts updated for the split install story: `cargo install pg-web`
   gets you the management CLI; the runtime (Postgres + `pg_web_ext`) always
-  comes from the `pgweb/postgres` Docker image. All `-p pg_web_cli` cargo
+  comes from the `rtaylor96/pg-web` Docker image. All `-p pg_web_cli` cargo
   selectors updated to the new package name `-p pg-web`. Internal lib name and
   directory unchanged.
 
@@ -48,7 +48,7 @@ written against `0.1.x` work unchanged on `0.2.x`.
   opens its connections with `application_name = 'pg-web {verb}
   (pid={pid}, host={host})'`. Visible in `pg_stat_activity`; powers
   the retry diagnostic.
-- **CLI bundled in `pgweb/postgres:latest`** (`F.3`). The image
+- **CLI bundled in `rtaylor96/pg-web:latest`** (`F.3`). The image
   builds and ships `pg-web` at `/usr/local/bin/pg-web` so
   `docker compose exec postgres pg-web push --dir /app` works from
   inside the compose network without publishing :5432 to the host.
@@ -107,7 +107,7 @@ Full feature surface below, grouped by milestone and component.
   `pgweb.toml`, `docker-compose.yml`, `Caddyfile`, `.gitignore`).
 - `pg-web push` walks `pages/` and upserts routes + templates +
   handler SQL into Postgres in one transaction.
-- `pgweb/postgres:latest` Docker image bundles Postgres 17 + the
+- `rtaylor96/pg-web:latest` Docker image bundles Postgres 17 + the
   extension; scripts/build-image.sh is the one-command build.
 
 ### M1.3 — Interactive contracts + real demo (Session 2)
@@ -192,7 +192,7 @@ Full feature surface below, grouped by milestone and component.
 - **`pg-web push --target <name>` SSH-tunneled remote deploy.**
   Local-loopback pushing works; remote push requires manual SSH
   tunnel today.
-- **CLI bundled in `pgweb/postgres:latest`.** Build the image, push
+- **CLI bundled in `rtaylor96/pg-web:latest`.** Build the image, push
   from the same box.
 - **`pg_largeobject`-backed streaming assets above 2 MiB.**
   BYTEA cap of 2 MiB holds in 0.1; larger assets → CDN.

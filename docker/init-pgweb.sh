@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Installed at /docker-entrypoint-initdb.d/10-pgweb.sh in the pgweb/postgres
+# Installed at /docker-entrypoint-initdb.d/10-pgweb.sh in the rtaylor96/pg-web
 # image. Runs exactly once — during the initial database bootstrap — against
 # a temporary postmaster that's serving on a Unix socket.
 #

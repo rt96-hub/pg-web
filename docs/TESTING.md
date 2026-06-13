@@ -172,7 +172,7 @@ Start a Postgres container per test module (cached via `testcontainers`), seed i
 ## Tier 3 — End-to-end (the companion app)
 
 **Tool:** `examples/todo/` — a real pg-web app that exercises every framework feature.
-**Runs:** CI spins up `pgweb/postgres:latest`, runs `pg-web dev` pointing at the demo app, hits HTTP endpoints with `reqwest`, asserts on response bodies and status codes.
+**Runs:** CI spins up `rtaylor96/pg-web:latest`, runs `pg-web dev` pointing at the demo app, hits HTTP endpoints with `reqwest`, asserts on response bodies and status codes.
 **Scope:** product behavior from the app developer's POV.
 
 ### The companion app IS the acceptance test

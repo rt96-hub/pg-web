@@ -10,7 +10,7 @@
 # - Gate for merges into `main`. A change that breaks any tier is
 #   caught before it hits a branch anyone else pulls.
 #
-# Runner platform: ubuntu-latest — matches the pgweb/postgres:latest
+# Runner platform: ubuntu-latest — matches the rtaylor96/pg-web:latest
 # image's base (postgres:17 on Debian). pgrx needs build-essential +
 # libclang + the Postgres source deps; we install them up-front.
 #
@@ -75,7 +75,7 @@ jobs:
       # pg_web_ext's install SQL is baked into the Docker image — build
       # it before test-all.sh so tier 3 (testcontainers) has an image
       # to boot. scripts/build-image.sh is the canonical build.
-      - name: Build pgweb/postgres image
+      - name: Build rtaylor96/pg-web image
         run: bash scripts/build-image.sh
 
       - name: Run scripts/test-all.sh
@@ -87,7 +87,7 @@ jobs:
         if: failure()
         run: |
           docker ps -a
-          for c in $(docker ps -aq --filter "ancestor=pgweb/postgres:latest"); do
+          for c in $(docker ps -aq --filter "ancestor=rtaylor96/pg-web:latest"); do
             echo "=== container $c ==="
             docker logs "$c" || true
           done

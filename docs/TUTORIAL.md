@@ -19,10 +19,10 @@ You need:
    ```bash
    cargo install pg-web
    ```
-   The runtime image (`pgweb/postgres:latest`) is published on Docker Hub.
+   The runtime image (`rtaylor96/pg-web:latest`) is published on Docker Hub.
    `pg-web up` (and `docker compose`) will pull it automatically on first use.
    No source checkout or manual build is required for normal app development.
-   From here on the tutorial assumes `pg-web` is on your `$PATH`. The CLI talks to Postgres over the normal wire; the actual web server runs inside the `pgweb/postgres` container.
+   From here on the tutorial assumes `pg-web` is on your `$PATH`. The CLI talks to Postgres over the normal wire; the actual web server runs inside the `rtaylor96/pg-web` container.
 3. **A terminal.** That's it. No Node, Python, Go, or anything else.
 
 ---

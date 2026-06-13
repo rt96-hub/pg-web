@@ -19,7 +19,7 @@ pg-web/
 ├── examples/todo/         # Companion app — the acceptance gate for every framework feature
 ├── docker/                # Image entrypoint scripts
 ├── scripts/               # test-all.sh, test-http.sh, build-image.sh, smoke-cli.sh
-├── Dockerfile             # Builds pgweb/postgres:latest (PG 17 + extension + CLI)
+├── Dockerfile             # Builds rtaylor96/pg-web:latest (PG 17 + extension + CLI)
 └── Cargo.toml             # Workspace root
 ```
 
@@ -161,7 +161,7 @@ Captured in the per-session `docs/sessions/` files and in your auto-memory; the 
 - **Companion-app coverage per feature** — `examples/todo/` is the acceptance gate. New framework features need a corresponding demo path.
 - **Bias toward *why* in inline comments**, not *what*. Well-named symbols document themselves.
 - **`pgweb.pages__*(json) RETURNS json|text`** is the reserved push-managed namespace — user helpers must use a different signature pattern.
-- **Docker image bakes install SQL + the .so + the CLI binary** — `scripts/test-all.sh` now auto-rebuilds when extension source / Dockerfile / CLI source changes (Session 5 feature). `scripts/build-image.sh` is only for framework developers changing the extension. End users never run it — they get the published `pgweb/postgres` image from Docker Hub via `cargo install pg-web` + `pg-web up`.
+- **Docker image bakes install SQL + the .so + the CLI binary** — `scripts/test-all.sh` now auto-rebuilds when extension source / Dockerfile / CLI source changes (Session 5 feature). `scripts/build-image.sh` is only for framework developers changing the extension. End users never run it — they get the published `rtaylor96/pg-web` image from Docker Hub via `cargo install pg-web` + `pg-web up`.
 
 ## Release process & tokens (post-010)
 
@@ -174,6 +174,6 @@ Tagging a `v*` version triggers:
 The two publish jobs are independent (one can succeed while the other skips if its secret is absent). Configure the secrets in GitHub repo → Settings → Secrets and variables → Actions.
 
 - `CARGO_REGISTRY_TOKEN`: crates.io API token (https://crates.io/settings/tokens) with **publish** permission. The account must control the `pg-web` crate name. Use the minimal-scope token.
-- `DOCKERHUB_*`: for `pgweb/postgres` image.
+- `DOCKERHUB_*`: for `rtaylor96/pg-web` image.
 
 Never commit tokens. The workflows are written to no-op gracefully when secrets are missing (useful for forks and pre-config validation). Update CHANGELOG.md + the version in `Cargo.toml` (workspace) before tagging. The published crate version, image tag, and workspace version must match.

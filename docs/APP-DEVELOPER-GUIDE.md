@@ -19,7 +19,7 @@ The exhaustive layout spec is `docs/APP-LAYOUT.md`. This guide is the narrative 
 cargo install pg-web
 ```
 
-The published crate installs the `pg-web` CLI. The runtime (Postgres + extension) is supplied by the official published Docker image `pgweb/postgres:latest` on Docker Hub — the CLI itself does not embed Postgres.
+The published crate installs the `pg-web` CLI. The runtime (Postgres + extension) is supplied by the official published Docker image `rtaylor96/pg-web:latest` on Docker Hub — the CLI itself does not embed Postgres.
 
 `pg-web up` pulls the image automatically the first time. You only need Docker. For production you use the same image.
 
@@ -51,7 +51,7 @@ my-blog/
 ├── public/                  # Static assets (served at /<filename>)
 ├── migrations/              # Forward-only SQL migrations (NNNN_name.sql)
 ├── pgweb.toml               # Framework config
-├── docker-compose.yml       # Boots pgweb/postgres locally
+├── docker-compose.yml       # Boots rtaylor96/pg-web locally
 ├── Caddyfile                # Prod TLS (commented out in dev)
 └── .gitignore
 ```

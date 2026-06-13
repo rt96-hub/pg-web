@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 015 benchmark harness.
-# Boots a pg-web stack (pgweb/postgres:latest), pushes the dedicated bench app,
+# Boots a pg-web stack (rtaylor96/pg-web:latest), pushes the dedicated bench app,
 # seeds data for the workloads, runs oha (pinned) against each, and writes
 # raw results under bench/results/.
 #
@@ -52,8 +52,8 @@ ensure_image() {
   if [[ "${SKIP_IMAGE_CHECK:-}" == "1" ]]; then
     return 0
   fi
-  if ! docker image inspect pgweb/postgres:latest >/dev/null 2>&1; then
-    log "pgweb/postgres:latest missing — building via scripts/build-image.sh"
+  if ! docker image inspect rtaylor96/pg-web:latest >/dev/null 2>&1; then
+    log "rtaylor96/pg-web:latest missing — building via scripts/build-image.sh"
     bash scripts/build-image.sh
     return 0
   fi
@@ -107,7 +107,7 @@ ensure_oha() {
 }
 
 start_stack() {
-  log "starting bench stack (image pgweb/postgres:latest)"
+  log "starting bench stack (image rtaylor96/pg-web:latest)"
   # Stop anything left from previous run (idempotent).
   $COMPOSE down --volumes --remove-orphans >/dev/null 2>&1 || true
 

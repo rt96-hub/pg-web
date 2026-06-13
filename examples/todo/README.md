@@ -12,7 +12,7 @@ A working HTMX-driven todo list. This app serves three purposes:
 
 Prereqs:
 
-- The Docker image `pgweb/postgres:latest` exists locally. From the
+- The Docker image `rtaylor96/pg-web:latest` exists locally. From the
   pg-web repo root: `bash scripts/build-image.sh` (one-time, ~5–10 min
   cold).
 - The `pg-web` CLI is built: `cargo build -p pg-web` from the repo

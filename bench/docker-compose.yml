@@ -1,5 +1,5 @@
 # Bench stack for 015 concurrency/throughput measurements.
-# Shape reuses examples/todo/docker-compose.yml (pgweb/postgres:latest,
+# Shape reuses examples/todo/docker-compose.yml (rtaylor96/pg-web:latest,
 # POSTGRES_DB=app, :8080 published for load gen on host).
 #
 # Resource-constrained runs (the 1-vCPU/2-GiB primary tier) are achieved

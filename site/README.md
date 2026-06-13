@@ -2,7 +2,7 @@
 
 This directory **is** the pg-web application that serves https://pg-web.dev.
 
-It is the primary dogfooding vehicle for the framework (alongside `examples/todo/`). The public documentation for pg-web is itself a pg-web app: Postgres + `pg_web_ext` (via the official `pgweb/postgres:latest` image), Caddy for TLS, standard `pages/`, `public/`, `pgweb.toml` layout, and the normal `pg-web` CLI workflow.
+It is the primary dogfooding vehicle for the framework (alongside `examples/todo/`). The public documentation for pg-web is itself a pg-web app: Postgres + `pg_web_ext` (via the official `rtaylor96/pg-web:latest` image), Caddy for TLS, standard `pages/`, `public/`, `pgweb.toml` layout, and the normal `pg-web` CLI workflow.
 
 ## Why this exists
 
@@ -38,7 +38,7 @@ Most pages are pure static templates (`.html` only → zero SQL, synthesized tri
 From inside `site/` (adjust the path to the `pg-web` binary as needed):
 
 ```bash
-# From repo root, one-time (or `docker pull pgweb/postgres:latest` when published)
+# From repo root, one-time (or `docker pull rtaylor96/pg-web:latest` when published)
 bash ../scripts/build-image.sh
 
 # Preferred dev loop (watcher + auto-push + browser live-reload via SSE)
@@ -68,7 +68,7 @@ The production deploy uses the **exact same pattern** end users are expected to 
 
 1. On the VPS (or via CI):
    ```bash
-   docker compose pull   # when the pgweb/postgres image is updated
+   docker compose pull   # when the rtaylor96/pg-web image is updated
    docker compose up -d
    ```
 

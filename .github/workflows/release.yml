@@ -1,5 +1,5 @@
 # Release — fires on tags matching `v*`. Builds the Docker image and
-# publishes it as `pgweb/postgres:<tag>` + `pgweb/postgres:latest`,
+# publishes it as `rtaylor96/pg-web:<tag>` + `rtaylor96/pg-web:latest`,
 # then publishes the `pg-web` CLI crate to crates.io at the same version.
 #
 # Requires two secrets (both optional for validation; real publish only
@@ -29,7 +29,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   publish-image:
-    name: build + push pgweb/postgres:${{ github.ref_name }}
+    name: build + push rtaylor96/pg-web:${{ github.ref_name }}
     needs: test-all
     runs-on: ubuntu-latest
     timeout-minutes: 30

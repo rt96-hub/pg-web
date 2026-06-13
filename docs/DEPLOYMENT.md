@@ -16,7 +16,7 @@ Target: single-VPS Docker Compose deployment. Managed databases (RDS, Cloud SQL,
 ```yaml
 services:
   postgres:
-    image: pgweb/postgres:latest
+    image: rtaylor96/pg-web:latest
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: app
@@ -65,7 +65,7 @@ Caddy handles Let's Encrypt certificate issuance + renewal automatically. pg-web
    ```
 7. Visit `https://myapp.example.com`.
 
-The `pg-web push` step is where your routes, templates, assets, and migrations get uploaded. The VPS container alone has no app code baked in — it's a generic `pgweb/postgres` image.
+The `pg-web push` step is where your routes, templates, assets, and migrations get uploaded. The VPS container alone has no app code baked in — it's a generic `rtaylor96/pg-web` image.
 
 ### Production port exposure — how `pg-web push` reaches remote Postgres
 
@@ -137,7 +137,7 @@ Zero downtime. No container rebuild. No rolling restart. New traffic picks up th
 When a new pg-web extension version ships:
 
 1. SSH to the VPS.
-2. `docker compose pull` — fetches the new `pgweb/postgres:latest`.
+2. `docker compose pull` — fetches the new `rtaylor96/pg-web:latest`.
 3. `docker compose up -d` — restarts with the new `.so` loaded.
 4. Connect via `psql` or from the app and run `ALTER EXTENSION pg_web_ext UPDATE;`.
 
@@ -181,7 +181,7 @@ Two patterns, both deferred to post-1.0:
 - [ ] `docker-compose.yml`'s `postgres` service uses `"127.0.0.1:5432:5432"` or **no `ports:` stanza at all** — never `"5432:5432"` in prod.
 - [ ] DB accessed from outside the VPS only via SSH tunnel or private overlay (Tailscale / WireGuard).
 - [ ] Caddy on latest patch version.
-- [ ] Postgres on latest patch version (patch releases don't break the ABI; the `pgweb/postgres:pg17-X.Y` tag tracks upstream).
+- [ ] Postgres on latest patch version (patch releases don't break the ABI; the `rtaylor96/pg-web:pg17-X.Y` tag tracks upstream).
 - [ ] `pgweb.settings.env = 'production'` set before deploy (flip in `pgweb.toml` and re-`pg-web push`) — disables the debug error page and the `div by zero / PGWEB_E003` leak.
 - [ ] Secrets via `pg-web env set` (shipped), never in committed files. Use `pg-web env` + `pgweb.setting()` in handlers.
 - [ ] Postgres `pg_hba.conf` configured to restrict connection sources.

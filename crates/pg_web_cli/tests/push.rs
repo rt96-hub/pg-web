@@ -1,6 +1,6 @@
 //! Hermetic tests for `pg-web push` — things that don't require a running DB.
 //!
-//! DB-integration tests are deferred until the `pgweb/postgres:latest`
+//! DB-integration tests are deferred until the `rtaylor96/pg-web:latest`
 //! Docker image (M1.1 step 6) so they can spin up a hermetic container.
 //! For now, verify pre-connection behavior: arg validation, file walking,
 //! nice error messages.

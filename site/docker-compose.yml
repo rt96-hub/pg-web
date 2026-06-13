@@ -10,7 +10,7 @@
 #   - Caddy terminates TLS and reverse-proxies to the postgres container on :8080.
 #   - Use `pg-web push --with-migrate` (or the in-image CLI) to deploy updates.
 #
-# The container image is the standard `pgweb/postgres:latest` — no custom image
+# The container image is the standard `rtaylor96/pg-web:latest` — no custom image
 # for the docs site. The CLI is bundled inside (F.3).
 
 services:

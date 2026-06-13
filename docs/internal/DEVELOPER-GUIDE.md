@@ -11,7 +11,7 @@ Platform bring-up details (exact WSL2 steps, user creation, Git Bash quirks, etc
 - A working `cargo-pgrx` development setup for Postgres 15, 16, and 17.
 - `cargo-pgrx` pinned to `~0.18` (matches the version in `Cargo.toml`).
 - Rust stable (1.95+ recommended).
-- Docker (required for tier 3 Docker E2E and tier 4 smoke tests; `scripts/test-all.sh` will fail loudly without the `pgweb/postgres:latest` image).
+- Docker (required for tier 3 Docker E2E and tier 4 smoke tests; `scripts/test-all.sh` will fail loudly without the `rtaylor96/pg-web:latest` image).
 - A non-root user for pgrx work (Postgres `initdb` refuses to run as root).
 
 Full machine bring-up for the 5-tier suite — including the macOS ICU/pkg-config `cargo pgrx init` gotcha, the tier-2a dev-database step, Docker image/port hygiene, and CI runner notes — is documented in **`docs/internal/TESTING-SETUP.md`**. Start there when a tier fails to even start.
@@ -126,7 +126,7 @@ Run `pg-web check` (using the built CLI) against `examples/todo/` as part of you
 
 ## Packaging & Distribution
 
-The canonical shipped artifact is the Docker image `pgweb/postgres:latest` (based on `postgres:17`).
+The canonical shipped artifact is the Docker image `rtaylor96/pg-web:latest` (based on `postgres:17`).
 
 ### Dockerfile Responsibilities
 - Builder stage installs the system deps needed for pgrx + the extension, runs `cargo pgrx install --release`, and captures the generated `.so` + extension SQL files.
@@ -141,7 +141,7 @@ bash scripts/build-image.sh
 
 `scripts/test-all.sh` does **not** auto-rebuild the image on every run (it would be too slow).
 
-The `bench/` harness also depends on the canonical `pgweb/postgres:latest` image (it boots a stack and uses the in-image `pg-web` CLI for push). Rebuild the image after touching anything that affects extension behavior or the baked CLI before running `RUN_BENCH` experiments.
+The `bench/` harness also depends on the canonical `rtaylor96/pg-web:latest` image (it boots a stack and uses the in-image `pg-web` CLI for push). Rebuild the image after touching anything that affects extension behavior or the baked CLI before running `RUN_BENCH` experiments.
 
 ### CLI Distribution
 - `cargo install pg-web` (the published crate name).
