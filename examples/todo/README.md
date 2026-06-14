@@ -67,6 +67,9 @@ examples/todo/
     ├── index.html                      # GET / — list view + HTMX form
     ├── index.sql                       # GET / — SELECT todos → JSON
     ├── _404.html                       # Static 404 page (no handler)
+    ├── health/
+    │   ├── index.html                  # GET /health — custom override demo (HTML + glowing status)
+    │   └── index.sql                   # GET /health — handler (demonstrates replacing framework default)
     └── todos/
         ├── post.html                   # POST /todos — new-<li> fragment
         ├── post.sql                    # POST /todos — INSERT
@@ -78,9 +81,9 @@ examples/todo/
             └── delete.sql              # DELETE /todos/:id — text mode (real HTTP method)
 ```
 
-Five routes (four user + _404), three modes:
+Six routes (five user + _404), three modes:
 
-- **Dynamic** (JSON → Tera): `GET /`, `POST /todos`, `POST /todos/toggle`, `GET /todos/:id`
+- **Dynamic** (JSON → Tera): `GET /`, `POST /todos`, `POST /todos/toggle`, `GET /todos/:id`, `GET /health`
 - **Static** (template, no SQL): `GET /_404` (served on route miss)
 - **Raw text** (SQL only, no template): `DELETE /todos/:id` (via pages/todos/[id]/delete.sql) — returns `''`
 
@@ -95,6 +98,8 @@ intermediate state. Finish the tutorial → your app matches this one.
 ## Health & readiness (018.1)
 
 pg-web ships two surfaces (protected platform probes at `/_pgweb/health` and `/_pgweb/readiness` for infrastructure; conventional overridable `GET /health` and `GET /readiness` for app-level checks).
+
+This app includes a live custom override at `/health` (see `pages/health/index.html` + `index.sql`). The page explains how new projects get default checks and how you can replace them.
 
 The full override pattern, disable flags (`health_enabled = false` etc. in pgweb.toml), and which surface to use for Docker HEALTHCHECK vs. business health are documented with a complete worked example in the README written by `pg-web init --template todo`.
 

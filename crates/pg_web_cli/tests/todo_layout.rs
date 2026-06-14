@@ -33,6 +33,9 @@ fn todo_pages_scans_cleanly() {
             ("GET".to_string(), "/".to_string()),
             // 014 companion coverage: debug route for timeout/role floor (raw-text).
             ("GET".to_string(), "/debug/timeout".to_string()),
+            // 018.1: custom /health override in the todo app (demonstrates replacing
+            // the framework default with our own page + handler).
+            ("GET".to_string(), "/health".to_string()),
             // Response contract v2 demo routes (013 companion coverage).
             ("GET".to_string(), "/seeother".to_string()),
             ("GET".to_string(), "/status".to_string()),
@@ -72,6 +75,8 @@ fn todo_pages_modes_are_as_documented() {
     assert!(by_key("GET", "/status").is_raw_text());
     // 014: debug timeout route (companion coverage for floor + statement_timeout).
     assert!(by_key("GET", "/debug/timeout").is_raw_text());
+    // 018.1: custom health page in todo app (full dynamic mode with our own .html + .sql).
+    assert!(by_key("GET", "/health").is_full());
 }
 
 #[test]
@@ -93,6 +98,8 @@ fn todo_handler_names_match_spec() {
             ("GET", "/status") => "pgweb.pages__status__index",
             // 014 companion: debug route for role floor + timeout (raw text).
             ("GET", "/debug/timeout") => "pgweb.pages__debug__timeout__index",
+            // 018.1: custom health override page in the todo app.
+            ("GET", "/health") => "pgweb.pages__health__index",
             other => panic!("unexpected route {other:?}"),
         };
         assert_eq!(

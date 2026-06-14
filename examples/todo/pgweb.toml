@@ -1,12 +1,34 @@
 # pg-web app config
 
 [server]
+# Port the extension's HTTP server binds inside the Postgres container.
 port = 8080
+# "development" gives rich error pages; "production" returns generic 500s.
 env  = "development"
-# request_timeout = "15s"   # prompt 014 — per-request bound (default if omitted)
+# Per-request statement timeout (prompt 014). Bounds every handler and
+# internal lookup so one slow query cannot wedge the whole site.
+# The worker does SET LOCAL statement_timeout = '...' inside the request tx.
+# request_timeout = "15s"  # default in extension if omitted; override here and re-push
+
+# Health & readiness (prompt 018.1). The framework seeds working defaults
+# for the conventional public endpoints GET /health and GET /readiness so
+# a fresh `pg-web init` (or bare CREATE EXTENSION) is immediately useful for
+# simple probes. These defaults are *overridable*:
+#   - Create pages/health/index.sql (+ optional .html) per APP-LAYOUT.md
+#     and push — your route row replaces the seeded one completely.
+#   - Set the flag false to suppress *only the framework default* (public
+#     /health then falls through to normal 404 / your _404). User routes for
+#     the path are never suppressed by the flag.
+# The protected platform probes (`/_pgweb/health`, `/_pgweb/readiness`) are
+# always available, never overridable, and are the ones the Dockerfile
+# HEALTHCHECK and load balancers should target.
+# health_enabled = true
+# readiness_enabled = true
 
 [database]
+# Name of the environment variable holding your Postgres connection string.
 url_env = "DATABASE_URL"
 
 [dev]
+# Directories `pg-web dev` watches for changes (M1.2+).
 watch_paths = ["pages", "public"]

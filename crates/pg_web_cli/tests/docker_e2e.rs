@@ -893,14 +893,13 @@ fn push_reconciles_deleted_files() {
     pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
     let first = pg_web_cli::push::push(tmp.path(), &db_url).expect("initial push");
     assert!(first.routes_upserted >= 1);
-    // 018.1: the framework now seeds /health and /readiness defaults.
-    // A first push of an app that does not declare those paths will
-    // reconcile-delete the two framework rows. The test's own "extra"
-    // route is new, so nothing the app cares about should be deleted
-    // beyond the (now-expected) framework seeds.
-    assert!(
-        first.routes_deleted <= 2,
-        "on first push of a todo-like app, only the two framework health/readiness seeds (if present) may be deleted by reconcile; got {}",
+    // 018.1: framework _default_* routes are now preserved by reconcile
+    // (see push.rs). A first push of a todo-like app (which now declares
+    // its custom /health) will not delete the readiness seed either.
+    // The test's own "extra" is new, so routes_deleted should be 0.
+    assert_eq!(
+        first.routes_deleted, 0,
+        "framework default routes are preserved; app's extra is new so no deletes on first push; got {}",
         first.routes_deleted
     );
 

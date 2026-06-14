@@ -677,13 +677,22 @@ fn reconcile_routes(
     expected: &HashSet<(String, String)>,
 ) -> Result<usize> {
     let rows = tx
-        .query("SELECT method, path_pattern FROM pgweb.routes", &[])
+        .query("SELECT method, path_pattern, handler_name FROM pgweb.routes", &[])
         .context("listing pgweb.routes for reconcile")?;
     let mut deleted = 0usize;
     for row in rows {
         let method: String = row.get(0);
         let path: String = row.get(1);
+        let handler_name: String = row.get(2);
         if !expected.contains(&(method.clone(), path.clone())) {
+            // Preserve framework-seeded default routes (the _default_* handlers
+            // from the extension bootstrap) so that /health and /readiness
+            // "just work" after `pg-web push` on a minimal init that doesn't
+            // customize them. User-provided routes for those paths will have
+            // already replaced the row via the ON CONFLICT upsert in apply_entry.
+            if handler_name.starts_with("pgweb._default_") {
+                continue;
+            }
             tx.execute(
                 "DELETE FROM pgweb.routes WHERE method = $1 AND path_pattern = $2",
                 &[&method, &path],

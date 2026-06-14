@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Health — todo app</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.5; }
+    .explanation { max-width: 60ch; }
+    .status {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid #ddd;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .dot {
+      width: 18px;
+      height: 18px;
+      background: #22c55e;
+      border-radius: 50%;
+      box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.3),
+                  0 0 0 8px rgba(34, 197, 94, 0.15);
+      animation: glow 2s ease-in-out infinite;
+    }
+    @keyframes glow {
+      0%, 100% {
+        box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.3),
+                    0 0 0 8px rgba(34, 197, 94, 0.15);
+      }
+      50% {
+        box-shadow: 0 0 0 8px rgba(34, 197, 94, 0.5),
+                    0 0 0 16px rgba(34, 197, 94, 0.2);
+      }
+    }
+    code { background: #f4f4f5; padding: 0.1em 0.3em; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>Health</h1>
+
+  <div class="explanation">
+    <p>
+      New projects get built-in health checks at <code>/health</code> and
+      <code>/_pgweb/health</code>, but we can replace the page in HTML to
+      override the defaults with whatever we want — like this page.
+    </p>
+    <p>
+      The protected <code>/_pgweb/health</code> probe (used by Docker HEALTHCHECK,
+      load balancers, etc.) is never overridden.
+    </p>
+  </div>
+
+  <div class="status">
+    <div class="dot" aria-hidden="true"></div>
+    <span>All good — custom health page is live</span>
+  </div>
+</body>
+</html>
