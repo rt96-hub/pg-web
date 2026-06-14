@@ -91,8 +91,10 @@ Suggested order of execution:
    auth-related remote testing.
 6. **022 large-object streaming** — completes the deferred half of Session 5 I
    (true >20 MiB support). Benefits from 017 Range work; enables richer media in 020.
-7. **018 lifecycle/observability** — pull the `/_pgweb/health` endpoint and the
-   `ALTER EXTENSION` upgrade convention forward; both are urgent and small.
+7. **018.1 health/readiness endpoints** + **018.2 extension upgrade path** — split from the original 018.
+   018.1 ships default overridable `/health` + protected `/_pgweb/health` (plus readiness + disable flags) as part of `pg-web init`.
+   018.2 establishes real `--from--to.sql` upgrade scripts + the additive/destructive policy + a proper upgrade test tier.
+   Both are urgent operational maturity items.
 8. **015 multi-worker design** — once the benchmark shows where the ceiling is.
 9. **023 Phase 2 core (session_6 tracks A/B/C)** — the actual implementation of
    cookie sessions, RLS bridge, and realtime. Must follow 013+014; produces the

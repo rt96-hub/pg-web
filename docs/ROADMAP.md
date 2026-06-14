@@ -76,7 +76,7 @@ Source of truth for "what ships when" across the full plan. Status legend: **✅
 
 | Feature | Status | Notes |
 |---|---|---|
-| In-browser dev dashboard at `/_pgweb/admin` | ⬜ | HTMX against the BGW; shows routes, templates, recent requests. |
+| In-browser dev dashboard at `/_pgweb/admin` | ⬜ | HTMX against the BGW. Visual dev-mode page with sitemaps/route overviews, checks (incl. health/readiness from 018.1), migration overview, and other runtime state. Dev-only (env-gated like livereload). Read primarily from existing `pgweb.*` tables; does not require full production request logging or metrics (see prompt 026 and the slimmed 018 for current thinking). |
 | Request log + slow-request capture | ⬜ | `pgweb.request_log` with sampling. |
 | Query plans for the last N handler invocations | ⬜ | `pg_stat_statements` integration. |
 | Live tail of background worker logs | ⬜ | SSE stream to admin UI. |
