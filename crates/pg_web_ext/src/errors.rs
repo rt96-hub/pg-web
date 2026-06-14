@@ -85,6 +85,7 @@ pub enum ServeError {
     /// Should be impossible after Component C's scanner validation, but
     /// having the variant means a malformed row stored by hand produces
     /// a legible error instead of mysterious 404s.
+    #[allow(dead_code)]
     RoutePatternMalformed {
         pattern: String,
         reason: String,

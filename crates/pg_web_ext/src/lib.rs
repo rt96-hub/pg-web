@@ -10,6 +10,7 @@
 mod errors;
 mod http;
 mod health;
+mod cache;
 mod listen_router;
 mod livereload;
 mod logging;

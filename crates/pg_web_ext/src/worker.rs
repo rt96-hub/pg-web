@@ -6,6 +6,7 @@
 //! The worker name "pg_web_worker" appears in `pg_stat_activity.backend_type`.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use pgrx::bgworkers::{BackgroundWorker, SignalWakeFlags};
 use pgrx::pg_guard;
@@ -14,7 +15,7 @@ use tracing::{error, info, warn};
 
 use crate::listen_router::{self, ListenRouter};
 use crate::livereload;
-use crate::settings::{self, Env};
+use crate::settings;
 use crate::{http, logging};
 
 /// Port the HTTP server binds. Hardcoded for M1.1; will become a GUC later.
@@ -167,18 +168,21 @@ pub extern "C-unwind" fn pg_web_worker_main(_arg: pg_sys::Datum) {
         };
 
         // Build the shared LISTEN fan-out. Always exists so HTTP
-        // handlers have a stable state type, but the actual LISTEN
-        // task only starts in dev mode (see below). Prod = zero
-        // extra Postgres backend slots from this machinery.
+        // handlers have a stable state type. The LISTEN task is now
+        // always-on (prod + dev) so that cache invalidation via
+        // pgweb_reload reaches the worker in production deploys.
+        // Cost: +1 PG backend slot per BGW (documented).
         let router = ListenRouter::new();
         router.preregister(livereload::LIVERELOAD_CHANNEL);
+        const RELOAD_CHANNEL: &str = "pgweb_reload";
+        router.preregister(RELOAD_CHANNEL);
 
         // One startup transaction: read env + observe the SPI identity. The
         // identity check is belt-and-braces — connect_spi_as_serving_role
         // FATALs on a missing role rather than falling back to superuser —
         // but logging it makes the privilege floor (014) verifiable from
         // the server log, and a mismatch is loud instead of silent.
-        let (env, spi_user) = BackgroundWorker::transaction(|| {
+        let (_env, spi_user) = BackgroundWorker::transaction(|| {
             let env = settings::current_env();
             let who = pgrx::Spi::get_one::<String>("SELECT current_user")
                 .ok()
@@ -193,24 +197,51 @@ pub extern "C-unwind" fn pg_web_worker_main(_arg: pg_sys::Datum) {
                 "SPI identity is not the expected serving role; the 014 privilege floor is not in effect"
             );
         }
-        if env == Env::Development {
-            let conn_str = build_listen_conn_str(&target_db);
-            let router_clone = router.clone();
-            let channels = vec![livereload::LIVERELOAD_CHANNEL.to_string()];
-            tokio::spawn(listen_router::run_listen_loop(
-                router_clone,
-                conn_str,
-                channels,
-            ));
-            info!("livereload LISTEN task started (env=development)");
-        } else {
-            info!("livereload LISTEN task skipped (env=production)");
-        }
+        let conn_str = build_listen_conn_str(&target_db);
+        let router_clone = router.clone();
+        let channels = vec![
+            livereload::LIVERELOAD_CHANNEL.to_string(),
+            RELOAD_CHANNEL.to_string(),
+        ];
+        tokio::spawn(listen_router::run_listen_loop(
+            router_clone,
+            conn_str,
+            channels,
+        ));
+        info!("LISTEN task started (cache invalidation + livereload; always-on)");
+
+        // Note: cache invalidation on "pgweb_reload" is now handled directly
+        // inside the listen pump (see listen_router.rs) when a NOTIFY for that
+        // channel is received. This avoids an extra persistent subscriber task
+        // + broadcast receiver at startup, which was one of the contributors
+        // to the BGW segfaults we saw in container canaries after making the
+        // LISTEN always-on for the cache feature.
+
+        // Warm-up is lazy (on first request) to keep startup as close as
+        // possible to the pre-cache sequence and avoid any early-SPI timing
+        // interactions observed during bring-up. The first request pays the
+        // (still bounded) build cost; subsequent requests and post-push
+        // requests are fast. Invalidation still works via the reload channel.
+        // (Eager warm-up can be re-enabled once the BGW start sequencing is
+        // further hardened.)
 
         info!(addr = %addr, db = %target_db, role = %spi_user, "listening");
 
-        if let Err(e) = axum::serve(listener, http::app(router)).await {
-            error!(error = %e, "server exited with error");
+        // Graceful shutdown per prompt 016: honor SIGTERM so in-flight requests
+        // drain and the postmaster does not have to escalate to SIGKILL. We also
+        // request shutdown on the router so SSE streams close promptly (instead
+        // of the 2h hard cap) and we cap the total drain window.
+        let router_for_signal = router.clone();
+        let shutdown = shutdown_signal(router_for_signal);
+        let serve_fut = axum::serve(listener, http::app(router))
+            .with_graceful_shutdown(shutdown);
+
+        // Cap the drain (prompt 016). A stuck handler or long SSE shouldn't
+        // force the postmaster to SIGKILL after its own timeout.
+        match tokio::time::timeout(std::time::Duration::from_secs(8), serve_fut).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => error!(error = %e, "server exited with error"),
+            Err(_) => warn!("graceful drain timed out after 8s; exiting anyway"),
         }
     });
 }
@@ -243,4 +274,28 @@ fn build_listen_conn_str(db: &str) -> String {
     format!(
         "host=127.0.0.1 port={port} user={user} dbname={db} password={password}"
     )
+}
+
+/// Future that completes when we should stop accepting new work and drain.
+/// Polls the pgrx SIGTERM flag (set by the handler armed in _PG_init path)
+/// on a short interval. This is the primary path for pg_ctl stop / docker stop
+/// under the postmaster. (Direct tokio signal is omitted to avoid handler
+/// conflicts with pgrx's attach_signal_handlers that have been observed to
+/// produce early segfaults in the BGW.)
+///
+/// Also calls request_shutdown() on the router so SSE streams (livereload)
+/// and other waiters can end promptly instead of waiting out their max lifetime.
+async fn shutdown_signal(router: Arc<ListenRouter>) {
+    use std::time::Duration;
+    use tokio::time::interval;
+
+    let mut iv = interval(Duration::from_millis(150));
+    loop {
+        iv.tick().await;
+        if BackgroundWorker::sigterm_received() {
+            info!("SIGTERM received via pgrx (pg_ctl / postmaster path) — graceful drain");
+            router.request_shutdown();
+            return;
+        }
+    }
 }

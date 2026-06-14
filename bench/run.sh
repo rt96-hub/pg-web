@@ -120,11 +120,18 @@ start_stack() {
     log "applying resource constraints (CPUS=${BENCH_CPUS:-<none>} MEM=${BENCH_MEM:-<none>})"
     # docker update works on a running container and is reliable cross-platform.
     # Memory value must include unit for the flag.
+    # Also set --memory-swap at the same time as --memory (to the same value)
+    # to avoid "Memory limit should be smaller than already set memoryswap limit"
+    # errors on Docker Desktop / macOS cgroups (seen in harness runs).
     local mem_flag=""
-    [[ -n "$BENCH_MEM" ]] && mem_flag="--memory $BENCH_MEM"
+    local swap_flag=""
+    if [[ -n "$BENCH_MEM" ]]; then
+      mem_flag="--memory $BENCH_MEM"
+      swap_flag="--memory-swap $BENCH_MEM"
+    fi
     local cpu_flag=""
     [[ -n "$BENCH_CPUS" ]] && cpu_flag="--cpus $BENCH_CPUS"
-    docker update $cpu_flag $mem_flag "$CONTAINER_NAME" >/dev/null || true
+    docker update $cpu_flag $mem_flag $swap_flag "$CONTAINER_NAME" >/dev/null || true
   fi
 
   # Wait for health (the image HEALTHCHECK does pg_isready + curl /).

@@ -490,7 +490,7 @@ If you see sluggish tabs or many open `/_pgweb/livereload` requests in DevTools 
                                         (css cache-bust | location.reload)
 ```
 
-One LISTEN PG backend slot for the whole BGW — not per-tab. Browser tabs are HTTP/SSE only; they hold zero DB connections. Total cost in dev: **+1 Postgres backend**. In prod: **+0** (LISTEN task doesn't start when env is production).
+One LISTEN PG backend slot for the whole BGW — not per-tab. Browser tabs are HTTP/SSE only; they hold zero DB connections. Total cost: **+1 Postgres backend per BGW** (now always-on for cache invalidation + livereload; the previous "prod = 0" was a Phase-1 dev-only optimization that is no longer true). This slot cost was already planned for Phase 2 realtime and is the price of zero-proxy hot reload + request-path caching.
 
 ## Pushing: `--dry-run`, `--with-migrate`, deployments ledger
 

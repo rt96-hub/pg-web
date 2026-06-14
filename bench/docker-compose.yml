@@ -28,11 +28,5 @@ services:
       # via `docker compose exec postgres pg-web push --dir /bench` (F.3).
       # The harness also supports host-side `pg-web push` against the published 5432.
       - ./app:/bench:ro
-    deploy:
-      resources:
-        limits:
-          cpus: "${BENCH_CPUS:-}"
-          memory: "${BENCH_MEM:-}"
-
 volumes:
   pgdata:

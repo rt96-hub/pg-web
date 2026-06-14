@@ -41,7 +41,6 @@ use serde_json::{Map, Value};
 
 use crate::errors::ServeError;
 use crate::settings;
-use crate::templating;
 
 /// What the HTTP layer turns into a response.
 pub enum ServeOutcome {
@@ -102,6 +101,20 @@ fn serve_in_tx(method: &str, path: &str, mut req: Value) -> ServeOutcome {
     // request. Production operators should validate via `pg-web check --url`.
     // SAFETY: serve_in_tx runs on the bgworker SPI thread inside transaction.
     let _timeout_guard = unsafe { crate::request_timeout::Guard::arm() };
+
+    // Warm the request-path cache (routes + compiled templates + env) inside
+    // the per-request BGW transaction. This guarantees two things:
+    // 1. Any cold build_snapshot() (with its Spi::connect) executes under the
+    //    supported SPI context set up by BackgroundWorker::transaction.
+    // 2. All post-tx cache::current_env() calls in http.rs (for livereload
+    //    injection on Response, and Cache-Control on Asset) are always hits
+    //    (cheap Arc clone) and never trigger a build from outside any tx.
+    // Asset-only and 404 paths never called lookup_route before; the warm
+    // covers them. Invalidate (via pgweb_reload NOTIFY) still drops; next
+    // request pays the (bounded) rebuild inside its tx exactly as designed.
+    // This is the minimal guard that prevents bare SPI from the axum handler
+    // thread after serve() returns.
+    let _ = crate::cache::get_snapshot();
 
     // 017-A: auto OPTIONS (before route lookup). Returns 204 + Allow: listing
     // the distinct methods whose path_pattern matches the request (dynamic
@@ -365,11 +378,7 @@ fn render_route(route: &Route, req: &Value, status: u16) -> ServeOutcome {
             b
         } else if let Some(tp) = &route.template_path {
             if let Some(ctx) = env.context {
-                let template = match fetch_template(tp) {
-                    Ok(t) => t,
-                    Err(e) => return ServeOutcome::Error(e),
-                };
-                match templating::render(tp, &template, &ctx) {
+                match crate::cache::render_template(tp, &ctx) {
                     Ok(body) => body,
                     Err(e) => return ServeOutcome::Error(e),
                 }
@@ -395,10 +404,6 @@ fn render_route(route: &Route, req: &Value, status: u16) -> ServeOutcome {
     // Legacy path (pre-013 bare json/text returns) — byte-identical behavior.
     match &route.template_path {
         Some(tp) => {
-            let template = match fetch_template(tp) {
-                Ok(t) => t,
-                Err(e) => return ServeOutcome::Error(e),
-            };
             let context = match serde_json::from_str::<Value>(&handler_text) {
                 Ok(v) => v,
                 Err(e) => {
@@ -409,7 +414,7 @@ fn render_route(route: &Route, req: &Value, status: u16) -> ServeOutcome {
                     })
                 }
             };
-            match templating::render(tp, &template, &context) {
+            match crate::cache::render_template(tp, &context) {
                 Ok(body) => ServeOutcome::Response {
                     status,
                     body,
@@ -430,6 +435,11 @@ fn render_route(route: &Route, req: &Value, status: u16) -> ServeOutcome {
     }
 }
 
+pub(crate) struct RouteMeta {
+    pub handler_name: String,
+    pub template_path: Option<String>,
+}
+
 struct Route {
     handler_name: String,
     template_path: Option<String>,
@@ -444,7 +454,7 @@ struct MatchedRoute {
 
 /// One parsed segment of a stored `path_pattern`.
 #[derive(Debug, PartialEq, Eq)]
-enum PatSeg {
+pub(crate) enum PatSeg {
     Static(String),
     /// Owns its name so `matches` can copy into `path_params`.
     Capture(String),
@@ -452,21 +462,21 @@ enum PatSeg {
 
 /// Cached parse of a pattern string + specificity key for sort.
 #[derive(Debug)]
-struct ParsedPattern {
-    segments: Vec<PatSeg>,
+pub(crate) struct ParsedPattern {
+    pub(crate) segments: Vec<PatSeg>,
     /// Number of `Static` segments — primary sort key (higher = more specific).
-    static_count: usize,
+    pub(crate) static_count: usize,
     /// Number of `Capture` segments — secondary sort key (lower = more specific).
-    capture_count: usize,
+    pub(crate) capture_count: usize,
     /// Total segment count — tiebreaker (higher = more specific at equal static/capture counts).
-    length: usize,
+    pub(crate) length: usize,
 }
 
 impl ParsedPattern {
     /// Parse a stored pattern like `/posts/:id` into typed segments. Rejects
     /// `:` not at the start of a segment so a malformed pattern snuck into
     /// `pgweb.routes` surfaces as a clear error, not a silent mis-match.
-    fn parse(pattern: &str) -> Result<Self, String> {
+    pub(crate) fn parse(pattern: &str) -> Result<Self, String> {
         let mut segments = Vec::new();
         let mut static_count = 0usize;
         let mut capture_count = 0usize;
@@ -500,7 +510,7 @@ impl ParsedPattern {
 
     /// Test whether this pattern matches the given request segments.
     /// Returns the captures on match, `None` otherwise.
-    fn matches(&self, req_segments: &[&str]) -> Option<BTreeMap<String, String>> {
+    pub(crate) fn matches(&self, req_segments: &[&str]) -> Option<BTreeMap<String, String>> {
         if self.segments.len() != req_segments.len() {
             return None;
         }
@@ -568,6 +578,7 @@ fn is_safe_ident(ident: &str) -> bool {
 
 /// `Spi::get_one` on a query matching zero rows returns
 /// `Err(SpiError::InvalidPosition)`. Normalize to `Ok(None)`.
+#[allow(dead_code)]
 fn get_one_optional<T: pgrx::datum::FromDatum + pgrx::datum::IntoDatum>(
     query: &str,
 ) -> Result<Option<T>, ServeError> {
@@ -580,6 +591,7 @@ fn get_one_optional<T: pgrx::datum::FromDatum + pgrx::datum::IntoDatum>(
     }
 }
 
+#[allow(dead_code)]
 struct RouteRow {
     path_pattern: String,
     handler_name: String,
@@ -589,6 +601,7 @@ struct RouteRow {
 /// Multi-row fetch: all routes for the given method. Pattern parsing +
 /// specificity sort + match happen in Rust so we can emit clear errors
 /// if any stored pattern is malformed.
+#[allow(dead_code)]
 fn fetch_method_routes(method: &str) -> Result<Vec<RouteRow>, ServeError> {
     let method_lit = quote_literal(method);
     let query = format!(
@@ -689,68 +702,41 @@ fn list_allowed_methods(path: &str) -> Result<String, ServeError> {
 }
 
 fn lookup_route(method: &str, path: &str) -> Result<Option<MatchedRoute>, ServeError> {
-    let rows = fetch_method_routes(method)?;
+    let snap = crate::cache::get_snapshot();
+    let req_segs: Vec<&str> = request_segments(path);
 
-    // Parse each pattern once. Any malformed pattern surfaces here rather
-    // than as a silent mis-match at HTTP time.
-    let mut parsed: Vec<(RouteRow, ParsedPattern)> = Vec::with_capacity(rows.len());
-    for row in rows {
-        let pat = ParsedPattern::parse(&row.path_pattern).map_err(|reason| {
-            ServeError::RoutePatternMalformed {
-                pattern: row.path_pattern.clone(),
-                reason,
+    if let Some(vec) = snap.routes.get(method) {
+        for (pat, meta) in vec {
+            if let Some(caps) = pat.matches(&req_segs) {
+                return Ok(Some(MatchedRoute {
+                    route: Route {
+                        handler_name: meta.handler_name.clone(),
+                        template_path: meta.template_path.clone(),
+                    },
+                    path_params: caps,
+                }));
             }
-        })?;
-        parsed.push((row, pat));
-    }
-
-    // Sort by specificity descending: static-count desc, capture-count asc,
-    // length desc. The sort is stable so duplicate keys retain insertion
-    // (DB) order, which is fine since the primary key (method, path_pattern)
-    // prevents literal duplicates.
-    parsed.sort_by(|a, b| {
-        b.1.static_count
-            .cmp(&a.1.static_count)
-            .then(a.1.capture_count.cmp(&b.1.capture_count))
-            .then(b.1.length.cmp(&a.1.length))
-    });
-
-    let req_segs = request_segments(path);
-    for (row, pat) in &parsed {
-        if let Some(caps) = pat.matches(&req_segs) {
-            return Ok(Some(MatchedRoute {
-                route: Route {
-                    handler_name: row.handler_name.clone(),
-                    template_path: row.template_path.clone(),
-                },
-                path_params: caps,
-            }));
         }
     }
     Ok(None)
 }
 
-/// 404 fallback lookup. Phase 1 only supports root-scoped fallbacks
-/// (`path_pattern='/'` with `method='404'`). Phase 2+ will extend to
-/// longest-prefix-match for per-subtree fallbacks.
+/// 404 fallback lookup. Now unified with the cached routes table
+/// (the '404' + '/' row is just another entry). This also collapses the
+/// previous two-SELECT shape for free.
 fn lookup_fallback(_path: &str) -> Result<Option<Route>, ServeError> {
-    let handler_name = match get_one_optional::<String>(
-        "SELECT handler_name FROM pgweb.routes \
-         WHERE method = '404' AND path_pattern = '/' LIMIT 1",
-    )? {
-        Some(s) => s,
-        None => return Ok(None),
-    };
-    let template_path = get_one_optional::<String>(
-        "SELECT template_path FROM pgweb.routes \
-         WHERE method = '404' AND path_pattern = '/' LIMIT 1",
-    )?;
-    Ok(Some(Route {
-        handler_name,
-        template_path,
-    }))
+    // Use the normal lookup on the synthetic method; if present it is the
+    // fallback. The cache already has it sorted with everything else.
+    match lookup_route("404", "/")? {
+        Some(m) => Ok(Some(Route {
+            handler_name: m.route.handler_name,
+            template_path: m.route.template_path,
+        })),
+        None => Ok(None),
+    }
 }
 
+#[allow(dead_code)]
 fn fetch_template(template_path: &str) -> Result<String, ServeError> {
     let query = format!(
         "SELECT content FROM pgweb.templates WHERE template_path = {} LIMIT 1",

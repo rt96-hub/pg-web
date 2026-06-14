@@ -328,6 +328,15 @@ pub fn push_with_options(
         )
         .context("inserting pgweb.deployments ledger row")?;
 
+        // Fire the cache-invalidation NOTIFY inside the tx. Postgres delivers
+        // queued NOTIFYs atomically at COMMIT, so a rolled-back dry-run or
+        // errored tx will not signal workers (exactly what we want). Real
+        // pushes (including those that only touched env or assets) cause live
+        // workers to drop their RouteSnapshot and rebuild on next request.
+        // We use a dedicated channel (pgweb_reload) so browser livereload
+        // and cache concerns stay separable.
+        let _ = tx.execute("NOTIFY pgweb_reload", &[]);
+
         if opts.dry_run {
             // Rollback explicitly. Drop would implicitly roll back too, but
             // being explicit makes intent visible to future maintainers.

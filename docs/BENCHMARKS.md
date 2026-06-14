@@ -2,6 +2,8 @@
 
 **Date:** 2026-06-11 (harness execution on 2026-06-12)
 
+**2026-06-14 update (016_request_path_caching_and_graceful_shutdown handoff fix):** Full `RUN_BENCH=1 scripts/test-all.sh` (after hygiene) now completes cleanly with exit 0 and all 5 tiers PASS (tier1 95/95, tier2a 6/6, tier2b 131+, tier3 Docker E2E 14/14 including `dev_error_page_surfaces_sql_exception_detail ... ok` after image auto-rebuild on source change, tier4 smoke). Pre-fix: tier3 consistently red on that test (IncompleteMessage / "Empty reply from server" / conn errors after push+boom error route; canary sometimes " / never answered", BGW sig11 segfaults post-"LISTEN task started"). The benchmark phase (unconst + 1c/2g) ran to completion (as before); high-c legs show the expected single-worker queuing + client conn errors / 0% under oha load (HOLB experiment); c1 legs partial success with framing baseline. No change to the core 015 measurements or architecture. See the handoff prompt for root cause + minimal fix details.
+
 This document is the Step 1 deliverable of `prompts/015_concurrency_throughput_and_benchmark.md` (Step 2 multi-worker remains open). It measures the single-threaded / single-SPI-backend reality of the current worker and either validates or corrects the v1.0 success criterion in `VISION.md:58`.
 
 The benchmark harness lives in `bench/` (reproducible with only Docker + a checkout) and is the source of the numbers below. Raw `oha` outputs are in `bench/results/` on the machine that ran the harness.

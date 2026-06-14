@@ -36,12 +36,11 @@ use axum::{
     },
 };
 use futures_util::stream::{Stream, StreamExt};
-use pgrx::bgworkers::BackgroundWorker;
 use tokio::time::sleep;
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::listen_router::ListenRouter;
-use crate::settings::{self, Env};
+use crate::settings::Env;
 
 /// Postgres NOTIFY channel the CLI uses to publish livereload events.
 /// Same value hardcoded into `pg-web dev`'s post-push hook — the two
@@ -158,7 +157,7 @@ pub async fn serve_livereload_sse(
 ) -> Response {
     // Env check on every connection. `transaction` is the SPI-safe
     // wrapper already used elsewhere in http.rs.
-    let env = BackgroundWorker::transaction(settings::current_env);
+    let env = crate::cache::current_env();
     if env != Env::Development {
         return (StatusCode::NOT_FOUND, "live-reload is development only\n")
             .into_response();
@@ -175,8 +174,19 @@ pub async fn serve_livereload_sse(
     //
     // This is deliberately generous (a full workday) and only affects
     // the livereload endpoint (which 404s in production).
+    //
+    // We also stop promptly on graceful shutdown (request_shutdown from
+    // the pgrx SIGTERM poller) so the streams don't hold the worker open
+    // during pg_ctl stop / docker stop (prompt 016).
     let max_lifetime = sleep(Duration::from_secs(2 * 60 * 60));
-    let stream = stream.take_until(max_lifetime);
+    let shutdown = router.wait_shutdown();
+    let stop = async {
+        tokio::select! {
+            _ = max_lifetime => {}
+            _ = shutdown => {}
+        }
+    };
+    let stream = stream.take_until(stop);
 
     Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(30)))

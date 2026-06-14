@@ -18,10 +18,11 @@
 //!
 //! # Connection cost
 //!
-//! Exactly one extra Postgres backend slot per running BGW, started
-//! ONLY when `pgweb.settings.env = 'development'` at worker startup.
-//! Prod mode = zero extra backends. Documented in
-//! `docs/APP-DEVELOPER-GUIDE.md` § Pushing.
+//! Exactly one extra Postgres backend slot per running BGW. The LISTEN
+//! task (and therefore the slot) is now always-on so that `pgweb_reload`
+//! cache invalidations work in production deploys as well as dev. This
+//! was the Phase-2 plan (Track C) and is now enabled for request-path
+//! caching. Documented in `docs/APP-DEVELOPER-GUIDE.md`.
 //!
 //! # Thread-safety
 //!
@@ -33,7 +34,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Notify};
 use tracing::{debug, warn};
 
 /// Buffer depth for each channel's broadcast queue. A "lagged" receiver
@@ -50,12 +51,15 @@ const BROADCAST_BUFFER: usize = 8;
 #[derive(Debug, Default)]
 pub struct ListenRouter {
     channels: Mutex<HashMap<String, broadcast::Sender<String>>>,
+    /// Used to wake waiters (e.g. SSE streams) for graceful shutdown.
+    shutdown: Arc<Notify>,
 }
 
 impl ListenRouter {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             channels: Mutex::new(HashMap::new()),
+            shutdown: Arc::new(Notify::new()),
         })
     }
 
@@ -124,6 +128,23 @@ impl ListenRouter {
         map.entry(channel.to_string())
             .or_insert_with(|| broadcast::channel(BROADCAST_BUFFER).0);
         debug!(channel = %channel, "preregistered broadcast channel");
+    }
+
+    /// Wake any waiters that are blocked on graceful shutdown (e.g. long-lived
+    /// SSE streams for livereload). Called when the pgrx SIGTERM flag is observed.
+    pub fn request_shutdown(&self) {
+        self.shutdown.notify_waiters();
+    }
+
+    /// Future that resolves when request_shutdown() has been called. Used by
+    /// SSE handlers so they can end the stream promptly instead of waiting for
+    /// the 2h hard cap or client disconnect.
+    /// Returns an owned 'static future (by cloning the inner Arc<Notify>) so
+    /// it can be used inside take_until streams in the Sse handler without
+    /// borrowing the router for the lifetime of the response.
+    pub fn wait_shutdown(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let n = Arc::clone(&self.shutdown);
+        async move { n.notified().await }
     }
 }
 
@@ -216,6 +237,18 @@ pub async fn run_listen_loop(
                 subscribers = delivered,
                 "livereload NOTIFY received"
             );
+
+            // Direct side-effect for cache invalidation on the reload channel.
+            // This is received because we preregister "pgweb_reload" so the
+            // listen_loop does LISTEN for it. By handling it here in the pump
+            // we get the NOTIFY-driven drop without needing a separate
+            // subscriber task for the cache (reduces startup tasks and
+            // broadcast receivers, which was contributing to BGW instability
+            // in containers).
+            if channel == "pgweb_reload" {
+                crate::cache::invalidate();
+                debug!("cache invalidated by pgweb_reload NOTIFY");
+            }
         }
 
         warn!("livereload LISTEN connection ended; reconnecting");

@@ -25,7 +25,7 @@ use crate::health;
 use crate::listen_router::ListenRouter;
 use crate::livereload;
 use crate::router::{self, ServeOutcome};
-use crate::settings::{self, Env};
+use crate::settings::Env;
 
 /// Hard cap on request body size — defense against runaway POSTs. Forms are
 /// small in practice; anything bigger probably means misuse or file upload
@@ -166,7 +166,7 @@ async fn handle(req: Request) -> Response {
             cookies,
         } => {
             let code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
-            let env = BackgroundWorker::transaction(settings::current_env);
+            let env = crate::cache::current_env();
             let ct = content_type.unwrap_or_else(|| "text/html; charset=utf-8".to_string());
 
             // Livereload injection is now content-type aware (prompt 013):
@@ -265,7 +265,7 @@ fn render_asset(
     if_none_match: Option<&str>,
     emit_body: bool,
 ) -> Response {
-    let env = BackgroundWorker::transaction(settings::current_env);
+    let env = crate::cache::current_env();
     let fingerprinted = is_fingerprinted_url(request_path);
     let cache_control = match (env, fingerprinted) {
         (Env::Development, _) => "no-cache",
@@ -307,7 +307,18 @@ fn render_error(err: ServeError, method: &str, path: &str, req: &Value) -> Respo
     // Structured log line always — this is how prod operators see failures.
     error!(method = %method, path = %path, pgweb_error = %err.log_line(), "serve error");
 
-    let env = BackgroundWorker::transaction(settings::current_env);
+    // For the dev/prod decision on error pages, read directly from the DB
+    // (wrapped in its own short BGW transaction). This ensures:
+    // - A direct UPDATE to pgweb.settings (as the dev_error E2E test does,
+    //   or pg-web env) is reflected immediately without waiting for a push
+    //   NOTIFY + cache invalidate.
+    // - The SPI call always happens under a proper BackgroundWorker tx
+    //   context on the BGW thread (prevents the bare-Spi segfaults / conn
+    //   drops that 016 introduced on the error path in Docker images).
+    // Hot success paths continue to use the (now guaranteed-warm) cached
+    // env via cache::current_env() after the request tx; error path can
+    // afford the wrapper + read.
+    let env = BackgroundWorker::transaction(crate::settings::current_env);
     match env {
         Env::Development => {
             let body = err.render_dev_page(req, 500);
