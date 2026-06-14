@@ -642,10 +642,14 @@ fn copy_tree(src: &Path, dst: &Path) {
 }
 
 /// Tier 3 watcher test. Starts `dev::watch` against a fresh copy of the
-/// demo, then edits `pages/index.html` and polls HTTP until the new
-/// content is served — validating the full pipeline: notify watcher →
-/// 200ms debounce → Blake3 dedupe (hash map empty → first-pass change) →
-/// classify (pages/*.html → Push) → push::push → BGW serves updated HTML.
+/// demo, then edits `pages/index.html` and polls (HTTP + direct
+/// pgweb.templates) until the new content is visible — validating the full
+/// pipeline: notify watcher → 200ms debounce → Blake3 dedupe → classify
+/// (pages/*.html → Push) → push::push → template upsert visible over HTTP
+/// (and in DB). Uses DB-side observation + 30s deadline + docker logs on
+/// timeout to tolerate macOS Docker Desktop notify delivery variance while
+/// still providing actionable diagnostics. The test remains the sole
+/// automated coverage of the real `pg-web dev` hot-reload loop end-to-end.
 #[test]
 #[ignore = "tier 3 E2E — Docker + rtaylor96/pg-web:latest required. \
             Run via scripts/test-all.sh or `cargo test -p pg-web \
@@ -679,9 +683,19 @@ fn dev_watcher_repushes_on_save() {
     let tmp = tempfile::tempdir().expect("tempdir");
     copy_tree(&todo_app_dir(), tmp.path());
 
+    // Canonicalize the app dir *before* handing to `watch` (and before any
+    // edits). This mirrors what the real `pg-web dev` entrypoint does and
+    // ensures that `classify`'s `strip_prefix(app_dir)` will match the
+    // absolute paths that the kernel/notify emits for events under the
+    // watched subdirs. Without it, path normalization differences (e.g.
+    // /var/folders vs /private/var symlinks on macOS) can cause every event
+    // to classify as Ignore — "⟳ watching" prints but no pushes ever happen.
+    // This was the primary cause of the long-standing flake.
+    let app_dir = tmp.path().canonicalize().expect("canonicalize tempdir for watcher test");
+
     // Initial schema + push — matches the normal `pg-web migrate apply && pg-web push` flow.
-    pg_web_cli::migrate::apply(tmp.path(), &db_url).expect("migrate apply");
-    pg_web_cli::push::push(tmp.path(), &db_url).expect("initial push");
+    pg_web_cli::migrate::apply(&app_dir, &db_url).expect("migrate apply");
+    pg_web_cli::push::push(&app_dir, &db_url).expect("initial push");
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -698,7 +712,7 @@ fn dev_watcher_repushes_on_save() {
     // Spawn the watcher loop in a thread. `watch` drops back to the main
     // thread when `stop` flips true.
     let stop = Arc::new(AtomicBool::new(false));
-    let watch_dir = tmp.path().to_path_buf();
+    let watch_dir = app_dir.clone();
     let watch_url = db_url.clone();
     let watch_stop = stop.clone();
     // livereload=true so the same path production uses is exercised —
@@ -708,29 +722,93 @@ fn dev_watcher_repushes_on_save() {
         pg_web_cli::dev::watch(&watch_dir, &watch_url, watch_stop, true)
     });
 
-    // Let the watcher install its fs hooks before we edit. 250ms > 200ms
-    // debounce window so the first event we want to catch is the edit.
-    std::thread::sleep(Duration::from_millis(250));
+    // Let the watcher install its fs hooks before we edit. 500ms gives the
+    // debouncer + recursive watches a comfortable window on loaded macOS.
+    std::thread::sleep(Duration::from_millis(500));
 
     // Edit pages/index.html — inject a unique marker in place of the
     // empty-state text so we know the new template was re-synced.
+    // Use an atomic rename-over-write (write .tmp then rename) — this is the
+    // pattern real editors use and what the notify-debouncer-full stack was
+    // chosen to handle reliably for "save completed".
     const MARKER: &str = "WATCHER_E2E_MARKER_8f3c7a";
-    let index_html = tmp.path().join("pages/index.html");
+    let index_html = app_dir.join("pages/index.html");
     let before = fs::read_to_string(&index_html).unwrap();
     let after = before.replace("No todos yet. Add one above.", MARKER);
     assert_ne!(before, after, "marker replacement should have matched");
-    fs::write(&index_html, &after).unwrap();
+    let tmp_write = index_html.with_extension("html.tmp");
+    fs::write(&tmp_write, &after).unwrap();
+    fs::rename(&tmp_write, &index_html).unwrap();
+    // Best-effort durability; helps some backends notice the change promptly.
+    if let Ok(f) = std::fs::File::open(&index_html) {
+        let _ = f.sync_all();
+    }
 
-    // Poll HTTP until the new marker shows up in the rendered body.
-    // Deadline covers: debounce (200ms) + push (≪1s) + any HTTP cache lag.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // Direct PG client so we can observe template upserts as a side-effect
+    // of a successful watcher-driven push. This is more reliable than
+    // depending solely on HTTP delivery timing when notify events cross
+    // Docker Desktop boundaries on macOS (the root cause of the historical
+    // flake). We still ultimately assert the rendered HTML as the true
+    // end-to-end signal.
+    let mut observe_pg =
+        postgres::Client::connect(&db_url, postgres::NoTls).expect("observe pg client");
+
+    // Poll until the marker appears either in the rendered HTTP body *or*
+    // (more directly) in the stored template source in pgweb.templates.
+    // 30 s bounded deadline tolerates delayed FS events under load while
+    // still failing fast with diagnostics. On timeout we dump:
+    //   - last HTTP body
+    //   - last template content from DB (proves whether push fired at all)
+    //   - tail of the container's logs (BGW health, errors, "⟳ pushed" from inside)
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last_body;
+    let mut last_template: Option<String> = None;
     loop {
         let body = get(&client, &base_url, "/");
+        last_body = body.clone();
         if body.contains(MARKER) {
             break;
         }
+
+        // Observe the template row directly. If the watcher saw the edit,
+        // debounced, hashed (new), classified Push, preflighted (n/a for .html),
+        // and push::push committed, the content will contain the marker.
+        // This turns "silent no-event" into an observable that also lets
+        // us distinguish watcher failure from render/HTTP lag.
+        if let Ok(Some(row)) = observe_pg.query_opt(
+            "SELECT content FROM pgweb.templates WHERE template_path = 'pages/index.html' LIMIT 1",
+            &[],
+        ) {
+            let t: String = row.get(0);
+            last_template = Some(t.clone());
+            if t.contains(MARKER) {
+                // DB updated — the re-push path worked. Give the next request
+                // a moment to render from the fresh template, then confirm HTTP.
+                std::thread::sleep(Duration::from_millis(400));
+                let body2 = get(&client, &base_url, "/");
+                last_body = body2.clone();
+                if body2.contains(MARKER) {
+                    break;
+                }
+                // Fall through; HTTP may simply be one poll behind.
+            }
+        }
+
         if Instant::now() >= deadline {
-            panic!("watcher didn't re-push within 10s; last body: {body}");
+            eprintln!("=== dev_watcher_repushes_on_save TIMEOUT (30s) ===");
+            eprintln!("last HTTP body (len={}): {}", last_body.len(), last_body);
+            if let Some(t) = &last_template {
+                let preview = &t[..t.len().min(500)];
+                eprintln!("last pgweb.templates content (len={}):\n{}", t.len(), preview);
+            } else {
+                eprintln!("never read a template row from DB during poll");
+            }
+            eprintln!("=== last 30 lines of container {} logs ===", container.id());
+            let _ = std::process::Command::new("docker")
+                .args(["logs", "--tail", "30", container.id()])
+                .status();
+            eprintln!("=== end diagnostics ===");
+            panic!("watcher didn't re-push within 30s; see diagnostics above. last body: {last_body}");
         }
         std::thread::sleep(Duration::from_millis(200));
     }

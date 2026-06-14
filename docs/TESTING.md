@@ -182,11 +182,12 @@ Start a Postgres container per test module (cached via `testcontainers`), seed i
 
 ### The companion app IS the acceptance test
 
-If a feature isn't exercised in `examples/todo/`, it isn't done. New features land with three things:
+If a feature isn't exercised in `examples/todo/`, it isn't done. New features land with four things:
 
 1. Implementation (in `pg_web_ext` or `pg_web_cli`).
 2. Tier 1 or Tier 2 tests.
 3. A new page/flow/migration in `examples/todo/` that uses the feature.
+4. Substantial explanatory comments in the demo files (especially the handler `.sql` files) that teach readers the pattern, the design rationale, and how to reuse it in their own apps. The companion app is living documentation, not just test coverage.
 
 ### Demo app trajectory
 
@@ -196,11 +197,11 @@ The demo app (`examples/todo/`) grows in lockstep with the framework and is the 
 - **Phase 2+:** will extend with auth + RLS-filtered data.
 - **Later phases:** job-queue examples, dashboard screenshots in its README, etc.
 
-See the feature matrix in `docs/OVERVIEW.md` for the exact v0.2.0 coverage. The rule: every shipped framework feature must have a corresponding exercised path in the companion app (or the dogfooded `pg-web.dev` docs site).
+See the feature matrix in `docs/OVERVIEW.md` for the exact v0.2.0 coverage. The rule: every shipped framework feature must have a corresponding exercised path **plus good explanatory comments** in the companion app (or the dogfooded `pg-web.dev` docs site). The demo app serves as both E2E coverage and primary teaching material.
 
 ### Demo app feature matrix (summary)
 
-The exhaustive current-state matrix lives in `docs/OVERVIEW.md` (and the roadmap in `docs/ROADMAP.md`). Key rule: **if a feature isn't exercised in `examples/todo/` (or the docs-site app), it isn't done.**
+The exhaustive current-state matrix lives in `docs/OVERVIEW.md` (and the roadmap in `docs/ROADMAP.md`). Key rule: **if a feature isn't exercised in `examples/todo/` with good explanatory comments (or the docs-site app), it isn't done.**
 
 High-level coverage at v0.2.0 includes: static + dynamic routes, JSON→Tera + raw-text handlers, custom 404, migrations + ledger, HTMX forms + validation UX, `html_escape`, `pgweb.setting()`, `pg-web check`, `--dry-run`/`--with-migrate`, deployments ledger, live-reload SSE, content-hashed assets + immutable caching, 20 MiB assets, push retry (L), CLI-in-image (F.3).
 

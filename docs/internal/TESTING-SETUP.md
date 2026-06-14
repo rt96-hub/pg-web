@@ -183,7 +183,7 @@ docker image inspect rtaylor96/pg-web:latest --format '{{.RepoDigests}} {{.Confi
 
 ## Known flakes and expected failures
 
-- **Tier 4: dev-watcher repush timeout** — the one documented non-blocking flake (see `CLAUDE.md` § Session rituals and prompt 82dfb22). A timeout in the dev-mode watcher repush flow; re-run the smoke if it trips.
+- **(Historical)** Tier 3 dev-watcher repush timeout was the sole non-blocking flake after prompt 025 harness work. Fixed in prompt 024 by polling `pgweb.templates` for the marker (direct evidence push ran) + 30 s bounded deadline + automatic `docker logs` + last-template dump on timeout. The test now reliably exercises the real notify→debounce→push→render loop; no longer an exception. See the test in `docker_e2e.rs` and updated CLAUDE.md.
 - App-level test failures are a different category from this doc's concern: if all five tiers *start*, the machine is configured correctly, and red tests are code work, not setup work.
 
 ## CI pipeline notes (GitHub Actions)
@@ -234,7 +234,7 @@ After the integrity + speed + self-heal + observability changes:
 
 | Run | Tier 1 | Tier 2a | Tier 2b | Tier 3 | Tier 4 | Wall clock | Notes |
 |---|---|---|---|---|---|---|---|
-| 2026-06-13 hardening (caffeinated, TEST_TS=1, STRICT=1) | ✅ 91 (3 s) | ✅ self-healed (2 s) | ✅ 130 (<1 s) | 12 pass + 1 flake (25 s) | ✅ 19 + integrity assert (8 s) | ~2 min (warm layers) | Full matrix under STRICT; canary passed (no 30 s abort); src_hash + BuildKit caches used; smoke postcondition "using the expected local image ID" asserted; only failure = documented dev_watcher_repushes_on_save (tier 3 E2E, allowed per prompt 024/025). |
+| 2026-06-13 hardening (caffeinated, TEST_TS=1, STRICT=1) | ✅ 91 (3 s) | ✅ self-healed (2 s) | ✅ 130 (<1 s) | 12 pass + 1 flake (25 s) | ✅ 19 + integrity assert (8 s) | ~2 min (warm layers) | Full matrix under STRICT; canary passed (no 30 s abort); src_hash + BuildKit caches used; smoke postcondition "using the expected local image ID" asserted; only failure = documented dev_watcher_repushes_on_save (tier 3 E2E, allowed per prompt 024/025 at the time). |
 
 Machine-fix takeaway (updated): target warm all-green ≤ 5 min. A deliberately broken-worker tree now fails tier 3 in < 90 s (canary + logs) instead of ~13 min of repeated timeouts. The single-command `scripts/test-all.sh` and `STRICT=1 scripts/test-all.sh` are both required to be green (modulo the documented watcher flake) before claiming prompt 025 complete.
 

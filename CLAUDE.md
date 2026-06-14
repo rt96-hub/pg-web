@@ -6,6 +6,24 @@ This file is auto-loaded by Claude Code (and any other Anthropic agent) when wor
 
 Build a **"Zero-Proxy" PostgreSQL Full-Stack Framework** — turn PostgreSQL into a self-contained web server by embedding an async HTTP listener inside a Postgres background worker. No external Node/Python/Go backend. SQL is the business logic. HTML + HTMX is the UI. Tera is the template glue. Rust (via pgrx) is the engine. The developer writes `.sql` + `.html` files; they never compile Rust.
 
+## Critical startup gate for major tasks (read this before any work)
+
+**Before beginning any major task** (handoff prompt, feature, refactor, hot-path change, etc.), you **must** first execute the test + benchmark bookend run(s):
+
+- `scripts/test-all.sh`
+- Plus `RUN_BENCH=1 scripts/test-all.sh` (or the explicit `bench/run.sh` harness) whenever the work touches request path, SPI, routing, concurrency, templating, dev watcher, or performance characteristics.
+
+**If the initial run(s) are unsuccessful (any tier red, benchmark harness fails to produce clean numbers, canary aborts, etc.):**
+
+- **DO NOT continue with the task.**
+- Investigate and diagnose the failures (examine full per-tier summaries, logs from `docker logs`, canary output, `wait_for_http` dumps, test failures, benchmark oha results, etc.).
+- You are **not required to fix** the underlying issues.
+- Stop and **notify the user immediately**, providing the exact command(s) run, the failing output, and your analysis of the root cause.
+
+Only after the initial bookend run(s) are **fully green** may you proceed to implement.
+
+This gate exists to prevent working on top of a broken baseline and to surface environment, harness, or recent-regression problems early.
+
 ## Repo layout
 
 ```
@@ -50,8 +68,9 @@ pg-web/
 - **No premature abstraction.** Three duplicated lines beats the wrong trait. The extension is small; keep modules flat until patterns genuinely emerge.
 - **Error handling on the request path.** No `unwrap()` / `expect()` in the HTTP handler. Fatal SQL exceptions → generic 500 in prod, rich debug page in dev (mode from the `pgweb.env` GUC).
 - **Every feature ships with a companion-app flow.** If a feature isn't exercised in `examples/todo/`, it isn't done. See `docs/TESTING.md`. Completion also requires a full green run of the single command that exercises the 5 tiers (see Session rituals).
+- **Demo app as living documentation.** When adding or extending flows in `examples/todo/`, include substantial, high-quality comments (especially in the `.sql` handler files). The comments should explain the pattern being demonstrated, why certain choices were made, how the pieces fit together, and how a user would apply the same approach in their own app. The demo app is not just test coverage and E2E validation — it is the primary way developers learn real usage patterns by reading the source. If a new feature lands in the companion app without good explanatory comments, the feature is not complete.
 - **Performance characterization is part of the process.** The `bench/` harness (`bench/run.sh`, `docs/BENCHMARKS.md`) is the reproducible way to measure throughput, tail latency, and head-of-line blocking on the real serving path (using `oha`, dedicated workloads, and Docker resource constraints for the 1-vCPU/2-GiB tier). For any change touching the HTTP request path, SPI per request, response generation, Tera, routing, or concurrency, the **required** validation is a full run via the single command with the benchmark enabled: `RUN_BENCH=1 scripts/test-all.sh` (this also runs the constrained 1-vCPU/2GiB variant). The HOLB experiment is the primary empirical check for the single-threaded worker model. Re-run it (and update BENCHMARKS.md) as the "before/after" proof when the worker architecture or hot path changes. Partial benchmark runs are not sufficient.
-- **Handoff prompts (prompts/)**: Active work orders (013–020) live here. 015 (this benchmark harness + the multi-worker design) is the model: the benchmark step is independently valuable and was done first; the design is written up even if implementation is deferred. When implementing something from a prompt, also update the "bibles" (this file + `docs/internal/DEVELOPER-GUIDE.md`) with any new rituals, constraints, or gotchas. Completion of prompt work is gated on a full clean `scripts/test-all.sh` run (all 5 tiers) in addition to the companion-app rule.
+- **Handoff prompts (prompts/)**: Active work orders (013–020) live here. 015 (this benchmark harness + the multi-worker design) is the model: the benchmark step is independently valuable and was done first; the design is written up even if implementation is deferred. When implementing something from a prompt, also update the "bibles" (this file + `docs/internal/DEVELOPER-GUIDE.md`) with any new rituals, constraints, or gotchas. Completion of prompt work is gated on a full clean `scripts/test-all.sh` run (all 5 tiers) in addition to the companion-app rule (including good explanatory comments in the demo flows — see Coding practices).
 - **Response contract v2 (013)**: Handlers may now return a `$pgweb` envelope (via `pgweb.respond`/`redirect`/`json`/`set_cookie`) for status/headers/cookies/ct/redirects. No marker = legacy behavior (mandatory byte-identical compat for todo/site). Raw-text routes may declare `RETURNS json` (envelope or plain JSON body); template routes still require `json`. Router detects; http layer maps to Axum (denylist on hop-by-hop). Livereload is now ct-aware. This is Phase-1-completing infrastructure (unblocks Phase 2 auth + real JSON APIs). Every new envelope feature must add a flow to `examples/todo/`.
 - **Phase discipline.** We are in **Phase 1** (Synchronous Core). Do not add Phase 2+ features (auth/RLS, job queues, dashboard) into Phase 1 code paths. Stage them properly. Prompt 015 benchmark work is phase-neutral and was deliberately done early.
 
@@ -64,8 +83,14 @@ pg-web/
 ## Session rituals
 
 - **Before writing non-trivial code** — read the relevant `docs/*.md` section first. If your change touches an invariant above, raise a flag and wait for human confirmation.
+- **Benchmark + full test bookends on every major task.** (See the "Critical startup gate for major tasks" section near the very top of this file — right after Mission — first. That gate is non-negotiable.) At the *beginning* of each major task (handoff prompt work, non-trivial feature, hot-path change, refactor, or anything touching request path / SPI / routing / concurrency / templating / dev watcher), run the full tests and (where applicable) benchmarks via `scripts/test-all.sh` (plus `RUN_BENCH=1 scripts/test-all.sh` or `bench/run.sh` for perf-sensitive work). Re-run the benchmarks and tests *again* at the *end* of the task. When you signal task completeness at the end of your message, you **must** include:
+  - Before and after scores (tier-by-tier test counts + pass/fail, wall times, and benchmark metrics such as req/s, tail latencies, and head-of-line blocking results, referencing the harness output or `docs/BENCHMARKS.md`).
+  - Any tests that failed, plus root cause.
+  - New tests that were added (and in which files).
+  - Explanation for any substantial changes (or lack of change) to the benchmarks or test surface.
+  Partial runs or "we ran it earlier" are never sufficient.
 - **Before finishing / concluding a feature** — two things must both be true:
-  1. The demo app in `examples/todo/` exercises the new behavior (per the companion-app rule). If not, add the flow.
+  1. The demo app in `examples/todo/` exercises the new behavior (per the companion-app rule) **and** the added flows include substantial explanatory comments that teach the pattern to readers (see "Demo app as living documentation" in Coding practices). If not, add the flow + comments.
   2. A **complete, clean run of the single command `scripts/test-all.sh`** succeeds, covering **all 5 tiers**:
      - Tier 1: `cargo pgrx test` (SQL / `#[pg_test]` inside real Postgres instances)
      - Tier 2a: HTTP smoke
@@ -73,7 +98,7 @@ pg-web/
      - Tier 3: Docker E2E (mandatory — runs against `rtaylor96/pg-web:latest` + full `examples/todo/` flows; the script auto-detects when extension sources, Dockerfile, or init scripts are newer than the image and triggers `scripts/build-image.sh`)
      - Tier 4: CLI black-box smoke (`scripts/smoke-cli.sh`)
      The script (`scripts/test-all.sh`) is the canonical one-command entry point for the full matrix (it also stops stray pgrx dev PGs to avoid port shadowing before tier 4). Use `PG_MAJOR=16 scripts/test-all.sh` etc. when you need multi-version coverage. If the change touches request-path / SPI / routing / concurrency, also run with `RUN_BENCH=1 scripts/test-all.sh` (or the explicit bench harness) so the HOLB experiment and constrained 1-vCPU/2GiB numbers are refreshed.
-- **Before committing** — the same gates as "before finishing a feature" above, plus `cargo check --workspace` and `cargo clippy --workspace -- -D warnings`. There is exactly one known non-blocking flaky test (a timeout in the dev-mode watcher repush flow inside tier 4 smoke). All other tests must be green. "Partial tier runs" (only pgrx, only CLI, etc.) are not sufficient to declare a feature complete.
+- **Before committing** — the same gates as "before finishing a feature" above, plus `cargo check --workspace` and `cargo clippy --workspace -- -D warnings`. All tests must be green (the historical dev_watcher_repushes_on_save flake was made reliable in prompt 024 by adding direct pgweb.templates observation + bounded deadline + rich container-log diagnostics; it is no longer an exception). "Partial tier runs" (only pgrx, only CLI, etc.) are not sufficient to declare a feature complete.
 
 We have the full single-command test suite for a reason. Rebuilding the image when schema or extension code changes is expected and automatic inside `scripts/test-all.sh` (or forced with `REBUILD_IMAGE=1`). Do not declare work "done" until the entire matrix has passed under the single command.
 
