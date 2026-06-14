@@ -21,6 +21,7 @@ use serde_json::{json, Map, Value};
 use tracing::error;
 
 use crate::errors::ServeError;
+use crate::health;
 use crate::listen_router::ListenRouter;
 use crate::livereload;
 use crate::router::{self, ServeOutcome};
@@ -83,6 +84,14 @@ pub fn app(listen_router: Arc<ListenRouter>) -> Router {
     // routed through router::serve / BackgroundWorker::transaction, so the
     // per-request statement_timeout (014) never applies to them. Long-lived
     // SSE streams must survive far past any 15s (or configured) window.
+    //
+    // Health/readiness probes are mounted the same way: unconditionally
+    // available, never go through the user router or per-request timeout,
+    // and win by mount order before .fallback. They are the correct target
+    // for container HEALTHCHECK and load-balancer probes.
+    let health_routes = Router::new()
+        .route("/_pgweb/health", get(health::serve_health))
+        .route("/_pgweb/readiness", get(health::serve_readiness));
     let livereload_routes = Router::new()
         .route("/_pgweb/livereload", get(livereload::serve_livereload_sse))
         .with_state(listen_router);
@@ -90,6 +99,7 @@ pub fn app(listen_router: Arc<ListenRouter>) -> Router {
         Router::new().route("/_pgweb/livereload.js", get(livereload::serve_livereload_js));
 
     Router::new()
+        .merge(health_routes)
         .merge(livereload_routes)
         .merge(static_routes)
         .fallback(handle)

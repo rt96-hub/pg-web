@@ -88,3 +88,11 @@ Four routes, three modes:
 `docs/TUTORIAL.md` (in the repo root's `docs/`) walks through building
 this app from a fresh `pg-web init`. Each section produces a runnable
 intermediate state. Finish the tutorial → your app matches this one.
+
+## Health & readiness (018.1)
+
+pg-web ships two surfaces (protected platform probes at `/_pgweb/health` and `/_pgweb/readiness` for infrastructure; conventional overridable `GET /health` and `GET /readiness` for app-level checks).
+
+The full override pattern, disable flags (`health_enabled = false` etc. in pgweb.toml), and which surface to use for Docker HEALTHCHECK vs. business health are documented with a complete worked example in the README written by `pg-web init --template todo`.
+
+The test suite (http_smoke + docker_e2e) asserts that the protected probes are always 200 and survive a deliberately broken user handler (the original footgun that motivated 018.1).

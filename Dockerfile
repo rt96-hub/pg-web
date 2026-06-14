@@ -114,9 +114,14 @@ RUN chmod +x /docker-entrypoint-initdb.d/10-pgweb.sh
 EXPOSE 8080
 
 # Healthcheck: both the DB (pg_isready) AND the HTTP worker must be up.
+# The probe targets the protected platform endpoint `/_pgweb/health` (not
+# a user route or the seeded `/`). A broken or slow user GET / (or a
+# user-overridden /health that 500s) therefore cannot make the container
+# unhealthy or trigger orchestrator restart loops. The protected probes
+# are always present and intentionally trivial.
 HEALTHCHECK --interval=5s --timeout=3s --start-period=30s --retries=12 \
   CMD pg_isready -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-postgres}" \
-      && curl -sf http://127.0.0.1:8080/ > /dev/null
+      && curl -sf http://127.0.0.1:8080/_pgweb/health > /dev/null
 
 LABEL org.opencontainers.image.title="pg-web/postgres"
 LABEL org.opencontainers.image.description="PostgreSQL with the pg_web_ext extension preinstalled — HTTP server runs inside PG."

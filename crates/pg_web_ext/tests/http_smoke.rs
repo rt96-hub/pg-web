@@ -71,3 +71,44 @@ fn unknown_route_returns_404_with_default_body() {
     assert!(body.contains("404"), "body should contain 404: {body}");
     assert!(body.contains("Not found"), "body should say Not found: {body}");
 }
+
+// ---- 018.1 health/readiness (seeded defaults + protected probes) ----
+
+#[test]
+fn public_health_default_returns_200_and_json() {
+    // Fresh pgrx instance has the seeded framework default for /health.
+    let resp = get("/health");
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(ct.starts_with("application/json"), "health default should be json, got {ct}");
+    let body = resp.text().unwrap();
+    assert!(body.contains("\"status\""), "body should contain status: {body}");
+}
+
+#[test]
+fn public_readiness_default_returns_200() {
+    let resp = get("/readiness");
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().unwrap();
+    assert!(body.contains("ok") || body.contains("status"), "readiness body: {body}");
+}
+
+#[test]
+fn protected_health_probe_always_available() {
+    // The /_pgweb/* probes are hard-mounted above fallback and must answer
+    // even if a user route for / or /health is broken.
+    let resp = get("/_pgweb/health");
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().unwrap();
+    assert!(body.contains("\"status\":\"ok\""), "protected health: {body}");
+}
+
+#[test]
+fn protected_readiness_probe_always_available() {
+    let resp = get("/_pgweb/readiness");
+    assert_eq!(resp.status(), 200);
+}

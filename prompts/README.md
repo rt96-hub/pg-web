@@ -29,7 +29,8 @@ written; `file:line` citations point into the repo at commit `918f40b`.
 | **015** | Concurrency & throughput — benchmark first, then multi-worker | Performance | Critical |
 | **016** | Request-path caching (templates + routes) + graceful shutdown | Performance | High |
 | **017** | HTTP capability floor — full method set, uploads, compression, range | Capability gaps | High |
-| **018** | Lifecycle & observability — upgrade scripts, health, metrics, request log | Operations | Medium |
+| **018** (split) | Lifecycle & observability — upgrade scripts (018.2), health/readiness endpoints (018.1 shipped), metrics/log future | Operations | Medium |
+| **018.1** | Health and readiness endpoints (default + overridable + protected probes + disable flags) | Operations | — (shipped) |
 | **019** | Roadmap resequencing — pull backup/export forward + ecosystem motions | Strategy (memo) | — |
 | **020** | Site v2 — landing + docs + blog (the flagship Phase-2 dogfood) | Product / dogfood | — |
 | **021** | SSH-tunneled remote deploy (`pg-web push --target`) | Deploy / ops | High |

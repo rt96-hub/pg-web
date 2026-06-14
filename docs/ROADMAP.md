@@ -237,7 +237,7 @@ Locked the approach in Session 5; **no implementation this cycle**. The diff eng
 - [ ] Async job runner: polls queue, dispatches to registered handlers (HTTP, email, generic).
 - [ ] Built-in handlers: HTTP request (via `reqwest`), email (SMTP via `lettre`).
 - [ ] **Internal concurrency management:** HTTP-level queue inside the web worker's Tokio runtime. Traffic spikes absorbed at the web tier before opening SPI transactions — prevents Postgres connection exhaustion.
-- [ ] Health endpoints (`/_pgweb/health`, `/_pgweb/metrics`) for load balancer probes.
+- [x] Health & readiness endpoints (protected `/_pgweb/*` probes + overridable public `/health` + `/readiness` defaults + disable flags). Shipped in 018.1 (see that prompt + schema seeds + http mounts + router suppression + Dockerfile HEALTHCHECK update). The protected probes are the ones operators and the image should use; public ones are the conventional overridable surface for app-specific checks. (Metrics remain future.)
 - [ ] Companion app: webhook handler, email confirmation on signup (via job queue).
 
 ## Phase 4 — Observability & Tooling

@@ -106,8 +106,18 @@ fn serve_in_tx(method: &str, path: &str, mut req: Value) -> ServeOutcome {
     match lookup_route(method, path) {
         Err(e) => return ServeOutcome::Error(e),
         Ok(Some(matched)) => {
-            inject_path_params(&mut req, &matched.path_params);
-            return render_route(&matched.route, &req, 200);
+            // 018.1: framework default health/readiness routes are
+            // suppressed when the corresponding pgweb.settings flag is false.
+            // This makes "disable the default" produce a normal router miss
+            // (so 404 or user _404 applies) without special-casing the paths
+            // in the lookup itself. User routes for the same path_pattern
+            // have a different handler_name and are never suppressed.
+            if is_suppressed_default_health_or_readiness(&matched.route.handler_name) {
+                // fall through to asset/404 handling exactly as a miss would
+            } else {
+                inject_path_params(&mut req, &matched.path_params);
+                return render_route(&matched.route, &req, 200);
+            }
         }
         Ok(None) => {}
     }
@@ -206,6 +216,31 @@ fn req_path(req: &Value) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("<unknown>")
         .to_string()
+}
+
+/// 018.1 health/readiness disable support.
+/// Returns true only for the exact framework-owned default handler names
+/// *and* when the corresponding pgweb.settings flag has been set to 'false'.
+/// Any other handler (including a user override for /health) returns false
+/// immediately so the normal path is taken. The setting lookup is inside the
+/// already-open per-request transaction; a missing row or any error defaults
+/// to "enabled" (conservative for a health probe).
+fn is_suppressed_default_health_or_readiness(handler_name: &str) -> bool {
+    match handler_name {
+        "pgweb._default_health_handler" => {
+            let v = Spi::get_one::<String>("SELECT pgweb.setting('health_enabled')")
+                .ok()
+                .flatten();
+            matches!(v.as_deref(), Some("false"))
+        }
+        "pgweb._default_readiness_handler" => {
+            let v = Spi::get_one::<String>("SELECT pgweb.setting('readiness_enabled')")
+                .ok()
+                .flatten();
+            matches!(v.as_deref(), Some("false"))
+        }
+        _ => false,
+    }
 }
 
 /// Overwrite `req.path_params` with the captures from the matched route.

@@ -78,6 +78,34 @@ The full spec with every edge case is `docs/APP-LAYOUT.md`.
 
 Every `.sql` file defines exactly one Postgres function in the `pgweb` schema, matching the file path:
 
+## Operational endpoints (health & readiness)
+
+pg-web ships two distinct surfaces (prompt 018.1):
+
+- **Protected probes** (framework infrastructure, always on, mounted before your routes in the HTTP layer, never disabled, never overridable):  
+  `GET /_pgweb/health` and `GET /_pgweb/readiness`.  
+  These are what your Dockerfile `HEALTHCHECK`, load balancers, and orchestrators should target. A slow or broken user handler (including a custom `/health` that 500s) has no effect on them.
+
+- **App-level conventional endpoints** (overridable defaults):  
+  `GET /health` and `GET /readiness`.  
+  On a fresh `CREATE EXTENSION` or `pg-web init` (minimal or `--template todo`) + `up`, these return tiny JSON via seeded framework defaults. They "just work" with no extra files.
+
+**Override them** exactly like any other page: create `pages/health/index.sql` (and optionally `pages/health/index.html`). `pg-web push` replaces the `pgweb.routes` row for that path; your handler is called instead of the default. The seeded default row is gone until you delete the user files and push again (reconcile restores it).
+
+**Disable the defaults** (but not user overrides): in `pgweb.toml` under `[server]` set
+
+```toml
+health_enabled = false
+readiness_enabled = false
+```
+
+then push. When the flag is false the router treats a hit on the *framework default* handler as a miss (normal 404 or your `_404` handling). A user route for `/health` is still served regardless of the flag.
+
+Read the flags from handlers with `pgweb.setting('health_enabled')`. The protected `/_pgweb/*` probes ignore these flags entirely.
+
+See `docs/DEPLOYMENT.md` for the recommended HEALTHCHECK stanza and `examples/todo/pages/health/index.sql` (with comments) for a working override example that also proves DB access on the health path.
+
+
 | File                                    | Function name                              |
 |-----------------------------------------|--------------------------------------------|
 | `pages/index.sql`                       | `pgweb.pages__index`                       |

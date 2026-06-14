@@ -153,6 +153,23 @@ INSERT INTO pgweb.settings (key, value) VALUES ('env', 'development');
 INSERT INTO pgweb.settings (key, value) VALUES ('request_timeout', '15s')
 ON CONFLICT (key) DO NOTHING;
 
+-- Health/readiness flags (prompt 018.1). Default true so a fresh
+-- CREATE EXTENSION or `pg-web init` (minimal or todo) + up immediately
+-- serves the conventional public endpoints without any extra work.
+--
+-- When a flag is 'false', the *framework default* for that path is
+-- suppressed at lookup time in the router (normal miss → 404 or user
+-- _404 handling). User-provided routes for /health or /readiness are
+-- unaffected by the flags and always win.
+--
+-- The protected `/_pgweb/health` and `/_pgweb/readiness` probes are
+-- *never* affected by these flags (or by any user route). They are
+-- infrastructure liveness/readiness for the platform itself.
+INSERT INTO pgweb.settings (key, value) VALUES ('health_enabled', 'true')
+ON CONFLICT (key) DO NOTHING;
+INSERT INTO pgweb.settings (key, value) VALUES ('readiness_enabled', 'true')
+ON CONFLICT (key) DO NOTHING;
+
 -- Secrets table (prompt 014). Separate from pgweb.settings so that the
 -- serving role can be granted SELECT on the latter (for 'env', feature
 -- flags, pgweb.setting()) without automatically getting every credential.
@@ -190,8 +207,68 @@ CREATE FUNCTION pgweb.hello_handler(req json) RETURNS json AS $$
     SELECT json_build_object('name', 'pg-web')
 $$ LANGUAGE sql STABLE;
 
+-- Default handlers for the conventional public health/readiness endpoints
+-- (prompt 018.1). These are seeded so a fresh extension install or a
+-- `pg-web init` app (before any push) has working `curl /health` and
+-- `curl /readiness`.
+--
+-- Overridability:
+--   A user creates pages/health/index.sql (and optional sibling .html)
+--   per the normal APP-LAYOUT / directory-as-route rules. On `pg-web push`
+--   the CLI upserts a row into pgweb.routes for ('GET', '/health') whose
+--   handler_name is the user's pgweb.pages__health__index (or equivalent).
+--   Because the PK is (method, path_pattern), the user's row replaces the
+--   seeded default row completely. The user's handler is called for /health
+--   exactly as any other route; the framework default is gone until the
+--   user route is deleted and another push reconciles it away.
+--
+-- Disable controls:
+--   The pgweb.settings.health_enabled / readiness_enabled keys (default
+--   'true', synced from pgweb.toml [server] by push) are read at request
+--   time inside the router lookup (not inside these functions). When the
+--   corresponding flag is 'false' *and* the matched route is one of these
+--   two framework default handlers, the router treats the lookup as a miss
+--   and falls through to normal 404 / _404 handling. This is how "do not
+--   serve the default" is implemented without magic in the public surface.
+--   User routes for the same path are never suppressed.
+--
+-- Body / evolution:
+--   Today these return a tiny JSON payload via the v2 pgweb.json() helper
+--   (so Content-Type is application/json and we get a proper envelope).
+--   The payload is intentionally minimal. Later we can evolve to richer
+--   objects, custom status, or the full response envelope from inside the
+--   handler. The comments here + the router suppression logic are the
+--   contract that lets us do that without breaking existing apps that
+--   never touch /health.
+--
+-- Protected vs. public:
+--   The real infrastructure probes live at /_pgweb/health and
+--   /_pgweb/readiness (hard Axum mounts in http.rs). They are never
+--   disabled and never collide with user routes. Use *those* for
+--   HEALTHCHECK, load balancers, and orchestrators. The public ones are
+--   for app-level "is my business logic happy?" checks that the app owner
+--   is expected to customize or disable.
+CREATE FUNCTION pgweb._default_health_handler(req json) RETURNS json
+LANGUAGE sql STABLE AS $$
+    SELECT pgweb.json(jsonb_build_object('status', 'ok'))
+$$;
+
+CREATE FUNCTION pgweb._default_readiness_handler(req json) RETURNS json
+LANGUAGE sql STABLE AS $$
+    SELECT pgweb.json(jsonb_build_object('status', 'ok'))
+$$;
+
 INSERT INTO pgweb.routes (path_pattern, method, handler_name, template_path)
 VALUES ('/', 'GET', 'pgweb.hello_handler', 'pages/index.html');
+
+-- Seed the default app-level health/readiness routes (raw-text, no template).
+-- These are the overridable conventional endpoints. See the comments on the
+-- _default_*_handler functions above for the full override + disable story.
+INSERT INTO pgweb.routes (path_pattern, method, handler_name, template_path)
+VALUES ('/health', 'GET', 'pgweb._default_health_handler', NULL);
+
+INSERT INTO pgweb.routes (path_pattern, method, handler_name, template_path)
+VALUES ('/readiness', 'GET', 'pgweb._default_readiness_handler', NULL);
 
 INSERT INTO pgweb.templates (template_path, content) VALUES (
     'pages/index.html',
@@ -816,5 +893,56 @@ mod tests {
         // an envelope to a human or future code).
         assert!(plain.contains("\"status\":\"ok\""));
         assert!(!plain.contains("$pgweb"));
+    }
+
+    // ---- Health/readiness defaults (prompt 018.1) ----
+
+    #[pg_test]
+    fn health_and_readiness_settings_default_true() {
+        let h = Spi::get_one::<String>("SELECT pgweb.setting('health_enabled')")
+            .expect("query")
+            .expect("row");
+        assert_eq!(h, "true", "health_enabled must default to true for fresh installs");
+        let r = Spi::get_one::<String>("SELECT pgweb.setting('readiness_enabled')")
+            .expect("query")
+            .expect("row");
+        assert_eq!(r, "true", "readiness_enabled must default to true for fresh installs");
+    }
+
+    #[pg_test]
+    fn default_health_route_seeded() {
+        let handler = Spi::get_one::<String>(
+            "SELECT handler_name FROM pgweb.routes \
+             WHERE method = 'GET' AND path_pattern = '/health'",
+        )
+        .expect("route lookup")
+        .expect("default GET /health should be seeded");
+        assert_eq!(handler, "pgweb._default_health_handler");
+    }
+
+    #[pg_test]
+    fn default_readiness_route_seeded() {
+        let handler = Spi::get_one::<String>(
+            "SELECT handler_name FROM pgweb.routes \
+             WHERE method = 'GET' AND path_pattern = '/readiness'",
+        )
+        .expect("route lookup")
+        .expect("default GET /readiness should be seeded");
+        assert_eq!(handler, "pgweb._default_readiness_handler");
+    }
+
+    #[pg_test]
+    fn default_health_handler_is_callable_and_returns_envelope() {
+        // The default handler uses pgweb.json() so the router will see a v2
+        // envelope and emit application/json. We just prove it is callable
+        // and produces the sentinel.
+        let j = Spi::get_one::<pgrx::JsonB>(
+            "SELECT pgweb._default_health_handler('{}'::json)::jsonb",
+        )
+        .expect("call")
+        .expect("row");
+        assert!(j.0.get("$pgweb").is_some(), "default health must return envelope");
+        let body = j.0.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(body.contains("\"status\""), "payload should contain status");
     }
 }

@@ -172,6 +172,10 @@ Two patterns, both deferred to post-1.0:
 
 - **Container logs:** `docker compose logs -f postgres`. pg-web's Rust worker emits structured JSON lines to stdout.
 - **Datadog / CloudWatch / Loki:** point your log driver at them — no extra pg-web config.
+- **Health & readiness probes (018.1):** the image ships two surfaces.
+  - Protected platform probes (always present, never overridable by user routes, the ones the Dockerfile HEALTHCHECK and real load balancers/orchestrators should use): `GET /_pgweb/health` and `GET /_pgweb/readiness`.
+  - App-level conventional endpoints (seeded defaults that *you* override or disable): `GET /health` and `GET /readiness`.
+  The Dockerfile HEALTHCHECK now curls the protected `/_pgweb/health` so a broken user `GET /` or a custom `/health` that 500s cannot make the container unhealthy.
 - **Prometheus (Phase 4):** the extension exposes `/_pgweb/metrics` in Prometheus format.
 - **Native Postgres stats:** `pg_stat_statements`, `pg_stat_activity` work as usual.
 

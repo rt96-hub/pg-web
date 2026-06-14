@@ -56,6 +56,14 @@ struct ServerSection {
     /// request transaction. Default (when absent) is "15s" in the extension.
     #[serde(default)]
     request_timeout: Option<String>,
+    /// 018.1: when false the seeded default for the public /health is
+    /// suppressed (normal router miss behavior). User /health routes win
+    /// regardless. The protected /_pgweb/health is never affected.
+    #[serde(default)]
+    health_enabled: Option<bool>,
+    /// Same for /readiness.
+    #[serde(default)]
+    readiness_enabled: Option<bool>,
 }
 
 /// What `push` changed. Returned so callers can display a summary.
@@ -73,6 +81,10 @@ pub struct PushSummary {
     pub env_synced: Option<String>,
     /// Set when push synced `[server].request_timeout` (prompt 014).
     pub request_timeout_synced: Option<String>,
+    /// 018.1 health/readiness flags (true/false values that were explicitly
+    /// present in the pushed pgweb.toml and therefore written to settings).
+    pub health_enabled_synced: Option<bool>,
+    pub readiness_enabled_synced: Option<bool>,
     pub assets_upserted: usize,
     pub assets_deleted: usize,
     /// Number of migration files that were applied during this push.
@@ -291,6 +303,14 @@ pub fn push_with_options(
             sync_request_timeout(&mut tx, rt)?;
             tx_summary.request_timeout_synced = Some(rt.to_string());
         }
+        if let Some(h) = toml_cfg.server.health_enabled {
+            sync_health_enabled(&mut tx, h)?;
+            tx_summary.health_enabled_synced = Some(h);
+        }
+        if let Some(r) = toml_cfg.server.readiness_enabled {
+            sync_readiness_enabled(&mut tx, r)?;
+            tx_summary.readiness_enabled_synced = Some(r);
+        }
 
         // Phase 5 — deployments ledger (F.1). One row per successful push
         // with a snapshot of what we just shipped. Under dry_run we still
@@ -485,6 +505,28 @@ fn sync_request_timeout(tx: &mut Transaction<'_>, timeout: &str) -> Result<()> {
         &[&timeout],
     )
     .with_context(|| format!("upserting pgweb.settings.request_timeout = {timeout}"))?;
+    Ok(())
+}
+
+fn sync_health_enabled(tx: &mut Transaction<'_>, enabled: bool) -> Result<()> {
+    let v = if enabled { "true" } else { "false" };
+    tx.execute(
+        "INSERT INTO pgweb.settings (key, value) VALUES ('health_enabled', $1) \
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        &[&v],
+    )
+    .with_context(|| format!("upserting pgweb.settings.health_enabled = {v}"))?;
+    Ok(())
+}
+
+fn sync_readiness_enabled(tx: &mut Transaction<'_>, enabled: bool) -> Result<()> {
+    let v = if enabled { "true" } else { "false" };
+    tx.execute(
+        "INSERT INTO pgweb.settings (key, value) VALUES ('readiness_enabled', $1) \
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        &[&v],
+    )
+    .with_context(|| format!("upserting pgweb.settings.readiness_enabled = {v}"))?;
     Ok(())
 }
 

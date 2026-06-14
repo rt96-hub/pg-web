@@ -259,6 +259,12 @@ fn run() -> Result<ExitCode> {
             if let Some(rt) = &summary.request_timeout_synced {
                 println!("{tag}  request_timeout → {rt} (synced from pgweb.toml → pgweb.settings)");
             }
+            if let Some(h) = summary.health_enabled_synced {
+                println!("{tag}  health_enabled → {h} (synced from pgweb.toml → pgweb.settings)");
+            }
+            if let Some(r) = summary.readiness_enabled_synced {
+                println!("{tag}  readiness_enabled → {r} (synced from pgweb.toml → pgweb.settings)");
+            }
             if summary.dry_run {
                 println!("[dry-run] transaction rolled back — no changes committed");
             }

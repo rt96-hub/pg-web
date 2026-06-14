@@ -53,6 +53,21 @@ env  = "development"
 # The worker does SET LOCAL statement_timeout = '...' inside the request tx.
 # request_timeout = "15s"  # default in extension if omitted; override here and re-push
 
+# Health & readiness (prompt 018.1). The framework seeds working defaults
+# for the conventional public endpoints GET /health and GET /readiness so
+# a fresh `pg-web init` (or bare CREATE EXTENSION) is immediately useful for
+# simple probes. These defaults are *overridable*:
+#   - Create pages/health/index.sql (+ optional .html) per APP-LAYOUT.md
+#     and push — your route row replaces the seeded one completely.
+#   - Set the flag false to suppress *only the framework default* (public
+#     /health then falls through to normal 404 / your _404). User routes for
+#     the path are never suppressed by the flag.
+# The protected platform probes (`/_pgweb/health`, `/_pgweb/readiness`) are
+# always available, never overridable, and are the ones the Dockerfile
+# HEALTHCHECK and load balancers should target.
+# health_enabled = true
+# readiness_enabled = true
+
 [database]
 # Name of the environment variable holding your Postgres connection string.
 url_env = "DATABASE_URL"
@@ -163,6 +178,23 @@ scaffolds a full HTMX todo list — dynamic routes, form validation, static asse
 - `pgweb.toml` — framework config (port, `env = "development"/"production"`, watch paths).
 - `docker-compose.yml` — dev stack. Uncomment the `caddy` service for prod TLS.
 - `Caddyfile` — TLS reverse-proxy config. Set your domain.
+
+## Health & readiness endpoints
+
+pg-web provides two surfaces out of the box (both are present after `CREATE EXTENSION` or on a fresh `pg-web init` + `up`, before any `push`):
+
+- **Protected platform probes** (always available, never overridable, the ones you point load balancers / orchestrators / Docker HEALTHCHECK at):
+  - `GET /_pgweb/health`
+  - `GET /_pgweb/readiness`
+- **App-level conventional endpoints** (sensible JSON defaults that you are expected to customize or disable):
+  - `GET /health`
+  - `GET /readiness`
+
+To provide your own logic (e.g. "at least N open todos", "downstream X is up", or a richer JSON body), create `pages/health/index.sql` (and optionally a sibling `index.html` for a Tera-rendered response) exactly like any other route. `pg-web push` replaces the seeded row; your handler wins.
+
+To stop the *framework default* from answering (so `/health` falls through to your `_404` or a later custom route): in `pgweb.toml` under `[server]` set `health_enabled = false` (or `readiness_enabled = false`) and push. User routes for those paths are unaffected by the flags.
+
+See `docs/DEPLOYMENT.md` (Monitoring) and `docs/APP-DEVELOPER-GUIDE.md` for the recommended pattern and which surface to use for container health vs. application health.
 "#;
 
 pub const README_TODO: &str = r#"# {APP}
@@ -220,6 +252,68 @@ Three handler dispatch modes exercised:
 - `pages/todos/[id]/` — dynamic route capture, `req.path_params.id`.
 
 `docs/TUTORIAL.md` in the pg-web repo walks through building this from scratch.
+
+## Health & readiness (018.1)
+
+pg-web ships two surfaces:
+
+- **Protected platform probes** (always present, never overridable by your routes, the ones load balancers / orchestrators / the Dockerfile HEALTHCHECK should target):
+  `GET /_pgweb/health` and `GET /_pgweb/readiness`.
+- **App-level conventional endpoints** (seeded with simple JSON defaults so a fresh `pg-web init` or bare `CREATE EXTENSION` "just works"; you are expected to override or disable them for real apps):
+  `GET /health` and `GET /readiness`.
+
+### Overriding the defaults (the recommended pattern)
+
+Create a normal route under `pages/health/` (or `pages/readiness/`):
+
+```
+pages/
+└── health/
+    └── index.sql          # GET /health — your app-specific logic
+    # (optional) index.html  # if you want a Tera-rendered health page
+```
+
+Example `pages/health/index.sql` (raw-text, returns proper JSON via the v2 helper):
+
+```sql
+-- Override of the framework default for GET /health.
+--
+-- On a fresh install the framework seeds a row in pgweb.routes for
+-- ('GET', '/health') pointing at pgweb._default_health_handler.
+-- When you `pg-web push` this file, the CLI:
+--   1. Executes this CREATE OR REPLACE FUNCTION.
+--   2. Does an ON CONFLICT (method, path_pattern) DO UPDATE on pgweb.routes.
+-- The user row completely replaces the seeded default. Your handler is now
+-- called for /health.
+--
+-- The disable flag (health_enabled = false in pgweb.toml + push) only
+-- suppresses the *framework default*. A user route for /health is never
+-- suppressed by the flag.
+--
+-- The protected `/_pgweb/health` (hard-mounted in the HTTP layer before any
+-- user fallback) is unaffected by user routes and by the enabled flags.
+-- It is the one the container healthcheck actually curls.
+
+CREATE OR REPLACE FUNCTION pgweb.pages__health__index(req json) RETURNS json AS $$
+  SELECT pgweb.json(
+    jsonb_build_object(
+      'status', 'ok',
+      'app',    'todo',
+      'note',   'custom health override active — see pages/health/index.sql for the pattern'
+    )
+  )
+$$ LANGUAGE sql STABLE;
+```
+
+Push as usual. `curl /health` now returns your payload (and `Content-Type: application/json` because we used the envelope helper).
+
+To go back to the framework default: delete the `pages/health/` directory (or just the sql) and `pg-web push` again. Reconcile removes the user route row; the seeded default is restored.
+
+The same pattern applies to /readiness.
+
+See `docs/APP-DEVELOPER-GUIDE.md` (Operational endpoints) and `docs/DEPLOYMENT.md` for which surface to use for different audiences and the recommended HEALTHCHECK stanza.
+
+The protected probes + "broken user handler does not affect the platform probe" are exercised and asserted in the test suite (http_smoke + docker_e2e). The override story is documented here in the companion todo app's README with a complete worked example.
 "#;
 
 /// Substitute the `{APP}` placeholder with the actual app name. The
