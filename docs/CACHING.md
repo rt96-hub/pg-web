@@ -1,0 +1,34 @@
+# pg-web Request-Path Cache
+
+The request-path cache is a BGW-local, in-memory snapshot of framework metadata (`pgweb.routes`, `pgweb.templates`, and the `env` setting from `pgweb.settings`). It eliminates per-request SPI round-trips for routing decisions, template lookup, and dev/prod error-page selection while preserving the core invariants: one SPI transaction per user request (user handler SQL still runs inside it) and SPI (never libpq) for all data-path operations.
+
+A `RouteSnapshot` contains:
+- Per-method, already specificity-sorted parsed routes (the work that used to happen on every request in the old `lookup_route`).
+- A compiled `Tera` instance holding all templates (added via `add_raw_template` at build time; bad templates are skipped and fall back to the classic `one_off` path so a just-pushed or syntax-error template still produces the identical dev error page).
+- The current `env` value (used for livereload injection, asset Cache-Control, and the rich-vs-generic error decision).
+
+The snapshot lives behind a cheap `RwLock<Option<Arc<RouteSnapshot>>>` (interior mutability, cheap reads on the single-threaded current-thread runtime). It is built lazily on first use after worker start or invalidation, and the build always runs inside a `BackgroundWorker::transaction` (or is warmed inside the per-request transaction for normal paths) so it has a valid SPI context.
+
+Invalidation is driven by the existing `ListenRouter` + a dedicated `pgweb_reload` PG NOTIFY channel. `pg-web push` emits `NOTIFY pgweb_reload` as the final statement inside its commit transaction (so delivery is atomic with the data change and never happens on rollback). The always-on listen task receives the notification on its side-channel `tokio-postgres` connection and calls `invalidate()`, which simply sets the `Option` to `None`. The next request that calls `get_snapshot()` (or the cache helpers) sees the miss and rebuilds. This gives "eventually consistent within one NOTIFY round-trip" semantics with a strong guarantee: no torn or invalid state is ever served (a push is always a single transaction). A coarse backstop (long TTL or per-request generation check) is possible but not required for correctness today.
+
+The cache is strictly per-worker-process. Different Docker containers (or the multi-worker setup from prompt 015) each maintain their own snapshot and their own LISTEN subscription; a single `pgweb_reload` NOTIFY reaches all of them. Browser clients, the CLI, and Docker never see the snapshot directly — they only drive it by mutating the DB tables and causing NOTIFYs.
+
+## Layers and Interactions
+
+- **Database (pgweb.routes, pgweb.templates, pgweb.settings)**: These tables remain the single source of truth. The cache only ever reads them (during rebuild) and never writes. A `pg-web push` (or direct `UPDATE` of settings) is the only thing that changes them; the NOTIFY is the signal that a rebuild may be needed.
+
+- **Background Worker + Listen Task (the NOTIFY pump)**: The always-on `run_listen_loop` (tokio-postgres side-channel) does the `LISTEN pgweb_reload` (and livereload) because the channel is preregistered at startup. When a notification arrives it calls `router.publish` (for any future subscribers) and directly `crate::cache::invalidate()`. This is the only path that makes a production push visible to a live worker without a restart. The pump yields at `.await` points so it does not block the main request thread for long.
+
+- **In-Memory RouteSnapshot / cache module (cache.rs)**: This owns the `RwLock<Option<Arc<RouteSnapshot>>>`, the `build_snapshot` logic (direct SPI selects + pattern parsing + `Tera` compilation), `get_snapshot`, `invalidate`, `render_template` (compiled path with `one_off` fallback), and the `current_env` helper. Rebuild cost is paid only on cold start or after a NOTIFY; hot requests are just an Arc clone + map lookup + first-match scan (no parse, no sort, no SPI).
+
+- **HTTP Request Path / Router / Render (router.rs + http.rs)**: `serve` / `serve_in_tx` (which runs under the per-request `BGW::transaction`) warms the snapshot with an early `get_snapshot()` call so that `lookup_route`, template render, and the normal livereload/asset paths see a populated cache. The error page path (`render_error`) deliberately bypasses the snapshot for the `env` decision (uses `BackgroundWorker::transaction(settings::current_env)`) so that a just-pushed production flip is visible immediately for the "generic 500, no leaks" guarantee. Success-path injection and asset headers still benefit from the cached value.
+
+- **Graceful Shutdown + SSE (livereload.rs + worker.rs)**: `shutdown_signal` (the 150 ms pgrx `sigterm_received` poll) calls `router.request_shutdown()` when the flag is seen. The livereload SSE stream is built with `take_until` on both the hard 2 h lifetime and the shutdown future, so in-flight EventSource connections close promptly instead of holding the worker open. The main `axum::serve` is wrapped in `with_graceful_shutdown` + an 8 s outer timeout so the postmaster never has to escalate to SIGKILL for normal traffic.
+
+- **Browser / Client Layer**: The browser sees only ordinary HTTP responses plus the injected `<script>` (when env=development and the body is a full HTML document). It has no direct knowledge of the server-side snapshot. Only static assets carry ETags + immutable Cache-Control; dynamic HTML is never cached by the client in a way that would bypass a fresh request after a push.
+
+- **Docker / Image / Deployment Layer**: Every container runs its own independent BGW process with its own `RouteSnapshot` and its own LISTEN backend connection. The published image contains the `.so`; a `docker compose up -d` or image swap after a framework upgrade is still a full process restart (as documented). `pg-web push` (even from inside the container) only mutates the DB and emits the NOTIFY; the per-worker caches pick it up on the next request.
+
+- **CLI (pg-web push / dev / env)**: The CLI only ever speaks normal libpq to the DB. A successful push ends with the routes/templates/settings rows committed plus the `NOTIFY pgweb_reload` (as the last statement before COMMIT). From that moment, any worker that has received the notification will invalidate and the next request on that worker will see the new data. `pg-web dev` still emits the separate livereload NOTIFY for browser refresh; the cache NOTIFY is orthogonal and is not gated by `--no-livereload`.
+
+The cache is deliberately small and "framework only." It does not cache user data, handler results, or asset bodies (those stay in the DB with their own ETag/immutable rules). It is the minimal change that removes the measurable redundant SPI work characterized in prompt 015 while keeping the "one request = one SPI transaction for user work" contract and the zero-restart push experience.
