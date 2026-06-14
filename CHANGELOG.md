@@ -10,6 +10,29 @@ changes may land in minor releases.
 ## [Unreleased]
 
 ### Added
+- Extension upgrade path (018.2): real `--from--to.sql` scripts, packaging so
+  `pg_web_ext--A.B--C.D.sql` files land in the image next to the pgrx-generated
+  install SQL, and `ALTER EXTENSION pg_web_ext UPDATE` now works for additive
+  schema changes. Hand-authored scripts live in `crates/pg_web_ext/upgrades/`.
+  The Dockerfile was updated to stage them; the existing wildcard COPY ships
+  them. A skeleton `pg_web_ext--0.2.0--0.3.0.sql` (with policy header) proves
+  the mechanism and is present in published images.
+- `pgweb.ext_version()` SQL helper (returns the value from `pg_extension.extversion`
+  for the running DB; distinct from `.control` default_version). Granted to the
+  serving role. Useful for readiness probes (ties into 018.1) and observability.
+  Added as an additive change in the bootstrap; the upgrade path + skeleton
+  prepare the delta for the next version bump.
+- New Tier 3 ignored test `extension_upgrade_preserves_data_and_serves` (in
+  `docker_e2e.rs`) that does a full self-upgrade smoke: push real app data,
+  write a synthetic additive script, run `ALTER EXTENSION ... UPDATE TO ...`,
+  assert marker + all prior `pgweb.*` rows + user data + continued HTTP serving.
+  Runs automatically as part of the Docker E2E matrix. DDL portability notes
+  for 15/16/17.
+- Policy documented in `CLAUDE.md` (new invariant + coding practice), 
+  `docs/DEPLOYMENT.md` (completely rewritten upgrade section with restart-cost
+  warning, backup rec, zero-downtime distinction, cross-refs), `docs/TESTING.md`,
+  `crates/pg_web_ext/upgrades/README.md`, and this changelog. The previous
+  situation (DEPLOYMENT.md promising a script that did not exist) is fixed.
 - `cargo install pg-web` distribution for the CLI (prompt 010). The package on
   crates.io is now named `pg-web` (binary remains `pg-web`). Full recommended
   metadata (description, keywords, categories, homepage, docs link, readme).

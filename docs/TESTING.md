@@ -17,7 +17,7 @@ It exits non-zero on any failure and prints `All tests passed.` on success. Tier
 | 1. SQL / pgrx  | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | **72** `#[pg_test]` — schema / seed / migrations / deployments ledger / settings helper / html_escape; ListenRouter + livereload; router contract + dynamic captures + asset lookup; error catalog + dev page; Tera classification; fingerprinted assets (H) |
 | 2a. HTTP smoke | `scripts/test-http.sh` (starts PG, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — seeded `GET /` renders, unknown path returns default 404 body |
 | 2b. CLI        | `cargo test -p pg-web` | **143** — path scanner, migrate, push + reconcile + flags + retry (L), init, dev, env, check, stack, asset fingerprinting (H) |
-| 3. Docker E2E  | `cargo test -p pg-web --test docker_e2e -- --ignored` (requires Docker + `rtaylor96/pg-web:latest` — the current test image while `pgweb/postgres` namespace is pending) | **13** — todo CRUD + dynamic routes; watcher; reconcile; error pages; assets + ETag; F.1 ledger; livereload; concurrent push retry (L); CLI-in-image (F.3); fingerprinted cache (H); 5 MiB assets (I) |
+| 3. Docker E2E  | `cargo test -p pg-web --test docker_e2e -- --ignored` (requires Docker + `rtaylor96/pg-web:latest` — the current test image while `pgweb/postgres` namespace is pending) | **13 (+1)** — todo CRUD + dynamic routes; watcher; reconcile; error pages; assets + ETag; F.1 ledger; livereload; concurrent push retry (L); CLI-in-image (F.3); fingerprinted cache (H); 5 MiB assets (I); **extension upgrade path self-upgrade smoke (018.2)** |
 | 4. CLI smoke   | `scripts/smoke-cli.sh` | **19 sections** — full black-box walk of scaffold → up → push → 404 → dev error → prod 500 → assets → helpers → env → deployments → check → livereload (see `docs/OVERVIEW.md`) |
 
 **230+ Rust tests + 19-section smoke, all tiers green via `scripts/test-all.sh`.** Tier 3 hard-fails (no silent skip) if Docker or the test image (`rtaylor96/pg-web:latest` today) is missing — the image *is* the runtime artifact.
@@ -179,6 +179,24 @@ Start a Postgres container per test module (cached via `testcontainers`), seed i
 **Tool:** `examples/todo/` — a real pg-web app that exercises every framework feature.
 **Runs:** CI spins up `rtaylor96/pg-web:latest`, runs `pg-web dev` pointing at the demo app, hits HTTP endpoints with `reqwest`, asserts on response bodies and status codes.
 **Scope:** product behavior from the app developer's POV.
+
+### Upgrade path tier (018.2)
+
+A dedicated ignored test (`extension_upgrade_preserves_data_and_serves` in `crates/pg_web_cli/tests/docker_e2e.rs`) exercises real in-place upgrade using `ALTER EXTENSION pg_web_ext UPDATE`.
+
+- Boots the test image (which now contains both the pgrx-generated install SQL and hand-authored `pg_web_ext--*--*.sql` upgrade scripts).
+- Performs a `pg-web push` (or direct inserts) to create realistic user data + `pgweb.deployments` / routes / etc.
+- Writes a synthetic additive upgrade script (e.g. a marker table or safe `ALTER TABLE ... ADD COLUMN`) into the container's extension directory, using a throwaway target version.
+- Executes `ALTER EXTENSION pg_web_ext UPDATE TO 'the-test-version';`.
+- Asserts:
+  - The synthetic change from the upgrade script is visible.
+  - All prior user data, framework ledger rows, routes/templates/assets are intact.
+  - The app still serves (basic HTTP smoke + the pushed todo flows).
+- The test is part of the normal `cargo test ... -- --ignored` run inside Tier 3, so it is exercised whenever the full `scripts/test-all.sh` (or direct Docker E2E) runs against a fresh image.
+
+For PG 15/16/17 coverage of the *DDL* (per invariant #6 and the prompt): the same majors that already run the full bootstrap install SQL via `cargo pgrx test pg$MAJOR` (and thus validate the current schema) also validate that the upgrade script files contain only portable constructs (simple `psql -f` or equivalent against a scratch database on the pgrx-managed PG or a stock `postgres:$MAJOR` container; no `.so` load is required for the pure-DDL synthetic changes used in the smoke).
+
+This tier is the permanent guard against "only ever tested fresh `CREATE EXTENSION`" regressions. See `docs/DEPLOYMENT.md` § "Upgrading the framework itself", `CLAUDE.md` (policy + the new restart-cost invariant), and `crates/pg_web_ext/upgrades/README.md`.
 
 ### The companion app IS the acceptance test
 

@@ -134,14 +134,44 @@ Zero downtime. No container rebuild. No rolling restart. New traffic picks up th
 
 ## Upgrading the framework itself
 
-When a new pg-web extension version ships:
+**Important distinction:** `pg-web push` (your app routes, templates, handlers, assets, migrations, settings) is zero-downtime: the live background worker picks up the new rows from `pgweb.routes` / `pgweb.templates` / etc. on the next request via SPI. No restart.
 
-1. SSH to the VPS.
-2. `docker compose pull` — fetches the new `rtaylor96/pg-web:latest`.
-3. `docker compose up -d` — restarts with the new `.so` loaded.
-4. Connect via `psql` or from the app and run `ALTER EXTENSION pg_web_ext UPDATE;`.
+Framework upgrades (new extension version: new `.so` + any schema changes in `pgweb.*` tables or helper functions) are **not** zero-downtime in the same way. The HTTP server lives inside a Postgres background worker. Replacing the `.so` requires replacing the container image and restarting the Postgres postmaster process. This is an inherent property of the "database is the web server" architecture — users coming from stateless web tiers will be surprised if it is not called out plainly.
 
-Postgres natively executes the included migration script (`pg_web_ext--A.B--C.D.sql`). User data is untouched; framework schema migrates.
+### Procedure
+
+When a new pg-web extension version ships (with shipped `--from--to` upgrade scripts per 018.2):
+
+1. **Backup first.** `docker compose exec postgres pg_dump -U postgres app > backup-$(date +%F).sql` (the recipe already appears later in this file; one dump is your entire app + framework state).
+2. SSH to the VPS.
+3. `docker compose pull` — fetches the new `rtaylor96/pg-web:latest` (or the future `pgweb/postgres` image).
+4. `docker compose up -d` — restarts the container with the new `.so` and the new install/upgrade `.sql` files present in the extension directory.
+5. Connect (via psql, or `docker compose exec postgres psql -U postgres app`) and run:
+   ```
+   ALTER EXTENSION pg_web_ext UPDATE;
+   ```
+   Postgres locates the appropriate `pg_web_ext--A.B--C.D.sql` script(s) (chains are supported automatically) and executes them in a single transaction. User tables, routes, templates, assets, `pgweb.deployments`, `pgweb.settings`, etc. are preserved provided the changes in the script follow the additive policy.
+
+6. Verify with `SELECT extversion FROM pg_extension WHERE extname = 'pg_web_ext';` (or the new `pgweb.ext_version()` helper) and a quick `curl` against a known route.
+
+The upgrade scripts live in `crates/pg_web_ext/upgrades/` in the source tree, are copied into the image by the Dockerfile alongside pgrx's generated install SQL, and must be valid on PG 15/16/17.
+
+### Policy for changes (additive vs. destructive)
+
+See the full statement in `CLAUDE.md` (architectural invariants + coding practices) and the `upgrades/README.md`.
+
+- Additive (new nullable columns, widening CHECK constraints, new SQL-only functions, new seed rows with `ON CONFLICT DO NOTHING`, new `GRANT`s, etc.): safe and the common case in Phase 1/2. The exact DDL goes in the upgrade script.
+- Destructive changes require an explicit migration strategy (data copy/rewrite) + a breaking-change note in the script and `CHANGELOG.md`.
+- The canonical worked example of a safe widening change is the `pgweb.assets` `CHECK (length(content) <= ...)` cap raise (2 MiB → 20 MiB).
+- No downgrade scripts are shipped. The supported rollback is "restore from the `pg_dump` you took before upgrading."
+
+### What the test harness now exercises (018.2)
+
+A new upgrade tier (self-upgrade smoke using a synthetic `--from--to` script that performs an additive change, followed by `ALTER EXTENSION ... UPDATE`, assertions on preserved user data + `pgweb.*` framework rows + continued HTTP serving) runs as part of the Docker E2E matrix on the bundled major. DDL portability for the upgrade scripts is validated across PG 15/16/17 (the same matrix that already runs the full bootstrap install SQL via `cargo pgrx test` for those majors).
+
+See `docs/TESTING.md` for details. This tier exists precisely to prevent the historical situation where "we only ever tested fresh `CREATE EXTENSION`."
+
+If you are on a pre-018.2 image (no upgrade scripts shipped), any schema-bearing framework upgrade still requires the old dump/recreate/restore path. After 018.2, in-place `ALTER EXTENSION` becomes the supported path for additive changes.
 
 ## Backup
 
