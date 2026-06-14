@@ -10,8 +10,24 @@ Build a **"Zero-Proxy" PostgreSQL Full-Stack Framework** — turn PostgreSQL int
 
 **Before beginning any major task** (handoff prompt, feature, refactor, hot-path change, etc.), you **must** first execute the test + benchmark bookend run(s):
 
-- `scripts/test-all.sh`
-- Plus `RUN_BENCH=1 scripts/test-all.sh` (or the explicit `bench/run.sh` harness) whenever the work touches request path, SPI, routing, concurrency, templating, dev watcher, or performance characteristics.
+Run them **sequentially in one shell session** (never in parallel `&` background jobs). Concurrent runs are the primary source of :8080 port fights (pgrx dev PG BGW + smoke-cli compose stack + bench compose all hard-bind the same host port) and `/tmp/pg-web-smoke` races.
+
+Preferred:
+```bash
+scripts/test-all.sh
+# only if your change touches request path / SPI / routing / concurrency / templating / dev watcher / perf:
+RUN_BENCH=1 scripts/test-all.sh
+# (or the explicit `bench/run.sh` harness)
+```
+
+The single-command form `RUN_BENCH=1 scripts/test-all.sh` is the cleanest way to get both the plain matrix *and* the benchmark phase (the script already runs the bench after the main tiers + reclaim inside one process).
+
+**Pre-bookend hygiene (run this first on dev machines):**
+```bash
+cargo pgrx stop pg17 || true
+pkill -f 'test-all.sh|smoke-cli.sh|bench/run.sh' || true
+docker ps -q --filter 'name=pg-web' --filter 'name=bench' --filter 'name=smoke' | xargs -r docker rm -f || true
+```
 
 **If the initial run(s) are unsuccessful (any tier red, benchmark harness fails to produce clean numbers, canary aborts, etc.):**
 
@@ -77,7 +93,9 @@ pg-web/
   - The upgrade test tier (synthetic self-upgrade smoke exercising ALTER + data preservation + post-upgrade HTTP, plus DDL validity on 15/16/17) is the gate that prevents "we only ever test fresh installs."
   - Update CLAUDE.md, DEPLOYMENT.md (and TESTING.md) when the policy or mechanism changes. Cross-reference from ROADMAP/OVERVIEW as needed.
 - **Demo app as living documentation.** When adding or extending flows in `examples/todo/`, include substantial, high-quality comments (especially in the `.sql` handler files). The comments should explain the pattern being demonstrated, why certain choices were made, how the pieces fit together, and how a user would apply the same approach in their own app. The demo app is not just test coverage and E2E validation — it is the primary way developers learn real usage patterns by reading the source. If a new feature lands in the companion app without good explanatory comments, the feature is not complete.
-- **Performance characterization is part of the process.** The `bench/` harness (`bench/run.sh`, `docs/BENCHMARKS.md`) is the reproducible way to measure throughput, tail latency, and head-of-line blocking on the real serving path (using `oha`, dedicated workloads, and Docker resource constraints for the 1-vCPU/2-GiB tier). For any change touching the HTTP request path, SPI per request, response generation, Tera, routing, or concurrency, the **required** validation is a full run via the single command with the benchmark enabled: `RUN_BENCH=1 scripts/test-all.sh` (this also runs the constrained 1-vCPU/2GiB variant). The HOLB experiment is the primary empirical check for the single-threaded worker model. Re-run it (and update BENCHMARKS.md) as the "before/after" proof when the worker architecture or hot path changes. Partial benchmark runs are not sufficient.
+- **Performance characterization is part of the process.** The `bench/` harness (`bench/run.sh`, `docs/BENCHMARKS.md`) is the reproducible way to measure throughput, tail latency, and head-of-line blocking on the real serving path (using `oha`, dedicated workloads, and Docker resource constraints for the 1-vCPU/2-GiB tier). For any change touching the HTTP request path, SPI per request, response generation, Tera, routing, or concurrency, the **required** validation is a full run via the single command with the benchmark enabled: `RUN_BENCH=1 scripts/test-all.sh` (this also runs the constrained 1-vCPU/2GiB variant inside the *same* invocation, after the main tiers + reclaim). The HOLB experiment is the primary empirical check for the single-threaded worker model. Re-run it (and update BENCHMARKS.md) as the "before/after" proof when the worker architecture or hot path changes. Partial benchmark runs are not sufficient.
+
+  **Never** launch the plain and `RUN_BENCH=1` variants (or two agents) in parallel background jobs — they contend on :8080. Use the integrated `RUN_BENCH=1 scripts/test-all.sh` form or run them strictly sequentially. The harness now includes a lockfile guard + early pgrx cleanup + unique smoke directories to make this safe.
 - **Handoff prompts (prompts/)**: Active work orders (013–020) live here. 015 (this benchmark harness + the multi-worker design) is the model: the benchmark step is independently valuable and was done first; the design is written up even if implementation is deferred. When implementing something from a prompt, also update the "bibles" (this file + `docs/internal/DEVELOPER-GUIDE.md`) with any new rituals, constraints, or gotchas. Completion of prompt work is gated on a full clean `scripts/test-all.sh` run (all 5 tiers) in addition to the companion-app rule (including good explanatory comments in the demo flows — see Coding practices).
 - **Response contract v2 (013)**: Handlers may now return a `$pgweb` envelope (via `pgweb.respond`/`redirect`/`json`/`set_cookie`) for status/headers/cookies/ct/redirects. No marker = legacy behavior (mandatory byte-identical compat for todo/site). Raw-text routes may declare `RETURNS json` (envelope or plain JSON body); template routes still require `json`. Router detects; http layer maps to Axum (denylist on hop-by-hop). Livereload is now ct-aware. This is Phase-1-completing infrastructure (unblocks Phase 2 auth + real JSON APIs). Every new envelope feature must add a flow to `examples/todo/`.
 - **Phase discipline.** We are in **Phase 1** (Synchronous Core). Do not add Phase 2+ features (auth/RLS, job queues, dashboard) into Phase 1 code paths. Stage them properly. Prompt 015 benchmark work is phase-neutral and was deliberately done early.
@@ -91,7 +109,7 @@ pg-web/
 ## Session rituals
 
 - **Before writing non-trivial code** — read the relevant `docs/*.md` section first. If your change touches an invariant above, raise a flag and wait for human confirmation.
-- **Benchmark + full test bookends on every major task.** (See the "Critical startup gate for major tasks" section near the very top of this file — right after Mission — first. That gate is non-negotiable.) At the *beginning* of each major task (handoff prompt work, non-trivial feature, hot-path change, refactor, or anything touching request path / SPI / routing / concurrency / templating / dev watcher), run the full tests and (where applicable) benchmarks via `scripts/test-all.sh` (plus `RUN_BENCH=1 scripts/test-all.sh` or `bench/run.sh` for perf-sensitive work). Re-run the benchmarks and tests *again* at the *end* of the task. When you signal task completeness at the end of your message, you **must** include:
+- **Benchmark + full test bookends on every major task.** (See the "Critical startup gate for major tasks" section near the very top of this file — right after Mission — first. That gate is non-negotiable.) At the *beginning* of each major task (handoff prompt work, non-trivial feature, hot-path change, refactor, or anything touching request path / SPI / routing / concurrency / templating / dev watcher), run the full tests and (where applicable) benchmarks **sequentially** via `scripts/test-all.sh` (plus `RUN_BENCH=1 scripts/test-all.sh` or `bench/run.sh` for perf-sensitive work). Re-run the benchmarks and tests *again* at the *end* of the task. When you signal task completeness at the end of your message, you **must** include:
   - Before and after scores (tier-by-tier test counts + pass/fail, wall times, and benchmark metrics such as req/s, tail latencies, and head-of-line blocking results, referencing the harness output or `docs/BENCHMARKS.md`).
   - Any tests that failed, plus root cause.
   - New tests that were added (and in which files).

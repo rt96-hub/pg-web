@@ -133,6 +133,21 @@ docker image inspect rtaylor96/pg-web:latest >/dev/null \
     || fail "image rtaylor96/pg-web:latest not found — run \`bash scripts/build-image.sh\` (or \`pg-web up\` in an app dir to pull it)"
 ok "docker + image + binary all present"
 
+# Early port contention check. :8080 fights are almost always caused by:
+# - a stray pgrx dev PG (BGW), or
+# - another scripts/test-all.sh / smoke-cli / bench run still holding the port.
+# The main test-all.sh now has a flock guard + early stop_pgrx_dev_pg and
+# unique SMOKE_DIR. If you see this, run the hygiene steps from CLAUDE.md.
+if command -v curl >/dev/null && curl -sf http://localhost:8080/ >/dev/null 2>&1; then
+    echo "  WARNING: something is already responding on http://localhost:8080/"
+    echo "           (This will likely cause 'port already bound' or wrong content later.)"
+    echo "           Recommended hygiene (run in your shell before the gate):"
+    echo "             cargo pgrx stop pg17 || true"
+    echo "             pkill -f 'test-all.sh|smoke-cli.sh|bench/run.sh' || true"
+    echo "             docker ps -q --filter 'name=pg-web' --filter 'name=bench' --filter 'name=smoke' | xargs -r docker rm -f || true"
+    echo "           Or ensure only one scripts/test-all.sh is running (the script now uses a lockfile)."
+fi
+
 # Snapshot the *local* image ID we intend to test (prompt 025 integrity).
 # After `up` we assert the compose stack is running exactly this image,
 # not whatever `docker compose pull` (or a prior tag) would have resolved to.

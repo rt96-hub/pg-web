@@ -17,6 +17,10 @@
 # This is what CI should invoke.
 set -euo pipefail
 
+# Defaults that must be available even for very early cleanup calls (e.g. the
+# stop_pgrx_dev_pg we invoke right after the lock).
+PG_MAJOR="${PG_MAJOR:-17}"
+
 # macOS: hold a power assertion for the duration of the run. A full run is
 # 30+ minutes; without this, an unattended Mac enters "Maintenance Sleep"
 # and freezes every tier mid-flight — and because sleep also pauses the
@@ -40,6 +44,57 @@ if [[ "${TEST_TS:-}" == "1" ]]; then
         exec > >(perl -ne 'chomp; print "[" . localtime() . "] $_\n"; $|=1;' ) 2>&1
     fi
 fi
+
+# Serialize the entire harness. Concurrent test-all.sh runs (plain + RUN_BENCH=1,
+# or multiple agents/background jobs) are the #1 source of :8080 port fights
+# (pgrx dev PG BGW + smoke-cli compose + bench compose all want the same port)
+# and /tmp/pg-web-smoke races.
+#
+# We use a portable mkdir-based lock (works on Linux + macOS; mkdir is atomic).
+# This is the recommended way to run the gate (see updated CLAUDE.md).
+# If you really must bypass (e.g. debugging a hung previous run), set FORCE=1.
+LOCKDIR="/tmp/pg-web-test-all.lockdir"
+cleanup_lock() {
+    rmdir "$LOCKDIR" 2>/dev/null || true
+}
+trap cleanup_lock EXIT INT TERM
+
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    # Stale lock detection: if the dir exists but no recent activity, or the
+    # owning process is gone, we can advise the user.
+    echo "ERROR: Another scripts/test-all.sh appears to be running (lock dir $LOCKDIR)."
+    echo "       Wait for it to finish, or remove the dir manually after verifying no other run is active."
+    echo "       To bypass (risky, may still contend on :8080): FORCE=1 $0 $*"
+    if [[ "${FORCE:-}" != "1" ]]; then
+        exit 1
+    fi
+    echo "       FORCE=1 in effect — proceeding (you may see port or smoke-dir races)."
+    # Try to take over
+    rmdir "$LOCKDIR" 2>/dev/null || true
+    mkdir "$LOCKDIR" 2>/dev/null || true
+fi
+
+# Portable stop function (defined early so the call below works even if the
+# original definition appears later in the file).
+stop_pgrx_dev_pg() {
+    local pg_ctl data_dir
+    pg_ctl=$(ls -1 "$HOME/.pgrx/${PG_MAJOR}."*/pgrx-install/bin/pg_ctl 2>/dev/null | head -1)
+    data_dir="$HOME/.pgrx/data-${PG_MAJOR}"
+    if [[ -z "$pg_ctl" || ! -d "$data_dir" ]]; then
+        return 0
+    fi
+    if ! "$pg_ctl" -D "$data_dir" status >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "  stopping pgrx dev PG (holding :8080) — data dir preserved"
+    "$pg_ctl" -D "$data_dir" -m immediate stop >/dev/null
+}
+
+# Early aggressive cleanup of anything that could be holding :8080 from a
+# previous (crashed or parallel) run. We do this *before* any tier work and
+# again before Tier 4. This is the main defense against pgrx dev PG + smoke
+# stack contention when following the (now sequential) bookend ritual.
+stop_pgrx_dev_pg
 
 # Timing + status table (prompt 025). We always emit a one-line summary per tier
 # at the end, plus wall durations. STRICT (or CI) turns any soft failure into
@@ -103,19 +158,7 @@ echo
 # pg_ctl isn't in PATH in a default pgweb user shell — pgrx installs
 # it at ~/.pgrx/<PG_MAJOR>.<minor>/pgrx-install/bin/pg_ctl. We glob on
 # the minor version because it changes (17.8 → 17.9 → 17.10 …).
-stop_pgrx_dev_pg() {
-    local pg_ctl data_dir
-    pg_ctl=$(ls -1 "$HOME/.pgrx/${PG_MAJOR}."*/pgrx-install/bin/pg_ctl 2>/dev/null | head -1)
-    data_dir="$HOME/.pgrx/data-${PG_MAJOR}"
-    if [[ -z "$pg_ctl" || ! -d "$data_dir" ]]; then
-        return 0
-    fi
-    if ! "$pg_ctl" -D "$data_dir" status >/dev/null 2>&1; then
-        return 0
-    fi
-    echo "  stopping pgrx dev PG (holding :8080) — data dir preserved"
-    "$pg_ctl" -D "$data_dir" -m immediate stop >/dev/null
-}
+# (stop_pgrx_dev_pg definition is hoisted near the top of the script for early calls)
 
 # Auto-rebuild the test image when extension source / Dockerfile /
 # init scripts are newer than the image. The bake-into-image install SQL
@@ -346,6 +389,12 @@ stop_pgrx_dev_pg
 echo
 echo "== Tier 4 — CLI black-box smoke (scripts/smoke-cli.sh) =="
 t4_start=$(date +%s)
+# Use a unique smoke directory by default (PID-based). This lets multiple
+# sequential runs (or the integrated RUN_BENCH=1 path) coexist without
+# clobbering /tmp/pg-web-smoke or its docker compose project.
+# Users can still override with SMOKE_DIR=... if they want a stable name.
+: "${SMOKE_DIR:=/tmp/pg-web-smoke-$$}"
+export SMOKE_DIR
 bash "$REPO_ROOT/scripts/smoke-cli.sh"
 t4_dur=$(( $(date +%s) - t4_start ))
 record_tier "tier4" "PASS" "$t4_dur"
