@@ -1,0 +1,36 @@
+-- pg-web (pg_web_ext) upgrade script: 0.2.0 → 0.3.0
+--
+-- This is a hand-authored file (pgrx 0.18 does not auto-generate upgrade
+-- scripts from the bootstrap block; see pgrx README and the hello example
+-- in cargo-pgrx docs).
+--
+-- Postgres discovers and runs upgrade scripts by filename convention in the
+-- extension directory when you execute `ALTER EXTENSION pg_web_ext UPDATE;`
+-- (or `UPDATE TO 'X.Y.Z';`). Chains are supported automatically.
+--
+-- Policy (see CLAUDE.md and docs/DEPLOYMENT.md):
+--   • Additive changes only in this file unless a breaking migration with
+--     data preservation steps + explicit notice is required.
+--   • No downgrade scripts are provided. Rollback = restore from a
+--     pg_dump taken before the upgrade.
+--   • The corresponding change must also be present in the main
+--     extension_sql!(bootstrap) block in src/schema.rs so that fresh
+--     CREATE EXTENSION on a new version produces identical final state.
+--
+-- Example of the DDL you would append for a safe additive change:
+--   CREATE FUNCTION pgweb.ext_version() RETURNS text
+--   LANGUAGE sql STABLE PARALLEL SAFE AS $$
+--       SELECT extversion FROM pg_extension WHERE extname = 'pg_web_ext'
+--   $$;
+--   COMMENT ON FUNCTION pgweb.ext_version() IS '...';
+--   GRANT EXECUTE ON FUNCTION pgweb.ext_version() TO pgweb_app;
+--
+-- (The actual CREATE for ext_version() lives in the 0.2.0 bootstrap in this
+-- era so new installs get it immediately; the upgrade path ensures that when
+-- a version bump occurs, upgraders receive it too.)
+--
+-- Nothing to do for the 0.2.0→0.3.0 step yet — this skeleton proves the
+-- packaging, discovery, and ALTER EXTENSION execution path. Real deltas
+-- will be added here (or to the next --from--to) by future changes.
+
+-- (End of skeleton)

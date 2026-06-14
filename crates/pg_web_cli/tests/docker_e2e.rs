@@ -1753,3 +1753,218 @@ fn large_asset_below_new_cap_round_trips() {
     );
     assert_eq!(returned, payload, "round-trip bytes match");
 }
+
+/// Tier 3 extension upgrade path test (018.2).
+///
+/// Exercises the real `ALTER EXTENSION pg_web_ext UPDATE` mechanism with
+/// user data present:
+/// - Boot the image (now ships hand-authored upgrade scripts alongside the
+///   pgrx-generated install SQL).
+/// - `pg-web push` the companion app (creates routes, templates, the
+///   migrations ledger, `pgweb.deployments`, and user tables from the demo
+///   migration).
+/// - Write a synthetic additive upgrade script (`--0.2.0--0.2.0-test`) into
+///   the container's extension dir (the exact location the runtime COPY
+///   placed the real ones).
+/// - Run `ALTER EXTENSION pg_web_ext UPDATE TO '0.2.0-test';`.
+/// - Assert: marker from the upgrade script is present, prior pushed data +
+///   framework rows (`deployments`, routes, etc.) are intact, and the app
+///   still serves HTTP.
+///
+/// The synthetic DDL is deliberately pure-portable (table + insert) so the
+/// same pattern can be used to validate upgrade script syntax against PG 15/16
+/// stock containers in the future (no .so load required for the test delta).
+/// The main exercise here is against the bundled PG 17 image (the one that
+/// actually ships).
+///
+/// This is the "self-upgrade smoke" the prompt accepts for the first
+/// implementation (full previous-image vs. current can be added once two
+/// real published versions with scripts exist).
+#[test]
+#[ignore = "tier 3 E2E — Docker + rtaylor96/pg-web:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
+            --test docker_e2e -- --ignored`."]
+fn extension_upgrade_preserves_data_and_serves() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(IMAGE, TAG)
+        .with_exposed_port(5432.tcp())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start test image container (rtaylor96/pg-web)");
+
+    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let db_url = format!(
+        "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
+    );
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+    wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
+
+    // Push the real companion app (migrations + push) so we have a realistic
+    // set of user data + framework rows that must survive the upgrade.
+    let todo_app = todo_app_dir();
+    pg_web_cli::migrate::apply(&todo_app, &db_url).expect("migrate apply for upgrade test");
+    pg_web_cli::push::push(&todo_app, &db_url).expect("push for upgrade test");
+
+    // Pre-upgrade sanity: deployments ledger has at least the push we just did,
+    // and the demo serves its empty state.
+    let mut pg = postgres::Client::connect(&db_url, postgres::NoTls).expect("connect for pre-upgrade checks");
+    let pre_deploy_count: i64 = pg
+        .query_one("SELECT COUNT(*) FROM pgweb.deployments", &[])
+        .expect("count deployments pre")
+        .get(0);
+    assert!(
+        pre_deploy_count >= 1,
+        "expected at least one deployment row from the push, got {pre_deploy_count}"
+    );
+    drop(pg);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    let pre_body = get(&client, &base_url, "/");
+    assert!(
+        pre_body.contains("No todos yet") || pre_body.contains("todo"),
+        "pre-upgrade app should serve demo content, got: {pre_body}"
+    );
+
+    // Now the core of the 018.2 test: simulate an in-place upgrade.
+    // We write a synthetic additive script (a marker table + row) using the
+    // exact naming convention the packaging produces, then drive ALTER
+    // EXTENSION. This exercises script discovery, Postgres' upgrade graph
+    // resolver, execution inside the extension's transaction model, and
+    // preservation of prior state.
+    //
+    // NOTE: the target version string is a throwaway test value; the real
+    // scripts will be named for the actual cargo version bumps (e.g.
+    // 0.2.0--0.3.0).
+    let upgrade_script_name = "pg_web_ext--0.2.0--0.2.0-test.sql";
+    // The share path inside the *runtime* image (PG_MAJOR=17 in the bundled image).
+    let ext_dir = "/usr/share/postgresql/17/extension";
+    let script_path = format!("{ext_dir}/{upgrade_script_name}");
+
+    let synthetic_ddl = r#"
+-- Synthetic additive upgrade script for the 018.2 self-upgrade smoke test.
+-- Must be side-effect free enough to be re-runnable in spirit (IF NOT EXISTS
+-- + plain INSERT is fine for the test assertion).
+CREATE TABLE IF NOT EXISTS pgweb._0182_upgrade_test (
+    id   serial PRIMARY KEY,
+    note text NOT NULL
+);
+INSERT INTO pgweb._0182_upgrade_test (note)
+VALUES ('018.2 synthetic upgrade script executed via ALTER EXTENSION');
+"#;
+
+    // Write the script via host temp + docker cp (more reliable than heredoc
+    // through ExecCommand for multi-line content in this harness).
+    let tmp = tempfile::NamedTempFile::new().expect("temp script file");
+    fs::write(tmp.path(), synthetic_ddl).expect("write temp upgrade script");
+    let cp_status = Command::new("docker")
+        .args([
+            "cp",
+            tmp.path().to_str().unwrap(),
+            &format!("{}:{}", container.id(), script_path),
+        ])
+        .status()
+        .expect("docker cp synthetic upgrade script");
+    assert!(
+        cp_status.success(),
+        "docker cp of synthetic upgrade script must succeed"
+    );
+
+    // Ensure the PG server process (runs as non-root "postgres" user inside
+    // the image) can read the script we just cp'd. The baked extension files
+    // from Dockerfile are world-readable; our runtime cp may not be.
+    let chmod_status = Command::new("docker")
+        .args(["exec", container.id(), "chmod", "0644", &script_path])
+        .status()
+        .expect("docker exec chmod on upgrade script");
+    assert!(
+        chmod_status.success(),
+        "chmod 0644 on the synthetic upgrade script must succeed so the server can read it during ALTER EXTENSION"
+    );
+
+    // Drive the ALTER EXTENSION using the in-container psql (talks to
+    // 127.0.0.1:5432 inside the container, where the extension dir is visible
+    // to the server).
+    let alter_cmd = format!(
+        "psql -U postgres -d {} -v ON_ERROR_STOP=1 -c \"ALTER EXTENSION pg_web_ext UPDATE TO '0.2.0-test';\"",
+        POSTGRES_DB
+    );
+    let mut alter_res = container
+        .exec(ExecCommand::new(vec!["sh".to_string(), "-c".to_string(), alter_cmd]))
+        .expect("exec ALTER EXTENSION for upgrade test");
+    let alter_stderr = String::from_utf8_lossy(
+        &alter_res.stderr_to_vec().expect("alter stderr"),
+    )
+    .into_owned();
+    assert_eq!(
+        alter_res.exit_code().expect("alter exit"),
+        Some(0),
+        "ALTER EXTENSION UPDATE must succeed; stderr: {alter_stderr}"
+    );
+
+    // Post-upgrade assertions via host-mapped connection (same pattern as
+    // other docker_e2e tests).
+    let mut pg = postgres::Client::connect(&db_url, postgres::NoTls).expect("connect post-upgrade");
+
+    // 1. The synthetic marker from the upgrade script exists and has our row.
+    let marker_count: i64 = pg
+        .query_one(
+            "SELECT COUNT(*) FROM pgweb._0182_upgrade_test WHERE note LIKE '%018.2 synthetic%'",
+            &[],
+        )
+        .expect("count upgrade marker")
+        .get(0);
+    assert_eq!(
+        marker_count, 1,
+        "upgrade script marker row must have been inserted by ALTER EXTENSION"
+    );
+
+    // 2. Pre-existing pushed data survived (deployments count at least what we had).
+    let post_deploy_count: i64 = pg
+        .query_one("SELECT COUNT(*) FROM pgweb.deployments", &[])
+        .expect("count deployments post")
+        .get(0);
+    assert!(
+        post_deploy_count >= pre_deploy_count,
+        "deployments ledger must be preserved across upgrade (pre={}, post={})",
+        pre_deploy_count, post_deploy_count
+    );
+
+    // 3. Framework tables that the CLI and router depend on are still there
+    //    and have the pushed content (spot-check routes).
+    let route_count: i64 = pg
+        .query_one("SELECT COUNT(*) FROM pgweb.routes", &[])
+        .expect("count routes post")
+        .get(0);
+    assert!(
+        route_count >= 1,
+        "routes table (and pushed content) must survive upgrade"
+    );
+
+    // 4. The app is still serving (basic smoke + demo content).
+    drop(pg);
+    let post_body = get(&client, &base_url, "/");
+    assert!(
+        post_body.contains("No todos yet") || post_body.contains("todo"),
+        "post-upgrade the app must still serve the pushed demo content, got: {post_body}"
+    );
+
+    // (Optional) also spot-check that we can see the framework version helper
+    // added in this era; it is present in the bootstrap for this image.
+    let mut pg = postgres::Client::connect(&db_url, postgres::NoTls).unwrap();
+    let _ver: Option<String> = pg
+        .query_one("SELECT pgweb.ext_version()", &[])
+        .ok()
+        .and_then(|r| r.get(0));
+    // Existence is nice-to-have for this test; the main point is the ALTER path + data survival.
+}

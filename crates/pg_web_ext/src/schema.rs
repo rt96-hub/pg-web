@@ -515,6 +515,22 @@ $fn$;
 COMMENT ON FUNCTION pgweb.json(JSONB, INT, JSONB, JSONB) IS
     'Return a JSON payload with explicit Content-Type: application/json (and optional status/headers/cookies). The payload is serialized into the envelope body.';
 
+-- Extension version exposure (018.2 research item, useful for 018.1
+-- readiness probes and future observability). Returns the installed
+-- version recorded in pg_extension (i.e. what `CREATE EXTENSION` or the
+-- last successful `ALTER EXTENSION ... UPDATE` set it to for this DB).
+-- This is distinct from the `default_version` in the .control file (the
+-- latest version the server advertises for new CREATEs / UPDATE targets).
+--
+-- STABLE (catalog lookup), PARALLEL SAFE, not STRICT (no NULL input).
+CREATE FUNCTION pgweb.ext_version() RETURNS text
+LANGUAGE sql STABLE PARALLEL SAFE AS $$
+    SELECT extversion FROM pg_extension WHERE extname = 'pg_web_ext'
+$$;
+
+COMMENT ON FUNCTION pgweb.ext_version() IS
+    'Return the currently installed pg_web_ext version (from pg_extension.extversion). Useful for health/readiness probes and observability.';
+
 -- Serving role (pgweb_app) grants. These must come *after* all CREATE TABLE
 -- and CREATE FUNCTION statements in this bootstrap block so the objects
 -- exist when GRANT runs. This is the minimal set the request path needs
@@ -539,6 +555,7 @@ GRANT EXECUTE ON FUNCTION pgweb.respond(TEXT, INT, JSONB, TEXT, JSONB) TO pgweb_
 GRANT EXECUTE ON FUNCTION pgweb.set_cookie(TEXT, TEXT, JSONB) TO pgweb_app;
 GRANT EXECUTE ON FUNCTION pgweb.redirect(TEXT, INT, JSONB) TO pgweb_app;
 GRANT EXECUTE ON FUNCTION pgweb.json(JSONB, INT, JSONB, JSONB) TO pgweb_app;
+GRANT EXECUTE ON FUNCTION pgweb.ext_version() TO pgweb_app;
 
 COMMENT ON SCHEMA pgweb IS 'pg-web framework tables. Managed by the extension and CLI; do not modify directly.';
 "#,

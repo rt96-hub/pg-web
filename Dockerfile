@@ -67,6 +67,17 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
       --features pg${PG_MAJOR} --no-default-features \
       --pg-config /usr/bin/pg_config
 
+# Hand-authored upgrade scripts (018.2 — extension upgrade path).
+# pgrx emits only the base install script (pg_web_ext--<ver>.sql from the
+# bootstrap extension_sql!); we copy our --from--to files into the same
+# share dir so the runtime stage's wildcard COPY (line ~99) ships both.
+# This establishes the real `ALTER EXTENSION pg_web_ext UPDATE` mechanism.
+# Use an intermediate dir + RUN cp so the optional glob + || true is valid
+# shell (plain COPY directives do not support trailing shell syntax).
+COPY crates/pg_web_ext/upgrades/ /tmp/pgweb-upgrades/
+RUN cp /tmp/pgweb-upgrades/pg_web_ext--*--*.sql /usr/share/postgresql/${PG_MAJOR}/extension/ 2>/dev/null || true \
+ && rm -rf /tmp/pgweb-upgrades
+
 # CLI binary (Session 5 F.3) — `pg-web init/push/migrate/dev/env/check/up/down`.
 # Built into the same image so `docker compose exec postgres pg-web push --dir /app`
 # works from inside the compose network without publishing :5432 to the host.
