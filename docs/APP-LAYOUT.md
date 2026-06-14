@@ -18,20 +18,22 @@ Which half you ship determines the pipeline:
 | `.html` + `.sql`       | Handler returns `json` → Tera renders template with it.      | Most pages; auto-escape safe by default  |
 | `.sql` only            | Handler returns `text` (verbatim) *or* a response envelope → router applies status/headers/cookies/ct + body. | HTMX fragments; JSON APIs; redirects; no-content |
 
-## Phase 1 method filenames
+## Method filenames (directory-as-route)
 
-Phase 1 supports **GET** and **POST** only. Other verbs land in Phase 2+.
+Every method is expressed as a filename stem under its route directory. `index` is the GET spelling (by convention); the rest are literal.
 
-| Filename stem | HTTP method | Notes                                                     |
-|---------------|-------------|-----------------------------------------------------------|
-| `index`       | GET         | The one GET spelling. Matches Apache/Nginx web tradition. |
-| `post`        | POST        |                                                           |
-| `put`         | PUT         | Reserved — rejected until Phase 2+.                       |
-| `patch`       | PATCH       | Reserved — rejected until Phase 2+.                       |
-| `delete`      | DELETE      | Reserved — rejected until Phase 2+.                       |
-| `get`         | —           | Reserved. Use `index` for GET; `push` rejects `get.*`.    |
-| `head`        | —           | Reserved. Auto-derived from GET later.                    |
-| `options`     | —           | Reserved.                                                 |
+| Filename stem | HTTP method | Notes |
+|---------------|-------------|-------|
+| `index`       | GET         | The conventional GET handler for the directory. |
+| `post`        | POST        | |
+| `put`         | PUT         | |
+| `patch`       | PATCH       | |
+| `delete`      | DELETE      | |
+| `get`         | —           | Reserved. Use `index` for GET; `pg-web push` rejects `get.*`. |
+| `head`        | HEAD        | **Auto-derived** (never author a `head.sql`). The server resolves the matching GET route/asset and returns identical headers with an empty body. |
+| `options`     | OPTIONS     | **Auto-derived** (never author an `options.sql`). The server returns 204 with `Allow:` listing the methods that have rows (or implicit GET/HEAD for assets) for a matching path pattern, plus OPTIONS itself. HEAD is included when GET exists. |
+
+Filenames are case-sensitive lowercase. `POST.html` is not recognized. HEAD/OPTIONS have no authorable files to avoid divergence from their GET twins.
 
 Filenames are case-sensitive lowercase. `POST.html` is not recognized.
 
@@ -60,7 +62,7 @@ pages/
     └── index.sql           GET /posts   handler: SELECT posts → JSON
 ```
 
-### HTMX todo app
+### HTMX todo app (with real DELETE via method stem)
 
 ```
 pages/
@@ -70,10 +72,23 @@ pages/
 │   ├── post.html           POST /todos           fragment template (new <li>)
 │   └── post.sql            POST /todos           handler: INSERT, returns JSON
 ├── todos/toggle/
+│   ├── post.html           POST /todos/toggle    fragment template (updated <li>)
 │   └── post.sql            POST /todos/toggle    handler: UPDATE, returns text <li>
-└── todos/delete/
-    └── post.sql            POST /todos/delete    handler: DELETE, returns text ''
+└── todos/[id]/
+    ├── index.html          GET /todos/:id        detail template
+    ├── index.sql           GET /todos/:id        handler: SELECT one (capture in path_params)
+    └── delete.sql          DELETE /todos/:id     handler: DELETE, returns '' (text mode)
 ```
+
+The delete button in the list (and the fragments returned by post/toggle) now uses the idiomatic:
+
+```html
+<button hx-delete="/todos/{{ todo.id }}"
+        hx-target="closest li"
+        hx-swap="outerHTML">Delete</button>
+```
+
+(See examples/todo/ for the exact buttons + the explanatory comments in `[id]/delete.sql`.) The old `POST /todos/delete` + body-id workaround (and its `todos/delete/post.sql`) has been removed.
 
 ## Naming derivation (exact)
 

@@ -73,15 +73,18 @@ examples/todo/
         ├── toggle/
         │   ├── post.html               # POST /todos/toggle — updated <li>
         │   └── post.sql                # POST /todos/toggle — UPDATE
-        └── delete/
-            └── post.sql                # POST /todos/delete — text mode
+        └── [id]/
+            ├── index.{html,sql}        # GET /todos/:id detail view
+            └── delete.sql              # DELETE /todos/:id — text mode (real HTTP method)
 ```
 
-Four routes, three modes:
+Five routes (four user + _404), three modes:
 
-- **Dynamic** (JSON → Tera): `GET /`, `POST /todos`, `POST /todos/toggle`
+- **Dynamic** (JSON → Tera): `GET /`, `POST /todos`, `POST /todos/toggle`, `GET /todos/:id`
 - **Static** (template, no SQL): `GET /_404` (served on route miss)
-- **Raw text** (SQL only, no template): `POST /todos/delete` — returns `''`
+- **Raw text** (SQL only, no template): `DELETE /todos/:id` (via pages/todos/[id]/delete.sql) — returns `''`
+
+The delete flow now uses a real `DELETE` (prompt 017-A) instead of the `POST /todos/delete` workaround. The UI buttons use `hx-delete="/todos/{{ id }}"`.
 
 ## Teaching material
 

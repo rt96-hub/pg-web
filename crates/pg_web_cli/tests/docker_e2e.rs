@@ -167,6 +167,10 @@ fn full_todo_crud_flow() {
         "index should now include the new todo, got: {body}"
     );
 
+    // (017-A HEAD/OPTIONS coverage is in the server hot path + http layer; E2E uses the
+    // published image which may lag source until scripts/test-all.sh forces rebuild-image.
+    // The delete step below exercises the new DELETE route + handler.)
+
     // --- Validation UX: empty / whitespace-only title → inline error ---
     // The table's CHECK (length(trim(title)) > 0) is caught by the
     // handler's EXCEPTION WHEN check_violation; response is 200 with an
@@ -258,13 +262,11 @@ fn full_todo_crud_flow() {
         "toggle response should retain title, got: {body}"
     );
 
-    // --- Delete ---
+    // --- Delete (017-A: real DELETE /todos/:id via pages/todos/[id]/delete.sql + hx-delete in UI) ---
     let resp = client
-        .post(format!("{base_url}/todos/delete"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("id=1")
+        .delete(format!("{base_url}/todos/1"))
         .send()
-        .expect("POST /todos/delete");
+        .expect("DELETE /todos/1");
     assert_eq!(resp.status(), 200);
     let body = resp.text().unwrap();
     assert!(

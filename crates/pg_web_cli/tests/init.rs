@@ -105,9 +105,10 @@ fn template_todo_extracts_expected_tree() {
         "pages/todos/post.sql",
         "pages/todos/toggle/post.html",
         "pages/todos/toggle/post.sql",
-        "pages/todos/delete/post.sql",
         "pages/todos/[id]/index.html",
         "pages/todos/[id]/index.sql",
+        // 017-A: real method DELETE under the dynamic capture dir (replaces old /todos/delete post workaround)
+        "pages/todos/[id]/delete.sql",
         "migrations/0001_create_todos.sql",
         "public/styles.css",
         "pgweb.toml",

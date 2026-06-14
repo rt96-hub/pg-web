@@ -28,16 +28,17 @@ fn todo_pages_scans_cleanly() {
         vec![
             // _404 stem becomes method='404' with path_pattern='/'.
             ("404".to_string(), "/".to_string()),
+            // 017-A: real DELETE /todos/:id via pages/todos/[id]/delete.sql (DELETE sorts before GET)
+            ("DELETE".to_string(), "/todos/:id".to_string()),
             ("GET".to_string(), "/".to_string()),
             // 014 companion coverage: debug route for timeout/role floor (raw-text).
             ("GET".to_string(), "/debug/timeout".to_string()),
             // Response contract v2 demo routes (013 companion coverage).
             ("GET".to_string(), "/seeother".to_string()),
             ("GET".to_string(), "/status".to_string()),
-            // Dynamic route: [id] in the filesystem → :id in the pattern.
+            // Dynamic route: [id] in the filesystem → :id in the pattern. (GET)
             ("GET".to_string(), "/todos/:id".to_string()),
             ("POST".to_string(), "/todos".to_string()),
-            ("POST".to_string(), "/todos/delete".to_string()),
             ("POST".to_string(), "/todos/toggle".to_string()),
         ]
     );
@@ -62,8 +63,8 @@ fn todo_pages_modes_are_as_documented() {
     assert!(by_key("POST", "/todos").is_full());
     // POST /todos/toggle: dynamic mode (shared <li> template + handler).
     assert!(by_key("POST", "/todos/toggle").is_full());
-    // POST /todos/delete: raw-text mode (no sibling .html).
-    assert!(by_key("POST", "/todos/delete").is_raw_text());
+    // DELETE /todos/:id (via pages/todos/[id]/delete.sql): raw-text mode (no sibling .html).
+    assert!(by_key("DELETE", "/todos/:id").is_raw_text());
     // _404: static mode (template only, no handler — push will synthesize).
     assert!(by_key("404", "/").is_static());
     // 013 v2 demos: raw-text (sql only, envelope-capable via RETURNS json).
@@ -84,7 +85,8 @@ fn todo_handler_names_match_spec() {
             ("GET", "/todos/:id") => "pgweb.pages__todos__$id__index",
             ("POST", "/todos") => "pgweb.pages__todos__post",
             ("POST", "/todos/toggle") => "pgweb.pages__todos__toggle__post",
-            ("POST", "/todos/delete") => "pgweb.pages__todos__delete__post",
+            // 017-A: DELETE via capture dir + delete stem → $id__delete
+            ("DELETE", "/todos/:id") => "pgweb.pages__todos__$id__delete",
             ("404", "/") => "pgweb.pages___404",
             // 013 response contract v2 demo routes (raw text + envelope helpers).
             ("GET", "/seeother") => "pgweb.pages__seeother__index",

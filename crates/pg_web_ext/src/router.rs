@@ -103,7 +103,30 @@ fn serve_in_tx(method: &str, path: &str, mut req: Value) -> ServeOutcome {
     // SAFETY: serve_in_tx runs on the bgworker SPI thread inside transaction.
     let _timeout_guard = unsafe { crate::request_timeout::Guard::arm() };
 
-    match lookup_route(method, path) {
+    // 017-A: auto OPTIONS (before route lookup). Returns 204 + Allow: listing
+    // the distinct methods whose path_pattern matches the request (dynamic
+    // patterns are resolved via the same ParsedPattern logic). HEAD is
+    // advertised when GET exists for the resource. OPTIONS itself is always
+    // added when any method matches.
+    if method == "OPTIONS" {
+        if let Ok(allow) = list_allowed_methods(path) {
+            if !allow.is_empty() {
+                return ServeOutcome::Response {
+                    status: 204,
+                    body: String::new(),
+                    content_type: None,
+                    headers: vec![("Allow".to_string(), allow)],
+                    cookies: vec![],
+                };
+            }
+        }
+        // No matching resource methods → fall through to normal 404 handling.
+    }
+
+    let is_head = method == "HEAD";
+    let lookup_method = if is_head { "GET" } else { method };
+
+    match lookup_route(lookup_method, path) {
         Err(e) => return ServeOutcome::Error(e),
         Ok(Some(matched)) => {
             // 018.1: framework default health/readiness routes are
@@ -122,9 +145,12 @@ fn serve_in_tx(method: &str, path: &str, mut req: Value) -> ServeOutcome {
         Ok(None) => {}
     }
 
-    // GET-only: if no page route matched, try static assets. Pages win
+    // GET/HEAD: if no page route matched, try static assets. Pages win
     // over assets by design — user-defined routes are more specific.
-    if method == "GET" {
+    // HEAD requests are resolved against the GET route/asset (see is_head above)
+    // and the HTTP layer strips the body while preserving headers (including
+    // a correct Content-Length for the entity).
+    if lookup_method == "GET" {
         match lookup_asset(path) {
             Err(e) => return ServeOutcome::Error(e),
             Ok(Some(asset)) => {
@@ -604,6 +630,62 @@ fn fetch_method_routes(method: &str) -> Result<Vec<RouteRow>, ServeError> {
         }
         Ok(out)
     })
+}
+
+/// 017-A: return a comma-separated Allow header value for OPTIONS.
+/// Collects every method whose stored path_pattern matches the request path
+/// (using the same ParsedPattern logic as lookup so dynamic routes like
+/// /todos/:id are correctly reported for a request to /todos/42).
+/// Always includes OPTIONS when any method matches. Includes HEAD when GET
+/// matches (HEAD is auto-supported for anything that has a GET twin or asset).
+fn list_allowed_methods(path: &str) -> Result<String, ServeError> {
+    let query = "SELECT method, path_pattern FROM pgweb.routes";
+    let req_segs = request_segments(path);
+    let rows: Vec<(String, String)> = Spi::connect(|client| -> Result<Vec<(String, String)>, ServeError> {
+        let table = client
+            .select(query, None, &[])
+            .map_err(|e| ServeError::Other {
+                message: e.to_string(),
+            })?;
+        let mut out = Vec::new();
+        for row in table {
+            let m: String = row
+                .get(0)
+                .map_err(|e| ServeError::Other { message: e.to_string() })?
+                .ok_or_else(|| ServeError::Other {
+                    message: "null method in pgweb.routes".into(),
+                })?;
+            let pp: String = row
+                .get(1)
+                .map_err(|e| ServeError::Other { message: e.to_string() })?
+                .ok_or_else(|| ServeError::Other {
+                    message: "null path_pattern in pgweb.routes".into(),
+                })?;
+            out.push((m, pp));
+        }
+        Ok(out)
+    })?;
+
+    let mut methods: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (m, pp) in rows {
+        if let Ok(pat) = ParsedPattern::parse(&pp) {
+            if pat.matches(&req_segs).is_some() {
+                methods.insert(m);
+            }
+        }
+    }
+
+    if methods.is_empty() {
+        return Ok(String::new());
+    }
+
+    // HEAD is auto for anything GET can serve (routes or assets).
+    if methods.contains("GET") {
+        methods.insert("HEAD".to_string());
+    }
+    methods.insert("OPTIONS".to_string());
+
+    Ok(methods.into_iter().collect::<Vec<_>>().join(", "))
 }
 
 fn lookup_route(method: &str, path: &str) -> Result<Option<MatchedRoute>, ServeError> {

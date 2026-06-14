@@ -6,8 +6,7 @@
             hx-vals='{"id": {{ todo.id }}}'
             hx-target="closest li"
             hx-swap="outerHTML">Toggle</button>
-    <button hx-post="/todos/delete"
-            hx-vals='{"id": {{ todo.id }}}'
+    <button hx-delete="/todos/{{ todo.id }}"
             hx-target="closest li"
             hx-swap="outerHTML">Delete</button>
   </span>

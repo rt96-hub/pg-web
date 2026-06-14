@@ -156,6 +156,7 @@ async fn handle(req: Request) -> Response {
     // Clone what the dev page needs before `router::serve` consumes `req_value`.
     let req_for_dev_page = req_value.clone();
 
+    let is_head = method == "HEAD";
     match router::serve(&method, &path, req_value) {
         ServeOutcome::Response {
             status,
@@ -178,7 +179,12 @@ async fn handle(req: Request) -> Response {
                 body
             };
 
-            let mut resp = (code, body).into_response();
+            // 017-A HEAD: send identical headers/status but empty body.
+            // We set an explicit Content-Length to the *would-have-been* entity
+            // size so clients see the correct value even though no body bytes
+            // are transferred.
+            let resp_body = if is_head { String::new() } else { body.clone() };
+            let mut resp = (code, resp_body).into_response();
             // Always set the (possibly envelope-provided) content type.
             if let Ok(val) = ct.parse() {
                 resp.headers_mut().insert(header::CONTENT_TYPE, val);
@@ -188,6 +194,12 @@ async fn handle(req: Request) -> Response {
                     header::CONTENT_TYPE,
                     "text/html; charset=utf-8".parse().unwrap(),
                 );
+            }
+
+            if is_head {
+                if let Ok(cl) = body.len().to_string().parse::<header::HeaderValue>() {
+                    resp.headers_mut().insert(header::CONTENT_LENGTH, cl);
+                }
             }
 
             // Apply additional headers from the envelope (denylisted ones
@@ -217,7 +229,13 @@ async fn handle(req: Request) -> Response {
             body,
             content_type,
             etag,
-        } => render_asset(&path, body, content_type, etag, if_none_match.as_deref()),
+        } => {
+            // 017-A: for HEAD we still pass the full entity bytes to render_asset
+            // (so it can compute the correct Content-Length and handle 304 ETag
+            // checks) but tell it not to emit the body bytes.
+            let emit_body = !is_head;
+            render_asset(&path, body, content_type, etag, if_none_match.as_deref(), emit_body)
+        }
         ServeOutcome::Error(err) => render_error(err, &method, &path, &req_for_dev_page),
     }
 }
@@ -225,6 +243,10 @@ async fn handle(req: Request) -> Response {
 /// Build the static-asset response. ETag + Cache-Control are always
 /// emitted; if the request's `If-None-Match` matches the stored ETag,
 /// skip the body and return 304.
+///
+/// `emit_body`: when false (HEAD requests) we send headers + correct
+/// Content-Length for the entity but no body bytes. 304 responses are
+/// body-less regardless.
 ///
 /// Cache-Control policy:
 /// - dev:  `no-cache` — browser always revalidates via ETag, so a
@@ -237,10 +259,11 @@ async fn handle(req: Request) -> Response {
 ///   cache forever without revalidation. Component H.
 fn render_asset(
     request_path: &str,
-    body: Vec<u8>,
+    entity: Vec<u8>,
     content_type: String,
     etag: String,
     if_none_match: Option<&str>,
+    emit_body: bool,
 ) -> Response {
     let env = BackgroundWorker::transaction(settings::current_env);
     let fingerprinted = is_fingerprinted_url(request_path);
@@ -249,6 +272,9 @@ fn render_asset(
         (Env::Production, true) => "public, max-age=31536000, immutable",
         (Env::Production, false) => "public, max-age=0, must-revalidate",
     };
+
+    let send_body = if emit_body { entity.clone() } else { vec![] };
+    let content_length = entity.len();
 
     if if_none_match.map(|v| v == etag).unwrap_or(false) {
         return (
@@ -267,8 +293,9 @@ fn render_asset(
             (header::CONTENT_TYPE, content_type.as_str()),
             (header::ETAG, etag.as_str()),
             (header::CACHE_CONTROL, cache_control),
+            (header::CONTENT_LENGTH, content_length.to_string().as_str()),
         ],
-        body,
+        send_body,
     )
         .into_response()
 }

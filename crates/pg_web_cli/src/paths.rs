@@ -21,7 +21,8 @@ use walkdir::WalkDir;
 /// `CREATE OR REPLACE FUNCTION` statement from a handler file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteEntry {
-    /// HTTP method, uppercased. Phase 1: "GET" or "POST".
+    /// HTTP method, uppercased. Supported: GET (via index), POST, PUT, PATCH, DELETE.
+    /// HEAD and OPTIONS are auto-derived by the extension (not authorable stems).
     pub method: String,
     /// URL path pattern this entry serves.
     pub route: String,
@@ -140,7 +141,7 @@ pub fn scan(pages_dir: &Path) -> Result<Vec<RouteEntry>> {
 /// land in Phase 2+. `parent_rel` being empty means "at pages/ root."
 fn validate_stem(stem: &str, parent_rel: &Path, path: &Path) -> Result<()> {
     match stem {
-        "index" | "post" => Ok(()),
+        "index" | "post" | "put" | "patch" | "delete" => Ok(()),
         "_404" => {
             if parent_rel.as_os_str().is_empty() {
                 Ok(())
@@ -156,8 +157,9 @@ fn validate_stem(stem: &str, parent_rel: &Path, path: &Path) -> Result<()> {
             "{}: 'get' is reserved — use 'index' for GET handlers",
             path.display()
         ),
-        "put" | "patch" | "delete" | "head" | "options" => bail!(
-            "{}: '{stem}' is reserved for Phase 2+; Phase 1 supports 'index' (GET) and 'post' (POST) only",
+        "head" | "options" => bail!(
+            "{}: '{stem}' is auto-derived by the server (HEAD mirrors GET with no body; \
+             OPTIONS returns Allow:); do not author a '{stem}.sql' file",
             path.display()
         ),
         other => bail!(
@@ -173,6 +175,9 @@ fn method_for_stem(stem: &str) -> &'static str {
     match stem {
         "index" => "GET",
         "post" => "POST",
+        "put" => "PUT",
+        "patch" => "PATCH",
+        "delete" => "DELETE",
         "_404" => "404",
         _ => unreachable!("validate_stem should have rejected this"),
     }
@@ -514,6 +519,9 @@ mod tests {
     fn method_for_stem_known() {
         assert_eq!(method_for_stem("index"), "GET");
         assert_eq!(method_for_stem("post"), "POST");
+        assert_eq!(method_for_stem("put"), "PUT");
+        assert_eq!(method_for_stem("patch"), "PATCH");
+        assert_eq!(method_for_stem("delete"), "DELETE");
         assert_eq!(method_for_stem("_404"), "404");
     }
 
@@ -556,10 +564,19 @@ mod tests {
     }
 
     #[test]
-    fn validate_stem_rejects_future_methods() {
-        for stem in ["put", "patch", "delete", "head", "options"] {
+    fn validate_stem_accepts_mutation_methods() {
+        for stem in ["put", "patch", "delete"] {
+            assert!(validate_stem(stem, root(), Path::new("pages/x/y.sql")).is_ok(), "stem {stem} should be accepted");
+            assert!(validate_stem(stem, nested(), Path::new("pages/todos/x.sql")).is_ok());
+        }
+    }
+
+    #[test]
+    fn validate_stem_rejects_auto_only_methods() {
+        for stem in ["head", "options"] {
             let err = validate_stem(stem, root(), Path::new("pages/x/y.sql")).unwrap_err();
-            assert!(format!("{err:#}").contains("Phase 2+"));
+            let msg = format!("{err:#}");
+            assert!(msg.contains("auto-derived"), "for {stem}: {msg}");
         }
     }
 
@@ -640,7 +657,8 @@ mod tests {
         write(&pages, "todos/post.html", "new row");
         write(&pages, "todos/post.sql", "insert");
         write(&pages, "todos/toggle/post.sql", "update");
-        write(&pages, "todos/delete/post.sql", "delete");
+        // Real DELETE via dynamic capture + method stem (prompt 017-A): pages/todos/[id]/delete.sql → DELETE /todos/:id
+        write(&pages, "todos/[id]/delete.sql", "delete handler");
         // v2 response contract demo routes (prompt 013 companion coverage)
         write(&pages, "status/index.sql", "json api via pgweb.json");
         write(&pages, "see-other/index.sql", "redirect via pgweb.redirect");
@@ -659,11 +677,11 @@ mod tests {
         assert_eq!(
             summary,
             vec![
+                ("DELETE", "/todos/:id", false, true),
                 ("GET", "/", true, true),
                 ("GET", "/see-other", false, true),
                 ("GET", "/status", false, true),
                 ("POST", "/todos", true, true),
-                ("POST", "/todos/delete", false, true),
                 ("POST", "/todos/toggle", false, true),
             ]
         );
@@ -681,12 +699,13 @@ mod tests {
     }
 
     #[test]
-    fn scan_rejects_reserved_stem_nested() {
+    fn scan_rejects_auto_only_stem() {
         let tmp = tempfile::tempdir().unwrap();
         let pages = tmp.path().join("pages");
-        write(&pages, "todos/put.sql", "UPDATE ...");
+        write(&pages, "todos/head.sql", "HEAD ...");
         let err = scan(&pages).unwrap_err();
-        assert!(format!("{err:#}").contains("Phase 2+"));
+        let msg = format!("{err:#}");
+        assert!(msg.contains("auto-derived"), "msg: {msg}");
     }
 
     #[test]

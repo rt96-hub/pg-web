@@ -211,7 +211,7 @@ pg-web push                # syncs routes / templates / handlers / assets
 # visit http://localhost:8080
 ```
 
-Add a todo via the form; toggle or delete via the row buttons. Every click round-trips through Postgres and renders the reply fragment server-side.
+Add a todo via the form; toggle or delete via the row buttons (the Delete button uses a real `DELETE /todos/:id` with `hx-delete`). Every click round-trips through Postgres and renders the reply fragment server-side.
 
 Iterate:
 
@@ -233,8 +233,9 @@ pg-web dev                 # watches pages/ + public/, auto-pushes on save
 │       ├── post.html               # POST /todos — success <li> or OOB error
 │       ├── post.sql                # catches check_violation inline
 │       ├── toggle/post.{html,sql}  # outerHTML swap on toggle
-│       ├── delete/post.sql         # raw-text, empty body
-│       └── [id]/index.{html,sql}   # GET /todos/:id detail view
+│       └── [id]/
+│           ├── index.{html,sql}    # GET /todos/:id detail view
+│           └── delete.sql          # DELETE /todos/:id (real method, text mode '')
 └── public/
     └── styles.css
 ```
@@ -243,7 +244,7 @@ Three handler dispatch modes exercised:
 
 - **Dynamic** (JSON → Tera): `GET /`, `POST /todos`, `POST /todos/toggle`, `GET /todos/:id`
 - **Static** (template, no SQL handler): `GET /_404`
-- **Raw text** (SQL only, no sibling template): `POST /todos/delete`
+- **Raw text** (SQL only, no sibling template): `DELETE /todos/:id` (via pages/todos/[id]/delete.sql)
 
 ## What to look at
 

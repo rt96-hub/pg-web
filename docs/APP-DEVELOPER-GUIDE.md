@@ -60,7 +60,7 @@ my-blog/
 
 **Rule 1 — Directory = route.** `pages/todos/toggle/` → `/todos/toggle`. A flat `pages/about.html` is an error; use `pages/about/index.html`.
 
-**Rule 2 — Filename = HTTP method.** `index` = GET, `post` = POST. Other method stems (`put`/`patch`/`delete`/`head`/`options`) are reserved for Phase 2+ and rejected today.
+**Rule 2 — Filename = HTTP method.** `index` = GET, `post` = POST, `put`/`patch`/`delete` = the matching verbs. `head` and `options` are auto-derived by the server (HEAD mirrors the GET route or asset with no body; OPTIONS returns 204 + Allow:); do not create `head.*` or `options.*` files.
 
 **Rule 3 — Each method has two files, either optional.**
 
