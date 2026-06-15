@@ -49,6 +49,21 @@ changes may land in minor releases.
   selectors updated to the new package name `-p pg-web`. Internal lib name and
   directory unchanged.
 
+### Fixed
+- **HTTP worker self-terminated 8 seconds after startup** (regression from the
+  prompt-016 graceful-shutdown change). The 8s drain cap wrapped the entire
+  `axum::serve` future, but `with_graceful_shutdown` resolves only after SIGTERM
+  — so the timer fired 8s after *startup* and the worker exited. Because the exit
+  was clean (code 0), the postmaster never restarted it (despite
+  `bgw_restart_time = 5s`), so every deployment's HTTP server stopped answering
+  ~8 seconds after boot. The 8s budget now starts only once SIGTERM is observed,
+  so the server runs for the postmaster's full lifetime and still drains
+  in-flight work for ≤8s on shutdown. New tier-3 regression test
+  `worker_serves_past_drain_cap` (idles past the cap, asserts the worker still
+  serves). This was also the true cause of the benchmark's "72%-then-0%" results
+  (previously misattributed to "the single-worker reality"); post-fix the bench
+  reports ~100% success on every workload with a real HOLB before/after.
+
 ## [0.2.0] — 2026-04-25
 
 Polish release. Closes the deferred-from-0.1 work items, sharpens the

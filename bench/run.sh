@@ -82,14 +82,20 @@ else
     BENCH_TIER_LABEL="unconstrained (full host)"
 fi
 
-# Regression guard (prompt 028). Deliberately loose to start (open question #4):
-# the current baseline shows the documented single-worker reality — high-c and
-# HOLB legs drive client connection errors / 0% success, and even some c1 legs
-# are noisy under the 1c/2g cgroup. So the ONLY default-active gate is "is the
-# server serving at all": the static c1 workload must achieve at least this
-# success %. Below it ⇒ catastrophic regression (worker not binding / crash).
-# 029 should establish a stable green baseline and then tighten (per-workload
-# p99 ceilings + req/s floors). Tune via BENCH_MIN_STATIC_SUCCESS.
+# Regression guard. Currently a conservative success floor; the data-driven
+# tightening is specced in prompts/030_*.md.
+#
+# History: this gate used to be justified by "the loaded legs always report 0%
+# success / n/a — that's the single-worker reality the benchmark exposes." That
+# was WRONG. It was a product regression: the HTTP worker self-terminated 8s
+# after startup (the prompt-016 graceful-shutdown timeout wrapped the *whole*
+# serve future). Fixed in 729eb93; on a healthy server EVERY leg now reports
+# ~100% success with real p50/p99. Had this floor been >=99% it would have caught
+# that regression immediately instead of letting it pass as "expected 0%". The
+# default stays 1% only until the 030 tightening (>=99% per-workload success
+# floor + p99 ceilings + req/s floors on successful requests, per tier, plus a
+# loud regression banner shown at any verbosity) lands.
+# Tune via BENCH_MIN_STATIC_SUCCESS.
 BENCH_MIN_STATIC_SUCCESS="${BENCH_MIN_STATIC_SUCCESS:-1}"   # percent
 
 mkdir -p "$RESULTS_DIR"
@@ -250,9 +256,10 @@ SQL
 }
 
 # Parse an oha result file into "reqs succ p50 p99" (p50/p99 normalised to ms,
-# or "n/a" when oha printed NaN — which happens when ~all requests errored, the
-# documented single-worker-under-load behaviour). oha's percentile lines carry
-# an adaptive unit (ns / µs / ms / s), so we convert by unit.
+# or "n/a" when oha printed NaN — which happens when ~all requests errored, i.e.
+# the server isn't actually serving (e.g. the worker-self-termination regression
+# fixed in 729eb93); a healthy run yields real numbers). oha's percentile lines
+# carry an adaptive unit (ns / µs / ms / s), so we convert by unit.
 _parse_oha() {
   # LC_ALL=C: oha result files can carry NUL / non-ASCII bytes (and the µs unit);
   # C locale keeps awk byte-safe and forces '.' decimal parsing.
@@ -362,7 +369,7 @@ run_workloads() {
 # Compact end-of-run table (always printed; the raw histograms stay in the files).
 print_bench_table() {
   echo
-  echo "== Bench summary — tier: $BENCH_TIER_LABEL (p50/p99 in ms; n/a = oha NaN under load) =="
+  echo "== Bench summary — tier: $BENCH_TIER_LABEL (p50/p99 in ms; n/a = oha NaN ≈ server not serving) =="
   local i
   for i in "${!BENCH_LABELS[@]}"; do
     printf "  %-22s req/s=%-11s succ=%-8s p50=%-9s p99=%-9s\n" \
@@ -380,7 +387,7 @@ print_holb() {
   read -r ur us up50 up99 <<<"$(_parse_oha "$RESULTS_DIR/d-fast-under-slow.txt")"
   printf "  baseline (no interference): req/s=%-11s succ=%-8s p50=%-9s p99=%-9s\n" "$pr" "$ps" "$pp50" "$pp99"
   printf "  under slow injector (-q 3): req/s=%-11s succ=%-8s p50=%-9s p99=%-9s\n" "$ur" "$us" "$up50" "$up99"
-  echo "  (single-worker: p99 degrades / success craters under the slow handler; multi-worker should keep it flat)"
+  echo "  (single-worker: the fast path's p99 degrades sharply under the slow handler; multi-worker should keep it flat)"
 }
 
 # Threshold check → THRESHOLD_NOTE + return 0(ok)/1(fail). See BENCH_MIN_STATIC_SUCCESS.

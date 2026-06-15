@@ -216,7 +216,7 @@ PGWEB-BENCH tier=1c-2g        workloads=12 threshold="a-static-c1 success 72.07%
   under slow injector (-q 3): req/s=21441.6604 succ=0.00% p50=n/a p99=n/a
 ```
 
-(The 0 % success / `n/a` p99 on the loaded legs is the documented single-worker-under-`oha` reality, unchanged from the pre-028 baseline — `a-static-c1` is the only reliably-serving leg and is the threshold guard.)
+(**Correction, 2026-06-15:** the 0 % success / `n/a` p99 on the loaded legs was **not** "single-worker reality" — it was a worker-self-termination regression (the worker exited 8 s after startup; introduced by 016), fixed in commit `729eb93`. Post-fix every leg reports ~100 % success with real p50/p99. The acceptance numbers in this block predate the fix; see `docs/BENCHMARKS.md` and `prompts/030_*.md`.)
 
 **Failure path** (one deliberately-failing tier-2b test, default `errors` mode) — auto-surfaces the captured `failures:` block, names the test, keeps running the later tiers, and the verdict is unmissable + the exit code non-zero:
 
@@ -273,6 +273,8 @@ F (recovery)  PGWEB - lock   RECLAIMED stale lock auto-reclaimed (owner pid=1564
               PGWEB - reclaim STEP   rm canary container 37eeba929e77
 ```
 
+(Correction, 2026-06-15: the `a-static-c1 success 72–73 %` in the D/E/H bench lines above is the **worker-self-termination regression** — the worker died 8 s after startup, so only the first workload partially served; fixed in `729eb93`, post-fix all legs are ~100 %. It did not affect those cells' idempotency conclusions (PASS / REUSED / RECLAIMED).)
+
 (Baseline note: the very first run before this work flaked once on tier 3 with `PortNotExposed` on the 14th container — a `testcontainers` race, not a product bug; re-runs were 14/14. The `host_port()` retry above eliminates it.)
 
 ## Environment knobs
@@ -288,7 +290,7 @@ F (recovery)  PGWEB - lock   RECLAIMED stale lock auto-reclaimed (owner pid=1564
 | `SKIP_IMAGE_CHECK` | unset | **Debugging-only**: `1` ⇒ skip the freshness check entirely (emits `image SKIP`). Risks testing a stale image — never on a normal run. |
 | `FORCE` | unset | **Debugging-only**: `1` ⇒ take over a held lock. No longer needed after a crash (the lock self-reclaims a dead owner). Only for a wedged lock you've manually verified is orphaned. |
 | `RUN_BENCH` | unset | `1` ⇒ append the 015 benchmark harness (unconstrained + 1 vCPU/2 GiB tiers). Self-heals + auto-rebuilds like the rest; no clean-up needed first. |
-| `BENCH_MIN_STATIC_SUCCESS` | `1` | Bench regression floor (percent): `a-static-c1` success below this ⇒ `PGWEB-BENCH … OVERALL=fail`. Deliberately loose — the single-worker reality drives 0 %/`n/a` on loaded legs, so a tight p99/req-s gate would false-alarm (see `docs/BENCHMARKS.md`). |
+| `BENCH_MIN_STATIC_SUCCESS` | `1` | Bench regression floor (percent): `a-static-c1` success below this ⇒ `PGWEB-BENCH … OVERALL=fail`. Currently loose (`1`); the old "0 %/`n/a` is single-worker reality" rationale was wrong — that was the worker-self-termination regression fixed in `729eb93`, and on a healthy server every leg is ~100 %. Tightening to a ≥ 99 % floor + p99 ceilings (+ a loud banner) is specced in `prompts/030_*.md` (see `docs/BENCHMARKS.md`). |
 | `SMOKE_DIR` | `/tmp/pg-web-smoke-<pid>` | Tier 4 scaffold dir (wiped each run; PID-based so sequential runs don't clobber). |
 | `PG_VERSION` | auto-detected | Override the exact PG minor `test-http.sh` targets (it globs `~/.pgrx/<major>.*` and picks the newest). |
 
