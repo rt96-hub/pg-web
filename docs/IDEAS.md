@@ -6,6 +6,36 @@ Entries are dated and should reference related prompts, roadmap items, and invar
 
 ---
 
+## Realtime data connections are a core expectation (cross-worker fan-out for DB → all UIs) (2026-06-14)
+
+**Owner direction (2026-06-14):** pg-web apps must be *fully supportive of real time data connections from day one*. If the database is updated (by a handler, a trigger, an external process, `pg-web push`, or anything else that can emit `NOTIFY`), the UI must reflect that change for **all** connected users, no matter which worker serves their HTTP connection or their long-lived SSE stream. The multi-worker concurrency model (SO_REUSEPORT + K BGWs) is required for throughput and head-of-line isolation, *but the design is forbidden from breaking this "everyone sees the update" property*.
+
+This is why the 015 prompt was updated in lockstep: the concurrency work order now carries a hard requirement that the livereload mechanism (and by extension the reusable ListenRouter + per-worker `run_listen_loop`) must deliver events across *all* workers. Postgres's native LISTEN/NOTIFY already does the cross-process broadcast; each worker running its own listener + local in-memory broadcast to the clients that landed on it via the kernel is the concrete path that satisfies the rule without introducing shared memory or a sidecar broker.
+
+**Future refinement (Phase 2 and beyond, explicitly deferred):** the initial carrier can be coarse (full page reload or CSS cache-bust for livereload today). Real app realtime will need to send *only the specific HTML elements / fragments that changed* and must be careful never to overwrite transient client state:
+- Do not clobber values in `<input>`, `<textarea>`, or other form controls that the user is actively editing.
+- Preserve focus, selection ranges, scroll position, and any in-flight HTMX/JS state.
+- Prefer morphing / oob-swap / fine-grained replacement strategies (e.g. Idiomorph or targeted `hx-swap-oob`) over blanket `location.reload()` or wholesale DOM replacement.
+
+The architecture (channel-aware ListenRouter per worker, triggered from DB NOTIFYs, reusable for both framework livereload/cache and app `pgweb_app_*` channels) is the invariant that makes the careful, non-destructive story possible later. The 015 concurrency design must keep this path open and correct under K workers.
+
+**References & related:**
+- `prompts/015_concurrency_throughput_and_benchmark.md` (the primary source of truth for the "every worker must listen" rule, the rejection of "K=1 in dev for livereload simplicity", updated current-behavior text, acceptance criteria, research tasks, and open questions around fan-out + macOS parity).
+- `docs/ROADMAP.md` (Phase 2: "App-level realtime subscriptions via SSE" reuses the Session-4 ListenRouter; "Handler-side `NOTIFY` helper").
+- `docs/BENCHMARKS.md` (records the Step-1 numbers; future re-runs under multi-worker must also exercise cross-worker notify delivery).
+- `crates/pg_web_ext/src/{listen_router.rs,livereload.rs,worker.rs}` (the per-BGW listener + ListenRouter; note that the listen task is now always-on, not dev-gated, precisely so cache + realtime work everywhere).
+- Current livereload implementation (injected script, `/_pgweb/livereload` SSE, `pg-web dev` post-push `NOTIFY`) is the v1 proof-of-concept for the larger expectation.
+- Invariant #4 (one request = one SPI tx) and #7 (async only inside BGWs) still hold; the fan-out work is all inside the worker processes.
+
+**Why this is recorded in IDEAS now:**
+The 015 prompt (and the benchmark harness) were originally framed around pure throughput + HOLB. The owner call-out makes the *realtime contract with app developers* a load-bearing constraint on that work. By writing it here and cross-linking into the active prompt, we ensure that future sessions touching workers, the listen loop, SO_REUSEPORT, or SSE paths treat "updates reach everyone" as non-negotiable rather than a nice-to-have that can be satisfied by "just run with K=1 in dev."
+
+When this graduates further it can move into ROADMAP Phase 2 acceptance criteria or a dedicated realtime prompt, but the concurrency foundation must already be right.
+
+*End of entry. The 015 prompt is the place that currently enforces the "multi-worker + cross-worker delivery" pairing.*
+
+---
+
 ## CLI-driven Framework Upgrades, Version Pinning, and Configurable Auto-Backup (2026-06-13)
 
 **Owner refinements (2026-06-13):**
