@@ -139,8 +139,10 @@ LABEL org.opencontainers.image.description="PostgreSQL with the pg_web_ext exten
 LABEL org.opencontainers.image.licenses="MIT OR Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/rt96-hub/pg-web"
 
-# Content hash of the watched build inputs (src, Dockerfile, Cargo.*, init script, examples).
-# Written by build-image.sh via --build-arg; used by test-all.sh ensure_image_fresh
-# to decide staleness (replaces pure mtime, which was fooled by git ops / re-tags).
+# Content hash of the build inputs — a whole-tree-minus-volatile-denylist sha256
+# (prompt 029; computed by compute_src_hash in scripts/lib/harness.sh). Written by
+# build-image.sh via --build-arg; test-all.sh AND bench/run.sh compare the tree's
+# hash to this LABEL to decide staleness (replaces the old mtime + enumerated-list
+# check, which was fooled by git ops / re-tags and could miss image-affecting files).
 ARG PGWEB_SRC_HASH=unknown
 LABEL pgweb.src_hash="${PGWEB_SRC_HASH}"

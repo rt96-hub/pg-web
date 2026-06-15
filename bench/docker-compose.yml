@@ -14,7 +14,10 @@
 
 services:
   postgres:
-    image: rtaylor96/pg-web:latest
+    # Unified image tag (prompt 029 #3): bench/run.sh exports PGWEB_IMAGE to the
+    # exact tag it freshness-checks, so the stack can never drift from the
+    # rebuilt image. Defaults to the shipped image when run by hand.
+    image: ${PGWEB_IMAGE:-rtaylor96/pg-web:latest}
     restart: "no"
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}

@@ -19,17 +19,68 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use testcontainers::core::{ExecCommand, IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::SyncRunner;
-use testcontainers::{GenericImage, ImageExt};
+use testcontainers::{Container, GenericImage, ImageExt};
 
-const IMAGE: &str = "rtaylor96/pg-web";
-const TAG: &str = "latest";
+/// The pg-web runtime image under test, as (name, tag). Defaults to the shipped
+/// `rtaylor96/pg-web:latest`, but honors `TEST_IMAGE` / `PGWEB_IMAGE` so a
+/// harness override (scripts/test-all.sh's unified tag, prompt 029 #3)
+/// propagates to tier 3 too — the canary builds/probes that tag, and this test
+/// then boots the very same one. Resolved once. The `#[ignore]` reason strings
+/// keep the literal name for human readability; only the runtime image follows
+/// the override.
+static IMAGE_REF: LazyLock<(String, String)> = LazyLock::new(|| {
+    let full = std::env::var("TEST_IMAGE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("PGWEB_IMAGE").ok().filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| "rtaylor96/pg-web:latest".to_string());
+    // Split the tag off the last ':' — but only when it's a real tag, not the
+    // `host:port/` of a registry reference.
+    match full.rsplit_once(':') {
+        Some((name, tag)) if !tag.is_empty() && !tag.contains('/') => {
+            (name.to_string(), tag.to_string())
+        }
+        _ => (full, "latest".to_string()),
+    }
+});
+fn image() -> &'static str {
+    &IMAGE_REF.0
+}
+fn tag() -> &'static str {
+    &IMAGE_REF.1
+}
+
 const POSTGRES_PASSWORD: &str = "testpw";
 const POSTGRES_DB: &str = "app";
+
+/// Resolve a container's mapped host port, retrying briefly before giving up.
+///
+/// `testcontainers`' `get_host_port_ipv4` occasionally returns `PortNotExposed`
+/// for a freshly-started container under sustained sequential churn on Docker
+/// Desktop — the container's port map isn't populated yet at query time. That
+/// transient flaked the 14th of 14 sequential tier-3 containers (the panic was
+/// at port resolution, before any product code ran). Retrying for a few seconds
+/// makes the suite reliably green run-to-run (prompt 029: "it's just flaky"
+/// stops being acceptable) without changing a single test expectation.
+fn host_port(container: &Container<GenericImage>, port: u16) -> u16 {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match container.get_host_port_ipv4(port.tcp()) {
+            Ok(p) => return p,
+            Err(e) => {
+                if Instant::now() >= deadline {
+                    panic!("{port} host port not resolved within deadline: {e:?}");
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+    }
+}
 
 /// Preflight: both Docker and the image must be present. Panic with a
 /// clear remediation path if not.
@@ -46,15 +97,16 @@ fn preflight_or_panic() {
         );
     }
 
+    let image_ref = format!("{}:{}", image(), tag());
     let image_ok = Command::new("docker")
-        .args(["image", "inspect", &format!("{IMAGE}:{TAG}")])
+        .args(["image", "inspect", &image_ref])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
     if !image_ok {
         panic!(
-            "tier 3 E2E requires image `{IMAGE}:{TAG}`. Build it with:\n\
-             \n    PGWEB_IMAGE=rtaylor96/pg-web:latest bash scripts/build-image.sh\n"
+            "tier 3 E2E requires image `{image_ref}`. Build it with:\n\
+             \n    bash scripts/build-image.sh\n"
         );
     }
 }
@@ -101,7 +153,7 @@ fn todo_app_dir() -> PathBuf {
 fn full_todo_crud_flow() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         // Wait for Postgres to log its "ready to accept connections" message —
@@ -116,12 +168,8 @@ fn full_todo_crud_flow() {
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
 
-    let pg_host_port = container
-        .get_host_port_ipv4(5432)
-        .expect("host port for 5432");
-    let http_host_port = container
-        .get_host_port_ipv4(8080)
-        .expect("host port for 8080");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
 
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
@@ -351,7 +399,7 @@ fn post_form(client: &reqwest::blocking::Client, base: &str, path: &str, body: &
 fn livereload_sse_chain_end_to_end() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -362,8 +410,8 @@ fn livereload_sse_chain_end_to_end() {
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
@@ -471,7 +519,7 @@ fn livereload_sse_chain_end_to_end() {
 fn push_f1_dry_run_with_migrate_and_deployments() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -482,8 +530,8 @@ fn push_f1_dry_run_with_migrate_and_deployments() {
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
@@ -677,7 +725,7 @@ fn copy_tree(src: &Path, dst: &Path) {
 fn dev_watcher_repushes_on_save() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -690,8 +738,8 @@ fn dev_watcher_repushes_on_save() {
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
 
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
 
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
@@ -852,7 +900,7 @@ fn dev_watcher_repushes_on_save() {
 fn push_reconciles_deleted_files() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -863,8 +911,8 @@ fn push_reconciles_deleted_files() {
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
@@ -967,7 +1015,7 @@ fn push_reconciles_deleted_files() {
 fn push_rejects_broken_tera_template() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -978,8 +1026,8 @@ fn push_rejects_broken_tera_template() {
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
@@ -1042,7 +1090,7 @@ fn push_rejects_broken_tera_template() {
 fn dev_error_page_surfaces_sql_exception_detail() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -1053,8 +1101,8 @@ fn dev_error_page_surfaces_sql_exception_detail() {
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
@@ -1158,7 +1206,7 @@ fn dev_error_page_surfaces_sql_exception_detail() {
 fn static_asset_serves_with_etag_and_revalidates() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -1169,8 +1217,8 @@ fn static_asset_serves_with_etag_and_revalidates() {
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
@@ -1275,7 +1323,7 @@ fn static_asset_serves_with_etag_and_revalidates() {
 fn push_rejects_missing_handler_function() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -1286,8 +1334,8 @@ fn push_rejects_missing_handler_function() {
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
@@ -1358,7 +1406,7 @@ fn push_rejects_missing_handler_function() {
 fn concurrent_pushes_all_commit() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -1369,8 +1417,8 @@ fn concurrent_pushes_all_commit() {
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
@@ -1448,7 +1496,7 @@ fn cli_in_image_can_push_from_inside() {
     let mount = Mount::bind_mount(host_app_str, "/app".to_string())
         .with_access_mode(testcontainers::core::AccessMode::ReadOnly);
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -1460,7 +1508,7 @@ fn cli_in_image_can_push_from_inside() {
         .with_mount(mount)
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let http_host_port = host_port(&container, 8080);
     let base_url = format!("http://127.0.0.1:{http_host_port}");
     wait_for_http(&base_url, Instant::now() + Duration::from_secs(60), Some(container.id()));
 
@@ -1548,7 +1596,7 @@ fn cli_in_image_can_push_from_inside() {
     // 4. Sanity: the deployment ledger should record this push as
     //    coming from inside the container — `from_host` is the
     //    container's hostname, NOT the dev box's hostname.
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
+    let pg_host_port = host_port(&container, 5432);
     let host_db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
@@ -1582,7 +1630,7 @@ fn cli_in_image_can_push_from_inside() {
 fn fingerprinted_assets_get_immutable_cache_control() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -1593,8 +1641,8 @@ fn fingerprinted_assets_get_immutable_cache_control() {
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
@@ -1701,7 +1749,7 @@ fn fingerprinted_assets_get_immutable_cache_control() {
 fn large_asset_below_new_cap_round_trips() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -1712,8 +1760,8 @@ fn large_asset_below_new_cap_round_trips() {
         .with_env_var("POSTGRES_DB", POSTGRES_DB)
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );
@@ -1788,7 +1836,7 @@ fn large_asset_below_new_cap_round_trips() {
 fn extension_upgrade_preserves_data_and_serves() {
     preflight_or_panic();
 
-    let image = GenericImage::new(IMAGE, TAG)
+    let image = GenericImage::new(image(), tag())
         .with_exposed_port(5432.tcp())
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -1800,8 +1848,8 @@ fn extension_upgrade_preserves_data_and_serves() {
         .start()
         .expect("start test image container (rtaylor96/pg-web)");
 
-    let pg_host_port = container.get_host_port_ipv4(5432).expect("5432 host port");
-    let http_host_port = container.get_host_port_ipv4(8080).expect("8080 host port");
+    let pg_host_port = host_port(&container, 5432);
+    let http_host_port = host_port(&container, 8080);
     let db_url = format!(
         "postgres://postgres:{POSTGRES_PASSWORD}@127.0.0.1:{pg_host_port}/{POSTGRES_DB}"
     );

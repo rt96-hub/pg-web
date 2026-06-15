@@ -10,24 +10,52 @@ One command runs everything:
 scripts/test-all.sh
 ```
 
-It exits non-zero on any failure and prints `All tests passed.` on success. Tiers:
+It reports like a build system (prompt 028): a paired `START`/`PASS|FAIL|SKIP` marker per phase, real `x/x` counts, and a single ASCII verdict line as the **last** output. The run is green **iff** that line says `OVERALL=PASS`:
 
-| Tier | Command | Tests (v0.2.0) |
+```
+PGWEB-RESULT  tier1=95/95 tier2a=6/6 tier2b=151/151 tier3=14/14 tier4=22/22 bench=skip  OVERALL=PASS
+```
+
+Counts are parsed from the real tool output (never hardcoded), so the numbers below are illustrative of the current tree, not a contract:
+
+| Tier | Command | Tests (current) |
 |---|---|---|
-| 1. SQL / pgrx  | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | **72** `#[pg_test]` — schema / seed / migrations / deployments ledger / settings helper / html_escape; ListenRouter + livereload; router contract + dynamic captures + asset lookup; error catalog + dev page; Tera classification; fingerprinted assets (H) |
-| 2a. HTTP smoke | `scripts/test-http.sh` (starts PG, polls `:8080`, runs `cargo test --test http_smoke`) | 2 `#[test]` — seeded `GET /` renders, unknown path returns default 404 body |
-| 2b. CLI        | `cargo test -p pg-web` | **143** — path scanner, migrate, push + reconcile + flags + retry (L), init, dev, env, check, stack, asset fingerprinting (H) |
-| 3. Docker E2E  | `cargo test -p pg-web --test docker_e2e -- --ignored` (requires Docker + `rtaylor96/pg-web:latest` — the current test image while `pgweb/postgres` namespace is pending) | **13 (+1)** — todo CRUD + dynamic routes; watcher; reconcile; error pages; assets + ETag; F.1 ledger; livereload; concurrent push retry (L); CLI-in-image (F.3); fingerprinted cache (H); 5 MiB assets (I); **extension upgrade path self-upgrade smoke (018.2)** |
-| 4. CLI smoke   | `scripts/smoke-cli.sh` | **19 sections** — full black-box walk of scaffold → up → push → 404 → dev error → prod 500 → assets → helpers → env → deployments → check → livereload (see `docs/OVERVIEW.md`) |
+| 1. SQL / pgrx  | `cargo pgrx test pg17` (from `crates/pg_web_ext/`) | **95** `#[pg_test]` — schema / seed / migrations / deployments ledger / settings helper / html_escape; ListenRouter + livereload; router contract + dynamic captures + asset lookup; error catalog + dev page; Tera classification; fingerprinted assets (H); RLS / serving-role contract |
+| 2a. HTTP smoke | `scripts/test-http.sh` (starts PG, polls `:8080`, runs `cargo test --test http_smoke`) | **6** `#[test]` — seeded `GET /` renders, unknown path → default 404, protected + default health/readiness probes |
+| 2b. CLI        | `cargo test -p pg-web --no-fail-fast` | **151** — path scanner, migrate, push + reconcile + flags + retry (L), init, dev, env, check, stack, asset fingerprinting (H) |
+| 3. Docker E2E  | `cargo test -p pg-web --test docker_e2e --no-fail-fast -- --ignored` (requires Docker + `rtaylor96/pg-web:latest` — the current test image while `pgweb/postgres` namespace is pending) | **14** — todo CRUD + dynamic routes; watcher; reconcile; error pages; assets + ETag; F.1 ledger; livereload; concurrent push retry (L); CLI-in-image (F.3); fingerprinted cache (H); 20 MiB assets (I); **extension upgrade path self-upgrade smoke (018.2)** |
+| 4. CLI smoke   | `scripts/smoke-cli.sh` | **22 sections** (auto-numbered) — full black-box walk of preflight → scaffold → up → push → 404 → dev error → prod 500 → assets → helpers → env → deployments → check → livereload (see `docs/OVERVIEW.md`) |
 
-**230+ Rust tests + 19-section smoke, all tiers green via `scripts/test-all.sh`.** Tier 3 hard-fails (no silent skip) if Docker or the test image (`rtaylor96/pg-web:latest` today) is missing — the image *is* the runtime artifact.
+**~270 Rust tests + 22-section smoke, all tiers green via `scripts/test-all.sh`.** Tier 3 hard-fails (no silent skip) if Docker or the test image (`rtaylor96/pg-web:latest` today) is missing — the image *is* the runtime artifact.
+
+### Output modes + the result contract (prompt 028)
+
+`TEST_MODE` (env) or `--errors`/`--short`/`--verbose` flags, honored by both `scripts/test-all.sh` and `bench/run.sh`:
+
+- **`errors` (default)** — compact markers + per-tier `x/x`; on any failure it auto-surfaces the *captured* detail for the failing items only (cargo `failures:` block / smoke section body / canary `docker logs` / breached bench threshold). It does **not** re-run anything — the detail is the capture, available instantly. Green phases stay one line.
+- **`short`** — compact only, never auto-expands. Still prints failing names, `n/m`, and the per-phase log path.
+- **`verbose`** — additionally streams all raw `cargo`/`docker`/`oha` output (today's behavior + the markers).
+
+Marker vocabulary (the stable ASCII keyword is the contract; the unicode glyph is decoration, ASCII under CI/non-TTY): `START`, `STEP`, `PASS`, `FAIL`, `SKIP`, and for the image phase `STALE` / `BUILD` / `BUILT` / `REUSED`, and `CANARY` for the tier-3 probe. The image decision is **always** explicit — exactly one of `REUSED (fresh …)` or the `STALE → BUILD → BUILT` triple; `build-image.sh` is never run with `>/dev/null` anymore. The benchmark prints per-workload one-liners + an HOLB before/after pair + a `PGWEB-BENCH … OVERALL=ok|fail` line.
+
+The verdict: `OVERALL=PASS` **iff** every mandatory tier is `x/x` with `failed=0` and none is `SKIP`/missing (`bench=skip` does not fail it; `bench=fail` does). A green claim must quote the `PGWEB-RESULT` line verbatim — `SKIP`, a missing count, `n<m`, or a missing line all read as NOT green. Per-phase combined output is captured to `$RUN_DIR` (default `/tmp/pg-web-test-all-<pid>/<phase>.log`, printed in the banner and kept after the run for post-hoc inspection).
 
 Env knobs: `PG_MAJOR=16 scripts/test-all.sh` targets a different Postgres major; the default is 17. Tier 3 panics with a remediation message if Docker or the image is missing — no silent-skip (the image is a shipped artifact; false green would undermine the tier). Note: the concrete tag is `rtaylor96/pg-web` (temporary) until the `pgweb` Docker Hub org + `pgweb/postgres` image name are finalized; the harness (build-image, test-all, smoke-cli, docker_e2e) now agree on the tag via `TEST_IMAGE` / `PGWEB_IMAGE`.
 
-Additional harness controls (prompt 025):
-- `STRICT=1 scripts/test-all.sh` (default when `CI` is set) — any tier failure produces a non-zero exit (while still running later tiers for signal).
+Additional harness controls (prompt 025/028):
+- `TEST_MODE=errors|short|verbose` (or `--errors`/`--short`/`--verbose`) — output verbosity (above). Default `errors`.
+- `STRICT=1 scripts/test-all.sh` (default when `CI` is set) — soft-tier (1/2a/3) or bench failure also produces a non-zero exit (while still running later tiers for signal). Hard tiers (2b, 4) and a failed image build are always fatal to the exit code.
 - `TEST_TS=1` — prefix every line of test-all.sh output with a wall-clock timestamp (aids stall diagnosis).
-- `REBUILD_IMAGE=1`, `SKIP_IMAGE_CHECK=1` — force or bypass the (now content-hash + mtime) image freshness gate.
+- `REBUILD_IMAGE=1`, `SKIP_IMAGE_CHECK=1`, `FORCE=1` — **debugging-only** overrides (force a rebuild / bypass the content-hash freshness gate / take over a held lock). The default path needs none of them; never use one to coax a run green (prompt 029).
+
+### Idempotency: the harness self-cleans, every run (prompt 029)
+
+`scripts/test-all.sh` and `bench/run.sh` are fully idempotent — they produce a correct result on a cold machine, on back-to-back runs, after editing any file, after a branch switch / `git stash`, and after a previous run was `kill -9`'d mid-flight — with **zero manual hygiene and zero flags**. The machinery is shared in `scripts/lib/harness.sh`:
+
+- **Self-healing cross-run lock.** A portable `mkdir` lock (`/tmp/pg-web-test-all.lockdir`) records the owner PID + start time. On contention it decides stale-vs-live: a dead owner (or a lock older than the max plausible run — a PID-reuse backstop) is auto-reclaimed with a `lock RECLAIMED` marker; only a genuinely-running concurrent run blocks. `FORCE=1` is no longer needed after a crash. test-all and bench share the *same* lock so they serialize against each other (the `:8080` hazard); a nested bench under `RUN_BENCH=1` skips it (no self-deadlock).
+- **Unconditional `reclaim_environment`** at the top of every run (while holding the lock, so it's safe to be aggressive): stops the pgrx dev PG; `docker rm -f`s **our own families only** — `pgweb-canary-*`, the `pg-web-smoke*` stacks, the `bench` compose project (scoped to its compose file), and orphaned tier-3 testcontainers matched by the `org.testcontainers` label *AND* our image — never a blanket prune; reaps stale `/tmp/pg-web-smoke*` + old per-run log dirs. It is **surgical** (unrelated containers are never touched) and a no-op on a clean machine.
+- **Unified content-hash image freshness.** One `compute_src_hash` — a whole-tree-minus-volatile-denylist `sha256sum` (~1–2 s) — is shared by `build-image.sh` (which bakes it into the `pgweb.src_hash` LABEL), `test-all.sh`, **and** `bench/run.sh`, so the label can never diverge from what the checkers compute. A changed tree ⇒ `STALE → BUILD → BUILT` (automatic, no flag); an unchanged tree ⇒ `REUSED`. There is no mtime fast-path anymore: it caused false rebuilds on `git stash`/checkout mtime noise and could miss content edits that didn't advance mtime. The denylist contains only volatile/scratch paths (`.git`, `target`, `bench/results`, `bench/bin`, `node_modules`, `.DS_Store`, `*.log`, `.env`) that can never affect the image, so no image-affecting input can be silently missed (the failure mode of the old enumerated file list). **`bench/run.sh` now rebuilds-on-stale automatically** — it previously had no freshness check and could silently benchmark an old binary.
+- **One image tag.** `TEST_IMAGE` / `PGWEB_IMAGE` resolve through the shared `pgweb_image` (default `rtaylor96/pg-web:latest`) across test-all, bench, `bench/docker-compose.yml`, build-image, smoke-cli, and `docker_e2e.rs` — no hardcoded-literal drift.
 
 ## CI integration
 

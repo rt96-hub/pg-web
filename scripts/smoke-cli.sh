@@ -13,7 +13,7 @@
 #
 # Preconditions:
 # - Docker daemon reachable (`docker --version` succeeds).
-# - Image `rtaylor96/pg-web:latest` (the current test/ dev image) exists locally
+# - The pg-web runtime image (the unified $IMAGE tag) exists locally
 #   (built by `scripts/build-image.sh`, or `pg-web up` pulled it).
 # - The `pg-web` binary is built at `target/debug/pg-web`.
 
@@ -24,16 +24,65 @@ BIN="$REPO_ROOT/target/debug/pg-web"
 SMOKE_DIR="${SMOKE_DIR:-/tmp/pg-web-smoke}"
 BASE_URL="http://localhost:8080"
 
+# Unified image tag (prompt 029 #3): source the shared lib so this smoke run
+# references the SAME image tag test-all.sh / build-image.sh use — no hardcoded
+# literal drift here. The stack itself comes up via `pg-web up` (the scaffold's
+# own compose); with no override $IMAGE equals that baked default, and the
+# image-ID integrity check after `up` confirms the container is exactly it.
+export PGWEB_REPO_ROOT="$REPO_ROOT"
+# shellcheck source=scripts/lib/harness.sh
+source "$REPO_ROOT/scripts/lib/harness.sh"
+IMAGE="$(pgweb_image)"
+
 # --- helpers --------------------------------------------------------
 
+# Colors only on an interactive TTY. Under scripts/test-all.sh this script's
+# stdout is captured to a file (not a TTY), so the per-run log stays clean of
+# escape codes (prompt 028).
+if [[ -t 1 ]]; then
+    C_BLUE=$'\033[1;34m'; C_GREEN=$'\033[32m'; C_RED=$'\033[31m'
+    C_BOLDGREEN=$'\033[1;32m'; C_RESET=$'\033[0m'
+else
+    C_BLUE=''; C_GREEN=''; C_RED=''; C_BOLDGREEN=''; C_RESET=''
+fi
+
+# Machine-parseable section markers (prompt 028). Each section emits:
+#   PGWEB-SMOKE step=<n> START name=<title>
+#   PGWEB-SMOKE step=<n> OK    name=<title> [<dur>s]   (on reaching the next step / end)
+#   PGWEB-SMOKE step=<n> FAIL  name=<title> reason=<...>   (on fail(); aborts)
+# and a final `PGWEB-SMOKE done sections=<n>`. test-all.sh counts these to report
+# tier 4 as a real x/x and to name the failing section without grepping 700 lines.
+# Section numbering is AUTOMATIC + monotonic — fixing the historical 16/16a/16b
+# numbering (prompt 025 #8): step() strips any legacy hardcoded "N." prefix from
+# the title, so the call sites need no renumbering.
+SMOKE_SECTION=0
+SMOKE_CUR_NAME=""
+SMOKE_CUR_START=0
+
+_smoke_close_ok() {
+    if [[ -n "$SMOKE_CUR_NAME" ]]; then
+        printf 'PGWEB-SMOKE step=%d OK name=%q [%ds]\n' \
+            "$SMOKE_SECTION" "$SMOKE_CUR_NAME" "$(( $(date +%s) - SMOKE_CUR_START ))"
+        SMOKE_CUR_NAME=""
+    fi
+}
+
 step() {
-    printf "\n\033[1;34m▸ %s\033[0m\n" "$*"
+    _smoke_close_ok
+    SMOKE_SECTION=$(( SMOKE_SECTION + 1 ))
+    local title="${1#[0-9]*. }"     # strip any legacy "N. " / "Na. " prefix
+    SMOKE_CUR_NAME="$title"
+    SMOKE_CUR_START=$(date +%s)
+    printf 'PGWEB-SMOKE step=%d START name=%q\n' "$SMOKE_SECTION" "$title"
+    printf "\n%s▸ %d. %s%s\n" "$C_BLUE" "$SMOKE_SECTION" "$title" "$C_RESET"
 }
 ok() {
-    printf "  \033[32m✓\033[0m %s\n" "$*"
+    printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$*"
 }
 fail() {
-    printf "  \033[31m✗\033[0m %s\n" "$*" >&2
+    printf "  %s✗%s %s\n" "$C_RED" "$C_RESET" "$*" >&2
+    printf 'PGWEB-SMOKE step=%d FAIL name=%q reason=%q\n' \
+        "$SMOKE_SECTION" "${SMOKE_CUR_NAME:-<none>}" "$*"
     exit 1
 }
 
@@ -129,29 +178,27 @@ http() {
 step "Preflight"
 [[ -x "$BIN" ]] || fail "pg-web binary missing: build with \`cargo build -p pg-web\` first"
 docker --version >/dev/null || fail "docker not available"
-docker image inspect rtaylor96/pg-web:latest >/dev/null \
-    || fail "image rtaylor96/pg-web:latest not found — run \`bash scripts/build-image.sh\` (or \`pg-web up\` in an app dir to pull it)"
-ok "docker + image + binary all present"
+docker image inspect "$IMAGE" >/dev/null \
+    || fail "image $IMAGE not found — run \`bash scripts/build-image.sh\` (or \`pg-web up\` in an app dir to pull it)"
+ok "docker + image ($IMAGE) + binary all present"
 
-# Early port contention check. :8080 fights are almost always caused by:
-# - a stray pgrx dev PG (BGW), or
-# - another scripts/test-all.sh / smoke-cli / bench run still holding the port.
-# The main test-all.sh now has a flock guard + early stop_pgrx_dev_pg and
-# unique SMOKE_DIR. If you see this, run the hygiene steps from CLAUDE.md.
+# Early port contention check. :8080 fights are almost always caused by a stray
+# pgrx dev PG (BGW) or another harness run still holding the port. As of prompt
+# 029 the entrypoints (test-all.sh / bench/run.sh) self-heal this: a self-healing
+# lock serializes runs and reclaim_environment frees :8080 before any tier — so
+# under the normal path this warning should never fire. If it does, a non-harness
+# process holds :8080; identify it with `lsof -nP -iTCP:8080 -sTCP:LISTEN`.
 if command -v curl >/dev/null && curl -sf http://localhost:8080/ >/dev/null 2>&1; then
-    echo "  WARNING: something is already responding on http://localhost:8080/"
+    echo "  WARNING: something is already responding on http://localhost:8080/ before the smoke stack came up."
     echo "           (This will likely cause 'port already bound' or wrong content later.)"
-    echo "           Recommended hygiene (run in your shell before the gate):"
-    echo "             cargo pgrx stop pg17 || true"
-    echo "             pkill -f 'test-all.sh|smoke-cli.sh|bench/run.sh' || true"
-    echo "             docker ps -q --filter 'name=pg-web' --filter 'name=bench' --filter 'name=smoke' | xargs -r docker rm -f || true"
-    echo "           Or ensure only one scripts/test-all.sh is running (the script now uses a lockfile)."
+    echo "           The entrypoints auto-reclaim our own families; a squatter here is a non-pg-web process."
+    echo "           Identify it:  lsof -nP -iTCP:8080 -sTCP:LISTEN"
 fi
 
 # Snapshot the *local* image ID we intend to test (prompt 025 integrity).
 # After `up` we assert the compose stack is running exactly this image,
 # not whatever `docker compose pull` (or a prior tag) would have resolved to.
-EXPECTED_IMAGE_ID=$(docker image inspect rtaylor96/pg-web:latest --format '{{.Id}}' 2>/dev/null || echo "")
+EXPECTED_IMAGE_ID=$(docker image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null || echo "")
 
 # Wipe stale state.
 rm -rf "$SMOKE_DIR"
@@ -721,4 +768,6 @@ rm -rf "$SMOKE_DIR/pages/checktpl"
 
 # --- done -----------------------------------------------------------
 
-printf "\n\033[1;32m✓ smoke-cli: all assertions passed\033[0m\n"
+_smoke_close_ok
+printf 'PGWEB-SMOKE done sections=%d\n' "$SMOKE_SECTION"
+printf "\n%s✓ smoke-cli: all %d sections passed%s\n" "$C_BOLDGREEN" "$SMOKE_SECTION" "$C_RESET"

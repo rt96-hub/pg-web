@@ -111,9 +111,31 @@ BENCH_CPUS=1 BENCH_MEM=2g bash bench/run.sh
 bash bench/run.sh
 ```
 
+**Idempotency + auto-rebuild (prompt 029).** `bench/run.sh` is now a first-class idempotent entrypoint: it self-heals (a self-healing cross-run lock + an unconditional `reclaim_environment` at the top — same machinery as `scripts/test-all.sh`, in `scripts/lib/harness.sh`) and shares the **same content-hash image-freshness check**, so a source edit before `./bench/run.sh` triggers an automatic rebuild (surfaced as the `STALE → BUILD → BUILT` markers) and an unchanged tree shows `REUSED`. This fixes the prior hazard where bench rebuilt **only** if the image was missing or `REBUILD_IMAGE=1` was set — i.e. it would silently benchmark an old binary after a code change. **You no longer pass `REBUILD_IMAGE` (or any flag) to get a fresh benchmark — just run it.** `REBUILD_IMAGE` / `SKIP_IMAGE_CHECK` / `FORCE` remain only as debugging-only overrides.
+
 A full run is heavy (multiple minutes). It is therefore **opt-in** via `RUN_BENCH=1 scripts/test-all.sh` (or direct). A future lightweight "bench-smoke" (2–5 s on one workload + a very generous p99 bound) can be added under `RUN_BENCH_SMOKE=1` without making every CI minute expensive. The goal is exactly what the prompt asked: a change that accidentally tanks throughput is caught before prod.
 
 See `bench/README.md` and `bench/run.sh` for the exact commands, seed logic, and truncation strategy.
+
+### Reporting (prompt 028)
+
+`bench/run.sh` honors `TEST_MODE` (`errors` default | `short` | `verbose`, or `--errors`/`--short`/`--verbose`) just like `scripts/test-all.sh`. Raw `oha` histograms are always captured to `bench/results/<label>.txt`; they are streamed to the terminal only in `verbose`. In the compact modes you get, per invocation:
+
+- a per-workload one-line marker as each runs — `PGWEB ✔ bench OK <label> req/s=… succ=… p50=…ms p99=…ms` (latencies normalised to ms; `n/a` when `oha` prints `NaN`, which it does when ~all requests errored — the documented single-worker-under-load behaviour);
+- a compact end-of-run table (one row per workload);
+- the **HOLB before/after** as an explicit two-line comparison — `b-todos100-c16-pure` (no interference) vs `d-fast-under-slow` (concurrent `-q 3` slow injector). This is the headline result and never requires reading a histogram;
+- a single greppable verdict: `PGWEB-BENCH tier=<unconstrained|1c-2g> workloads=N threshold="…" OVERALL=ok|fail`. It always prints — even on an infra failure (stack didn't come up, push failed) the EXIT trap emits an `OVERALL=fail` line.
+
+`RUN_BENCH=1 scripts/test-all.sh` runs the harness twice (unconstrained, then `BENCH_CPUS=1 BENCH_MEM=2g`), tees each to `$RUN_DIR/bench-*.log`, and maps the two exit codes to `bench=ok|fail` in the top-level `PGWEB-RESULT` line (`bench=ok` iff both runs are ok).
+
+### Regression threshold (loose, by design)
+
+The current baseline is genuinely noisy: under the 1-vCPU/2-GiB cgroup, the high-concurrency and HOLB legs drive `oha` connection errors / 0 % success (this is the single-worker reality the benchmark exists to expose), and even some c1 legs are noisy. A tight p99/req-s gate would false-alarm on a known-good baseline. So the **only default-active gate** is *"is the worker serving at all"*:
+
+- **`a-static-c1` success rate ≥ `BENCH_MIN_STATIC_SUCCESS` (default `1` %).** The static path is the most likely to serve; if it can't get even 1 % of requests through, the worker isn't binding / is crash-looping — a true order-of-magnitude regression. Below the floor ⇒ `OVERALL=fail`. `req/s` is deliberately **not** used as a floor: `oha` counts errored attempts in `Requests/sec`, so a high `req/s` with 0 % success is not health.
+- Infra failures (no Docker, `oha` missing, stack timeout, push failure, or a missing `a-static-c1` result file) ⇒ `OVERALL=fail`.
+
+This is the "start loose" position (open question #4). **029 should establish a stable green baseline and then tighten** — add per-workload p99 ceilings + req/s floors (on successful requests) once the numbers are reproducible, ideally gated behind a `BENCH_STRICT=1` so the loose default never false-alarms on arm64 / Docker-Desktop variance. Tune the current floor with `BENCH_MIN_STATIC_SUCCESS`.
 
 ## Next (Step 2 of the prompt)
 

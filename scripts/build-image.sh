@@ -19,31 +19,29 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-IMAGE="${PGWEB_IMAGE:-rtaylor96/pg-web:latest}"
+# Shared harness primitives (prompt 029): the SINGLE source of truth for the
+# image tag (PGWEB_DEFAULT_IMAGE / pgweb_image) and the content hash
+# (compute_src_hash). build-image.sh BAKES the hash into the pgweb.src_hash
+# LABEL; test-all.sh + bench/run.sh compare against it. Because all three call
+# the SAME compute_src_hash from here, the baked label can never diverge from
+# what the checkers compute. Export PGWEB_REPO_ROOT so the lib (and its hash,
+# which runs from there) anchors to this repo regardless of cwd.
+export PGWEB_REPO_ROOT="$REPO_ROOT"
+# shellcheck source=scripts/lib/harness.sh
+source "$REPO_ROOT/scripts/lib/harness.sh"
 
-# Remember any previous image for this tag. The harness (via ensure_image_fresh
-# in test-all.sh, or manual runs) triggers rebuilds on source changes. Without
-# cleanup, every rebuild moves the tag and leaves the old image as <none>:<none>,
-# which quickly clutters `docker images` / Docker Desktop.
+IMAGE="$(pgweb_image)"
+
+# Remember any previous image for this tag. The harness (via ensure_image_fresh,
+# or manual runs) triggers rebuilds on source changes. Without cleanup, every
+# rebuild moves the tag and leaves the old image as <none>:<none>, which quickly
+# clutters `docker images` / Docker Desktop.
 prev_image_id=$(docker image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null || echo "")
 
-# Compute a content hash over the exact inputs that affect the produced image
-# (prompt 025). Sorted paths + per-file sha256sum, then aggregate sha.
-# This is robust to mtime noise (branch switch, checkout, re-tag) and detects
-# real content changes (including uncommitted edits during dev).
-compute_src_hash() {
-    # The set must match what test-all.sh ensure_image_fresh watches (plus examples/,
-    # which Dockerfile COPYs for the baked `pg-web init --template todo` payload).
-    find \
-        crates/pg_web_ext/src \
-        crates/pg_web_cli/src \
-        Dockerfile .dockerignore \
-        docker/init-pgweb.sh \
-        Cargo.toml Cargo.lock \
-        examples \
-        -type f 2>/dev/null | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1
-}
-
+# Content hash over the whole tree minus a volatile denylist (029 #2) — the
+# shared compute_src_hash. Robust to mtime noise (branch switch, checkout,
+# re-tag); detects any content change (including uncommitted edits) and cannot
+# silently miss an image-affecting file the way the old enumerated list could.
 SRC_HASH=$(compute_src_hash)
 echo "Building $IMAGE from $REPO_ROOT (src_hash=${SRC_HASH:0:12}...)"
 docker build \

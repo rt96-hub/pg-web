@@ -131,7 +131,7 @@ Other state worth knowing:
 - **Images involved:**
   - `postgres:16` — pulled automatically by testcontainers for tier 2b's hermetic CLI integration tests.
   - `rtaylor96/pg-web:latest` — the all-in-one runtime image (temporary namespace until the `pgweb/` Docker Hub org lands). Tier 3 boots it via testcontainers on random host ports; tier 4 boots it via `pg-web up` (docker compose) on :5432/:8080.
-- **Auto-rebuild:** `test-all.sh` compares the image's created-time against the mtimes of `crates/*/src`, `Dockerfile`, `.dockerignore`, `docker/init-pgweb.sh`, `Cargo.toml`, `Cargo.lock`, and rebuilds when sources are newer. A from-scratch build compiles Rust + the extension inside the container (~10–20 min cold, layer-cached after). Knobs: `REBUILD_IMAGE=1` forces, `SKIP_IMAGE_CHECK=1` skips (bring-your-own-image).
+- **Auto-rebuild (prompt 029):** `test-all.sh` **and** `bench/run.sh` rebuild the image whenever the tree's content hash differs from the `pgweb.src_hash` LABEL baked at build time — a whole-tree-minus-volatile-denylist `sha256sum`, shared via `scripts/lib/harness.sh` (no mtime heuristic anymore). A from-scratch build compiles Rust + the extension inside the container (~10–20 min cold, layer-cached after; a content-identical / docs-only change is a ~1–2 s cache-hit that just re-bakes the LABEL). `REBUILD_IMAGE=1` / `SKIP_IMAGE_CHECK=1` are debugging-only overrides — not needed on the normal path.
 - **Port hygiene.** Tier 4 publishes 5432 + 8080 on the host. Before a run, check for squatters:
 
   ```bash
@@ -155,7 +155,7 @@ The unconditional `docker compose pull` in `pg-web up` (stack.rs) and the mtime-
 
 - `stack.rs:up` now does `docker image inspect` first and only pulls when the image is *absent* locally. Fresh-machine UX is identical (first `pg-web up` or after `docker image rm` still shows the pull progress); subsequent `up`s after a local `test-all.sh` build no longer clobber the tag.
 - `smoke-cli.sh` now snapshots the expected image ID at preflight and asserts (hard-fail) after `up` that the running compose stack's postgres container is using exactly that ID. This makes tier 4 a true validator of the artifact under test.
-- `ensure_image_fresh` (test-all.sh) keeps the mtime fast-path but now also computes a content hash (`sha256sum` aggregate over the watched inputs + examples/) and compares it to the `pgweb.src_hash` LABEL baked by the build. Rebuilds on hash mismatch (covers git checkout noise, re-tags, published images that lack our label, and content edits that didn't advance mtime).
+- `ensure_image_fresh` computes a content hash and compares it to the `pgweb.src_hash` LABEL baked by the build; rebuilds on mismatch (covers git checkout noise, re-tags, published images that lack our label, and content edits that didn't advance mtime). **(Superseded by prompt 029:** the mtime fast-path this once had is now removed — it false-rebuilt on stash/checkout noise — the content hash is the sole decision; the hash is now over the whole tree minus a volatile denylist, not a hand-maintained input list; and the function moved to `scripts/lib/harness.sh`, shared with `bench/run.sh`.)
 - `Dockerfile` and `build-image.sh` now pass and embed the hash via BuildKit `--build-arg` + `LABEL pgweb.src_hash=...`.
 - `STRICT=1` (auto when `CI` is set) turns any tier failure (including soft 1/2a/3) into a non-zero final exit while still running later tiers for signal. A one-line per-tier status table is always printed at the end.
 - Canary preflight + `docker logs` on timeout in both the bash harness (before the 13) and in `wait_for_http` panics (enriched with tail) so a broken worker fails the suite in <90 s with the crash reason visible.
@@ -169,21 +169,134 @@ Detection (forensics only; harness no longer needs it):
 docker image inspect rtaylor96/pg-web:latest --format '{{.RepoDigests}} {{.Config.Labels}}'
 ```
 
+## Harness reporting (prompt 028, landed 2026-06-15)
+
+The harness now reports like a build system. Same five tiers, same hard/soft semantics, same gates — **reporting only** changed. Shared helpers live in `scripts/report-lib.sh` (sourced by `test-all.sh`, `bench/run.sh`, `test-http.sh`).
+
+- **Paired markers per phase.** `PGWEB <glyph> <phase> <KEYWORD> <detail> [dur]`. The ASCII keyword is the contract (`START`/`STEP`/`PASS`/`FAIL`/`SKIP`; image `STALE`/`BUILD`/`BUILT`/`REUSED`; tier3 `CANARY`); the unicode glyph is decoration (ASCII under `CI`/non-TTY or `PGWEB_ASCII=1`). Every `START` gets exactly one terminal marker.
+- **Real `x/x` counts**, parsed (never hardcoded): libtest `test result:` lines summed across binaries for tiers 1/2a/2b/3; `PGWEB-SMOKE step=… OK/FAIL` markers counted for tier 4. `smoke-cli.sh` auto-numbers its sections (fixing the old 16/16a/16b wart) and prints `PGWEB-SMOKE done sections=N`. `test-http.sh` prints a `STEP` per bootstrap phase so a hang is locatable from the captured log.
+- **The image decision is always explicit** — `REUSED (fresh …)` or the `STALE → BUILD → BUILT` triple. `build-image.sh` is no longer run with `>/dev/null`; its output is captured (streamed in `verbose`), with `BUILD`/`BUILT` + elapsed printed regardless and the error tail surfaced on failure.
+- **Three modes** via `TEST_MODE` / `--errors`/`--short`/`--verbose` (default `errors`): `errors` auto-surfaces the *captured* failing detail (cargo `failures:` block / smoke section body / canary logs / breached bench threshold) without re-running anything; `short` is compact-only; `verbose` streams all raw output.
+- **The verdict** is a single ASCII line, last: `PGWEB-RESULT … OVERALL=PASS|FAIL` (+ one `PGWEB-FAIL <tier> …` pointer per failing/skipped tier, with the log path). `OVERALL=PASS` iff every mandatory tier is `x/x` (`failed=0`) and none is skipped; `bench=skip` doesn't fail it, `bench=fail` does. `bench/run.sh` prints an analogous `PGWEB-BENCH … OVERALL=ok|fail`.
+- **Capture dir.** Per-phase combined output → `$RUN_DIR/<phase>.log` (`/tmp/pg-web-test-all-<pid>/`, printed in the banner, kept after the run). The auto-surfaced detail in `errors` mode *is* that capture — we never re-execute a failed tier (a fresh run can mask the failure and re-runs are exactly what 029 eliminates).
+
+### Acceptance record (prompt 028, 2026-06-15 — Robert's MacBook, Apple Silicon)
+
+**Green run** (`scripts/test-all.sh`, default `errors` mode) — the entire compact run is ~50 lines:
+
+```
+== Tier 1 — SQL tests (cargo pgrx test pg17) ==
+PGWEB > tier1  START  cargo pgrx test pg17
+PGWEB + tier1  PASS   95/95  [3s]
+...
+PGWEB > image  START  freshness check (content-hash + mtime)
+PGWEB - image  STALE  source mtime newer than image (image=2026-06-14T18:38:34Z)
+PGWEB > image  BUILD  rtaylor96/pg-web:latest (docker build) — log: /tmp/pg-web-test-all-49392/image-build.log
+PGWEB + image  BUILT  src_hash=3702adfa0308  [2s]
+PGWEB > tier3  START  canary probe GET /
+PGWEB + tier3  CANARY serving (mapped :55393)
+PGWEB > tier3  START  docker_e2e (--ignored --test-threads=1 --no-fail-fast)
+PGWEB + tier3  PASS   14/14  [19s]
+PGWEB + tier4  PASS   22/22  [7s]
+PGWEB - bench  SKIP   set RUN_BENCH=1 to include the 015 benchmark
+
+PGWEB-RESULT tier1=95/95 tier2a=6/6 tier2b=151/151 tier3=14/14 tier4=22/22 bench=skip  OVERALL=PASS
+```
+
+(The 1–2 s no-op rebuild is the pre-existing mtime-vs-`Created` quirk — a content-identical rebuild keeps the old timestamp — now honestly surfaced as `STALE → BUILD → BUILT` instead of a silent `>/dev/null`.)
+
+**Full bookend** (`RUN_BENCH=1 scripts/test-all.sh`) — `OVERALL=PASS`, EXIT 0, and the bench self-reports per tier:
+
+```
+PGWEB-RESULT tier1=95/95 tier2a=6/6 tier2b=151/151 tier3=14/14 tier4=22/22 bench=ok  OVERALL=PASS
+PGWEB-BENCH tier=unconstrained workloads=12 threshold="a-static-c1 success 73.08% >= floor 1%"  OVERALL=ok
+PGWEB-BENCH tier=1c-2g        workloads=12 threshold="a-static-c1 success 72.07% >= floor 1%"  OVERALL=ok
+== HOLB (head-of-line blocking): fast /bench/todos c=16 ==
+  baseline (no interference): req/s=21453.8583 succ=0.00% p50=n/a p99=n/a
+  under slow injector (-q 3): req/s=21441.6604 succ=0.00% p50=n/a p99=n/a
+```
+
+(The 0 % success / `n/a` p99 on the loaded legs is the documented single-worker-under-`oha` reality, unchanged from the pre-028 baseline — `a-static-c1` is the only reliably-serving leg and is the threshold guard.)
+
+**Failure path** (one deliberately-failing tier-2b test, default `errors` mode) — auto-surfaces the captured `failures:` block, names the test, keeps running the later tiers, and the verdict is unmissable + the exit code non-zero:
+
+```
+PGWEB x tier2b FAIL   151/152  failing: forced_fail_028_demo  [2s]
+    ---- captured failure detail (/tmp/pg-web-test-all-52665/tier2b.log) ----
+    failures:
+        forced_fail_028_demo
+    test result: FAILED. 0 passed; 1 failed; ...
+    ---- end (full log: …) ----
+...
+PGWEB-RESULT tier1=95/95 tier2a=6/6 tier2b=151/152 tier3=14/14 tier4=22/22 bench=skip  OVERALL=FAIL
+PGWEB-FAIL   tier2b failing: forced_fail_028_demo  (log: /tmp/pg-web-test-all-52665/tier2b.log)
+(exit 1)
+```
+
+**Gotcha found + fixed during acceptance:** the captured per-phase logs contain **NUL bytes** (docker/curl/oha output). The system `grep`/`awk` under test-all handle them on macOS, but to stay deterministic across grep/awk implementations and locales the count/name parsers were hardened with `-a` (treat-as-text) + `LC_ALL=C` (`report-lib.sh`, `test-all.sh` `finalize_smoke_tier`, `bench/run.sh`). Unit-tested against the real NUL-containing captured logs → identical correct counts (tier2b 151/0, tier4 22, a-static-c1 p50=0.151 ms). (Note: an interactive Claude-Code shell shadows `grep` with `ugrep -I`, which *skips* binary files — investigate captured logs with `command grep -a` / the Read tool, not the wrapped `grep`.)
+
+## Harness idempotency (prompt 029, landed 2026-06-15)
+
+The blunt contract: `./scripts/test-all.sh`, `RUN_BENCH=1 ./scripts/test-all.sh`, and `./bench/run.sh` each produce a correct result **every time** — cold machine, back-to-back runs, after editing any file, after a branch switch / `git stash`, and after a previous run was `kill -9`'d mid-flight — with **zero manual hygiene and zero flags**. Slowness is acceptable; manual steps and "you have to pass a flag" are not. Implementation lives in **`scripts/lib/harness.sh`** (sourced by `test-all.sh`, `bench/run.sh`, and — for `compute_src_hash` + the tag — `build-image.sh`):
+
+- **Self-healing cross-run lock.** PID + start-time recorded in the lock dir; on contention a dead owner (or an over-age lock — PID-reuse backstop) is auto-reclaimed (`lock RECLAIMED` marker), only a live concurrent run blocks. No more `FORCE=1` after a crash. Shared lock ⇒ test-all and bench serialize against each other; nested bench (`RUN_BENCH=1`) skips it (no self-deadlock).
+- **Unconditional `reclaim_environment`** at the top of both entrypoints (under the lock): stop pgrx dev PG; `docker rm -f` our families only (`pgweb-canary-*`, `pg-web-smoke*`, the `bench` compose project, orphaned testcontainers matched by `org.testcontainers` label *AND* our image); reap stale `/tmp/pg-web-smoke*` + per-run log dirs. **Surgical** — never a blanket prune, verified to leave unrelated containers untouched.
+- **Unified content hash.** One `compute_src_hash` (whole-tree minus a volatile denylist: `.git target bench/results bench/bin node_modules .DS_Store *.log .env`, ~1–2 s) shared by build-image (bakes the `pgweb.src_hash` LABEL) + both checkers, so the label can't diverge. The old mtime fast-path is **gone** (it false-rebuilt on stash/checkout noise and could miss content edits). `bench/run.sh` now uses it too (previously: no freshness check — could silently bench an old binary).
+- **One tag.** `pgweb_image` (`TEST_IMAGE`/`PGWEB_IMAGE`, default `rtaylor96/pg-web:latest`) across test-all, bench, `bench/docker-compose.yml`, build-image, smoke-cli, and `docker_e2e.rs` (env-driven via `LazyLock`).
+- **Tier-3 flake fix.** `docker_e2e.rs` wraps `get_host_port_ipv4` in a short retry (`host_port()`): `testcontainers` intermittently returns `PortNotExposed` for a freshly-started container under sustained sequential churn (it flaked the 14th of 14 containers — the panic was at port resolution, before any product code). Retrying for ~20 s makes tier 3 reliably 14/14 run-to-run without changing any test expectation.
+
+### Part-B verification matrix — all green (2026-06-15, Robert's MacBook, Apple Silicon)
+
+Run **in order, no manual cleanup or flags between cells.** Every cell green with the expected image-marker behavior. Full-matrix wall clock ≈ 18 min.
+
+| # | Action (no manual steps between) | Observed | Wall |
+|---|---|---|---|
+| A | `./scripts/test-all.sh` from a clean tree | `OVERALL=PASS`; image **BUILT** (`STALE` — old enumerated-hash label `3702adfa` ≠ new whole-tree hash → rebuild, 2 s cache-hit, re-baked `818986ef`) | ~42 s |
+| B | `./scripts/test-all.sh` again immediately (warm) | `OVERALL=PASS`; image **REUSED** `818986ef` (no false rebuild) | ~32 s |
+| C | edit `crates/pg_web_ext/src/lib.rs`, then `./scripts/test-all.sh` | image **STALE→BUILD→BUILT** (`have=818986ef want=64472b66`) with **no flag**, 20 s incremental; `OVERALL=PASS` | ~56 s |
+| D | `./bench/run.sh` immediately after C, **no flags** | image **REUSED** `64472b66`; `PGWEB-BENCH tier=unconstrained … OVERALL=ok` | ~2 m 19 s |
+| E | `RUN_BENCH=1 ./scripts/test-all.sh` | all 5 tiers + bench green in one invocation; 2× `PGWEB-BENCH … OVERALL=ok` | ~5 m 11 s |
+| F | `kill -9` a run mid-tier-3 (left stale lock + canary `pgweb-canary-15641`), then re-run immediately | `lock RECLAIMED (owner pid=15641 is dead)` + `reclaim STEP rm canary …`; `OVERALL=PASS` — **no `FORCE=1`, no manual `docker rm`** | crash ~13 s + recover ~32 s |
+| G | `git stash` then `git stash pop` (mtime noise), then `./scripts/test-all.sh` | content hash unchanged (`64472b66`) despite mtime churn → image **REUSED**; `OVERALL=PASS` | ~36 s |
+| H | `BENCH_CPUS=1 BENCH_MEM=2g ./bench/run.sh` | image **REUSED**; `PGWEB-BENCH tier=1c-2g … OVERALL=ok` | ~2 m 20 s |
+
+Verbatim verdict lines from the run:
+
+```
+A/B/C/F/G  PGWEB-RESULT tier1=95/95 tier2a=6/6 tier2b=151/151 tier3=14/14 tier4=22/22 bench=skip  OVERALL=PASS
+E          PGWEB-RESULT tier1=95/95 tier2a=6/6 tier2b=151/151 tier3=14/14 tier4=22/22 bench=ok    OVERALL=PASS
+D          PGWEB-BENCH tier=unconstrained workloads=12 threshold="a-static-c1 success 72.49% >= floor 1%"  OVERALL=ok
+E          PGWEB-BENCH tier=unconstrained workloads=12 threshold="a-static-c1 success 73.18% >= floor 1%"  OVERALL=ok
+E          PGWEB-BENCH tier=1c-2g        workloads=12 threshold="a-static-c1 success 72.47% >= floor 1%"  OVERALL=ok
+H          PGWEB-BENCH tier=1c-2g        workloads=12 threshold="a-static-c1 success 72.84% >= floor 1%"  OVERALL=ok
+F (recovery)  PGWEB - lock   RECLAIMED stale lock auto-reclaimed (owner pid=15641 is dead)
+              PGWEB - reclaim STEP   rm canary container 37eeba929e77
+```
+
+(Baseline note: the very first run before this work flaked once on tier 3 with `PortNotExposed` on the 14th container — a `testcontainers` race, not a product bug; re-runs were 14/14. The `host_port()` retry above eliminates it.)
+
 ## Environment knobs
 
 | Variable | Default | Effect |
 |---|---|---|
 | `PG_MAJOR` | `17` | Postgres major for tiers 1/2a (`PG_MAJOR=16 scripts/test-all.sh`). |
-| `TEST_IMAGE` / `PGWEB_IMAGE` | `rtaylor96/pg-web:latest` | Image tag used by test-all / build-image (and expected by docker_e2e + smoke). |
-| `REBUILD_IMAGE` | unset | `1` ⇒ force image rebuild before tier 3. |
-| `SKIP_IMAGE_CHECK` | unset | `1` ⇒ skip the staleness check entirely. |
-| `RUN_BENCH` | unset | `1` ⇒ append the 015 benchmark harness (unconstrained + 1 vCPU/2 GiB tiers). Needs clean :5432/:8080. |
-| `SMOKE_DIR` | `/tmp/pg-web-smoke` | Tier 4 scaffold dir (wiped each run). |
+| `TEST_MODE` | `errors` | Output verbosity (prompt 028): `errors` (compact + auto-surface failing detail), `short` (compact only), `verbose` (stream all raw output). Also via `--errors`/`--short`/`--verbose`. Honored by `test-all.sh` + `bench/run.sh`. |
+| `RUN_DIR` | `/tmp/pg-web-test-all-<pid>` | Per-run capture dir for `<phase>.log` files (printed in the banner, kept after the run). `reclaim_environment` reaps stale dirs (older than ~3 h, never the current run's). |
+| `PGWEB_ASCII` | unset | `1` ⇒ force ASCII marker glyphs even on a TTY (the keyword is the contract regardless). Auto-ASCII under `CI`/non-TTY. |
+| `TEST_IMAGE` / `PGWEB_IMAGE` | `rtaylor96/pg-web:latest` | Unified image tag (prompt 029): one source of truth via `pgweb_image` across test-all, bench, `bench/docker-compose.yml`, build-image, smoke-cli, docker_e2e. |
+| `REBUILD_IMAGE` | unset | **Debugging-only** (prompt 029): `1` ⇒ force an image rebuild (emits `STALE → BUILD → BUILT`). Not for routine use — the content-hash check already rebuilds on any change. Never use it to coax a run green. |
+| `SKIP_IMAGE_CHECK` | unset | **Debugging-only**: `1` ⇒ skip the freshness check entirely (emits `image SKIP`). Risks testing a stale image — never on a normal run. |
+| `FORCE` | unset | **Debugging-only**: `1` ⇒ take over a held lock. No longer needed after a crash (the lock self-reclaims a dead owner). Only for a wedged lock you've manually verified is orphaned. |
+| `RUN_BENCH` | unset | `1` ⇒ append the 015 benchmark harness (unconstrained + 1 vCPU/2 GiB tiers). Self-heals + auto-rebuilds like the rest; no clean-up needed first. |
+| `BENCH_MIN_STATIC_SUCCESS` | `1` | Bench regression floor (percent): `a-static-c1` success below this ⇒ `PGWEB-BENCH … OVERALL=fail`. Deliberately loose — the single-worker reality drives 0 %/`n/a` on loaded legs, so a tight p99/req-s gate would false-alarm (see `docs/BENCHMARKS.md`). |
+| `SMOKE_DIR` | `/tmp/pg-web-smoke-<pid>` | Tier 4 scaffold dir (wiped each run; PID-based so sequential runs don't clobber). |
 | `PG_VERSION` | auto-detected | Override the exact PG minor `test-http.sh` targets (it globs `~/.pgrx/<major>.*` and picks the newest). |
 
 ## Known flakes and expected failures
 
 - **(Historical)** Tier 3 dev-watcher repush timeout was the sole non-blocking flake after prompt 025 harness work. Fixed in prompt 024 by polling `pgweb.templates` for the marker (direct evidence push ran) + 30 s bounded deadline + automatic `docker logs` + last-template dump on timeout. The test now reliably exercises the real notify→debounce→push→render loop; no longer an exception. See the test in `docker_e2e.rs` and updated CLAUDE.md.
+- **(Fixed, prompt 029)** Tier 3 `testcontainers` **`PortNotExposed`** flake: on Docker Desktop under sustained sequential container churn, `get_host_port_ipv4` intermittently returned `PortNotExposed` for a freshly-started container (the panic was at *port resolution*, before any product code — so never a product bug; re-runs were 14/14). `docker_e2e.rs` now wraps that call in a ~20 s retry (`host_port()`), making tier 3 reliably 14/14 run-to-run.
+- **(No longer a manual-recovery situation, prompt 029)** A `kill -9`'d / crashed run used to poison the next run (stale lock dir → "another run is running, use `FORCE=1`"; leftover canary/smoke containers holding ports). The self-healing lock now auto-reclaims a dead owner's lock and `reclaim_environment` removes the leftover containers — the next `scripts/test-all.sh` / `bench/run.sh` just works, no `FORCE=1`, no manual `docker rm`. Likewise `bench/run.sh` no longer silently benchmarks a stale image (it shares the content-hash freshness check). See § Harness idempotency above.
 - App-level test failures are a different category from this doc's concern: if all five tiers *start*, the machine is configured correctly, and red tests are code work, not setup work.
 
 ## CI pipeline notes (GitHub Actions)

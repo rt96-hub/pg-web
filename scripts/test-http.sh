@@ -16,6 +16,12 @@ set -euo pipefail
 PGRX_HOME="${PGRX_HOME:-$HOME/.pgrx}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Shared reporting helpers — per-phase STEP markers so a hang/slow bootstrap is
+# locatable from the captured tier2a.log alone (prompt 028). mk_step is a no-op
+# label printer; it changes nothing about what this script does.
+# shellcheck source=scripts/report-lib.sh
+source "$REPO_ROOT/scripts/report-lib.sh"
+
 PG_MAJOR="${PG_MAJOR:-17}"
 
 # Auto-detect the actual installed Postgres minor version for the requested major.
@@ -47,6 +53,7 @@ fi
 # Restore the runtime-flavor .so (overwrites any test-featured build).
 # `cargo pgrx test` writes test-wrapper SQL that the runtime .so can't satisfy,
 # so we always reinstall here before starting PG.
+mk_step tier2a "reinstall runtime .so (cargo pgrx install --profile dev)"
 (
     cd "$REPO_ROOT/crates/pg_web_ext"
     # Strip any prior test-flavor artifacts so pgrx definitely regenerates.
@@ -56,6 +63,7 @@ fi
 )
 
 # Restart PG to load the freshly-installed .so
+mk_step tier2a "restart pgrx dev PG"
 if "$PG_CTL" -D "$DATA_DIR" status >/dev/null 2>&1; then
     "$PG_CTL" -D "$DATA_DIR" -m immediate stop >/dev/null
 fi
@@ -66,6 +74,7 @@ fi
 #   after cargo pgrx init is now automatic).
 # - ensure shared_preload_libraries contains pg_web_ext in the conf; if we
 #   had to append it, bounce PG so the BGW actually registers.
+mk_step tier2a "self-heal dev DB + shared_preload_libraries"
 if ! "$PSQL" -p 28817 -h localhost -d pg_web_ext -c "SELECT 1" >/dev/null 2>&1; then
     echo "  tier2a: database pg_web_ext missing — creating (self-heal)"
     "$PGRX_HOME/$PG_VERSION/pgrx-install/bin/createdb" -h localhost -p 28817 pg_web_ext || true
@@ -78,11 +87,13 @@ if ! grep -q "shared_preload_libraries.*pg_web_ext" "$DATA_DIR/postgresql.conf" 
 fi
 
 # Reset extension so we get fresh seed data (route /, template, handler)
+mk_step tier2a "reset extension (DROP/CREATE for fresh seed)"
 "$PSQL" -p 28817 -h localhost -d pg_web_ext -v ON_ERROR_STOP=1 \
     -c "DROP EXTENSION IF EXISTS pg_web_ext CASCADE; CREATE EXTENSION pg_web_ext;" \
     >/dev/null
 
 # Wait for :8080 to open (up to 15s)
+mk_step tier2a "wait for :8080"
 deadline=$(( $(date +%s) + 15 ))
 while ! curl -sf http://localhost:8080/ >/dev/null 2>&1; do
     if [ "$(date +%s)" -ge "$deadline" ]; then
@@ -105,6 +116,7 @@ done
 # fall back to ss (Linux), then netstat. Then inspect the process args for the
 # pg_web_worker rewrite that the Postgres postmaster does for BGWs.
 # See DEVELOPER-GUIDE.md pitfall #18 for the failure mode this catches.
+mk_step tier2a "port-shadow preflight (:8080 owner must be pg_web_worker)"
 get_listener_pid() {
     local port="$1"
     # lsof is the most portable for "listening PID on TCP port" across macOS + Linux.
@@ -157,5 +169,6 @@ if ! echo "$ps_args" | grep -q 'pg_web_worker'; then
     exit 1
 fi
 
+mk_step tier2a "run http_smoke (cargo test --test http_smoke)"
 cd "$REPO_ROOT"
-cargo test --test http_smoke -p pg_web_ext --features "pg$PG_MAJOR" --no-default-features
+cargo test --test http_smoke -p pg_web_ext --features "pg$PG_MAJOR" --no-default-features --no-fail-fast
