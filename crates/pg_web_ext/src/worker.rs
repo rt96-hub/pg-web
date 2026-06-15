@@ -230,18 +230,56 @@ pub extern "C-unwind" fn pg_web_worker_main(_arg: pg_sys::Datum) {
         // Graceful shutdown per prompt 016: honor SIGTERM so in-flight requests
         // drain and the postmaster does not have to escalate to SIGKILL. We also
         // request shutdown on the router so SSE streams close promptly (instead
-        // of the 2h hard cap) and we cap the total drain window.
+        // of the 2h hard cap), and we cap the drain window *once shutdown begins*.
+        //
+        // REGRESSION FIX: the 8s cap must bound ONLY the post-SIGTERM drain, not
+        // the whole serve. The previous form wrapped the entire `serve_fut` in
+        // `tokio::time::timeout(8s, …)`; but `with_graceful_shutdown` resolves
+        // only AFTER SIGTERM, so that timer fired 8s after *startup* and the
+        // worker exited. Because the worker then returns cleanly (exit code 0),
+        // the postmaster does NOT restart it (despite bgw_restart_time = 5s in
+        // lib.rs) — so every deployment's HTTP server silently died 8 seconds
+        // after boot. None of the tier-3 E2E tests caught it because each one
+        // finishes its HTTP work inside that 8s window; the benchmark's
+        // "72%-then-0%" was this, not the documented "single-worker reality".
+        //
+        // The drain deadline is now armed only after `shutdown_signal` observes
+        // SIGTERM (signalled via `drain_tx`): before SIGTERM `drain_rx` never
+        // resolves, so the cap arm of the select! is inert and the server runs
+        // for the postmaster's whole lifetime; after SIGTERM the server drains
+        // in-flight work for at most 8s. Regression-guarded by the tier-3 test
+        // `worker_serves_past_drain_cap`.
         let router_for_signal = router.clone();
-        let shutdown = shutdown_signal(router_for_signal);
+        // Fires exactly once, when SIGTERM is first observed — i.e. the moment
+        // the drain clock should start (NOT at startup).
+        let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<()>();
+        let shutdown = async move {
+            shutdown_signal(router_for_signal).await; // returns once SIGTERM seen
+            let _ = drain_tx.send(()); // receiver is alive here; ignore send error
+        };
         let serve_fut = axum::serve(listener, http::app(router))
             .with_graceful_shutdown(shutdown);
 
-        // Cap the drain (prompt 016). A stuck handler or long SSE shouldn't
-        // force the postmaster to SIGKILL after its own timeout.
-        match tokio::time::timeout(std::time::Duration::from_secs(8), serve_fut).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => error!(error = %e, "server exited with error"),
-            Err(_) => warn!("graceful drain timed out after 8s; exiting anyway"),
+        // Pending until SIGTERM, then a fixed 8s budget. A stuck handler or long
+        // SSE can't force the postmaster to SIGKILL, but a healthy idle server is
+        // never affected because the sleep never starts before SIGTERM.
+        let drain_cap = async move {
+            // Err only if the sender dropped without sending — which happens when
+            // serve_fut completes on its own first, in which case the select!'s
+            // serve arm has already won and this value is irrelevant.
+            let _ = drain_rx.await;
+            tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+        };
+
+        // `biased`: prefer the serve arm so a drain that completes within budget
+        // exits cleanly rather than racing the timer.
+        tokio::select! {
+            biased;
+            res = serve_fut => match res {
+                Ok(()) => {}
+                Err(e) => error!(error = %e, "server exited with error"),
+            },
+            _ = drain_cap => warn!("graceful drain exceeded 8s after SIGTERM; exiting anyway"),
         }
     });
 }

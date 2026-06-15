@@ -381,6 +381,92 @@ fn post_form(client: &reqwest::blocking::Client, base: &str, path: &str, body: &
     resp.text().unwrap()
 }
 
+/// Regression guard for the prompt-016 graceful-shutdown bug: the HTTP worker
+/// must keep serving well past its 8s drain cap.
+///
+/// The buggy form wrapped the whole `axum::serve` future in `timeout(8s, …)`.
+/// Since `with_graceful_shutdown` resolves only after SIGTERM, that timer fired
+/// 8 seconds after *startup* and the worker exited — and because the exit was
+/// clean (code 0) the postmaster never restarted it, so every deployment's HTTP
+/// server silently died 8s after boot. Every *other* tier-3 test missed it
+/// because each finishes its HTTP work inside that 8s window. This test
+/// deliberately idles past the cap, then asserts the worker is still serving.
+///
+/// It needs no `push` — `/_pgweb/health` answers 200 whenever the BGW is alive —
+/// which keeps it fast and independent of the app surface.
+#[test]
+#[ignore = "tier 3 E2E — Docker + rtaylor96/pg-web:latest required. \
+            Run via scripts/test-all.sh or `cargo test -p pg-web \
+            --test docker_e2e -- --ignored`."]
+fn worker_serves_past_drain_cap() {
+    preflight_or_panic();
+
+    let image = GenericImage::new(image(), tag())
+        .with_exposed_port(8080.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ));
+    let container = image
+        .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        .with_env_var("POSTGRES_DB", POSTGRES_DB)
+        .start()
+        .expect("start test image container (rtaylor96/pg-web)");
+
+    let http_host_port = host_port(&container, 8080);
+    let base_url = format!("http://127.0.0.1:{http_host_port}");
+
+    // The worker binds within the first few seconds of the container coming up.
+    wait_for_http(
+        &base_url,
+        Instant::now() + Duration::from_secs(60),
+        Some(container.id()),
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("build http client");
+
+    // Sanity: serving now (inside the old 8s window).
+    let early = client
+        .get(format!("{base_url}/_pgweb/health"))
+        .send()
+        .expect("health should answer shortly after startup");
+    assert_eq!(
+        early.status(),
+        200,
+        "worker should serve immediately after startup"
+    );
+
+    // Idle past the 8s drain cap (with margin). Before the fix the worker exits
+    // at t+8s from binding, and this is exactly where it stops answering.
+    std::thread::sleep(Duration::from_secs(11));
+
+    // The worker must still be alive and serving. A *connection* error means the
+    // BGW self-terminated (the 016 regression); a non-200 means it answered but
+    // unhealthily. Both fail the test.
+    match client.get(format!("{base_url}/_pgweb/health")).send() {
+        Ok(resp) => assert_eq!(
+            resp.status(),
+            200,
+            "worker must still serve >11s after startup (past the 8s drain cap)"
+        ),
+        Err(e) => {
+            eprintln!(
+                "=== worker_serves_past_drain_cap: late request failed; last 30 log lines ==="
+            );
+            let _ = std::process::Command::new("docker")
+                .args(["logs", "--tail", "30", container.id()])
+                .status();
+            eprintln!("=== (end container logs) ===");
+            panic!(
+                "worker stopped serving >11s after startup — the 016 8s \
+                 self-termination regression is back: {e}"
+            );
+        }
+    }
+}
+
 /// Tier 3 Component G coverage: the livereload chain end-to-end.
 ///
 /// 1. Pushed app has the `<script src="/_pgweb/livereload.js">` tag
