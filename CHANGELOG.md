@@ -49,6 +49,26 @@ changes may land in minor releases.
   selectors updated to the new package name `-p pg-web`. Internal lib name and
   directory unchanged.
 
+### Changed
+- **Benchmark regression gate hardened (prompt 030).** The placeholder bench
+  gate (`a-static-c1` success ≥ 1 % — "did the worker bind at all") is replaced
+  by a data-driven, two-layer gate: a per-workload **≥ 99 % success floor**
+  (always on; platform-independent; this is the check that would have caught the
+  016 worker-self-termination regression the moment it landed) plus opt-in
+  (`BENCH_STRICT=1`) per-tier **p99 ceilings** (baseline × `BENCH_P99_MARGIN`)
+  and **successful-req/s floors** (baseline × `BENCH_RPS_FLOOR_FRAC`, computed
+  from successful — not error-inclusive — throughput). On any breach (or an
+  infra/early exit) the bench prints a loud, full-width, ASCII-framed, itemized
+  `BENCH REGRESSION DETECTED` banner at **every** `TEST_MODE` (incl. `short`),
+  in addition to the unchanged machine-parseable `PGWEB-BENCH … OVERALL=fail`
+  line. New `bench/thresholds.sh` holds the env-tunable knobs + per-tier
+  baselines (re-baseline per deploy platform). `BENCH_SELFTEST=1` injects a
+  guaranteed regression to prove the gate is live; the HOLB "under load" leg is
+  now a gated workload (`workloads=13`). Knobs documented in
+  `docs/BENCHMARKS.md` + `docs/internal/TESTING-SETUP.md`; `BENCH_MIN_STATIC_SUCCESS`
+  is kept only as a back-compat alias. No product code changed (bench harness +
+  docs only).
+
 ### Fixed
 - **HTTP worker self-terminated 8 seconds after startup** (regression from the
   prompt-016 graceful-shutdown change). The 8s drain cap wrapped the entire

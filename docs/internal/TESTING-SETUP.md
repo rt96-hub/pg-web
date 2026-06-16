@@ -216,7 +216,7 @@ PGWEB-BENCH tier=1c-2g        workloads=12 threshold="a-static-c1 success 72.07%
   under slow injector (-q 3): req/s=21441.6604 succ=0.00% p50=n/a p99=n/a
 ```
 
-(**Correction, 2026-06-15:** the 0 % success / `n/a` p99 on the loaded legs was **not** "single-worker reality" — it was a worker-self-termination regression (the worker exited 8 s after startup; introduced by 016), fixed in commit `729eb93`. Post-fix every leg reports ~100 % success with real p50/p99. The acceptance numbers in this block predate the fix; see `docs/BENCHMARKS.md` and `prompts/030_*.md`.)
+(**Correction, 2026-06-15:** the 0 % success / `n/a` p99 on the loaded legs was **not** "single-worker reality" — it was a worker-self-termination regression (the worker exited 8 s after startup; introduced by 016), fixed in commit `729eb93`. Post-fix every leg reports ~100 % success with real p50/p99. The acceptance numbers in this block predate the fix; see `docs/BENCHMARKS.md` and `prompts/completed/030_*.md`.)
 
 **Failure path** (one deliberately-failing tier-2b test, default `errors` mode) — auto-surfaces the captured `failures:` block, names the test, keeps running the later tiers, and the verdict is unmissable + the exit code non-zero:
 
@@ -290,7 +290,12 @@ F (recovery)  PGWEB - lock   RECLAIMED stale lock auto-reclaimed (owner pid=1564
 | `SKIP_IMAGE_CHECK` | unset | **Debugging-only**: `1` ⇒ skip the freshness check entirely (emits `image SKIP`). Risks testing a stale image — never on a normal run. |
 | `FORCE` | unset | **Debugging-only**: `1` ⇒ take over a held lock. No longer needed after a crash (the lock self-reclaims a dead owner). Only for a wedged lock you've manually verified is orphaned. |
 | `RUN_BENCH` | unset | `1` ⇒ append the 015 benchmark harness (unconstrained + 1 vCPU/2 GiB tiers). Self-heals + auto-rebuilds like the rest; no clean-up needed first. |
-| `BENCH_MIN_STATIC_SUCCESS` | `1` | Bench regression floor (percent): `a-static-c1` success below this ⇒ `PGWEB-BENCH … OVERALL=fail`. Currently loose (`1`); the old "0 %/`n/a` is single-worker reality" rationale was wrong — that was the worker-self-termination regression fixed in `729eb93`, and on a healthy server every leg is ~100 %. Tightening to a ≥ 99 % floor + p99 ceilings (+ a loud banner) is specced in `prompts/030_*.md` (see `docs/BENCHMARKS.md`). |
+| `BENCH_MIN_SUCCESS` | `99` | **Bench gate, layer 1 (always on, prompt 030):** per-workload success floor (percent). Any workload below this ⇒ `PGWEB-BENCH … OVERALL=fail` + loud banner. Platform-independent (healthy ≈ 100 %, dead/not-serving worker ≈ 0 %) — this is the check that would have caught the 016 worker regression. `BENCH_MIN_SUCCESS=101 bash bench/run.sh` is a deterministic way to fire the success-floor banner on a healthy server. |
+| `BENCH_STRICT` | unset | **Bench gate, layer 2 (opt-in, prompt 030):** `1` ⇒ also enforce per-tier **p99 ceilings** (baseline × `BENCH_P99_MARGIN`) + **successful-req/s floors** (baseline × `BENCH_RPS_FLOOR_FRAC`). Off by default because these baselines (`bench/thresholds.sh`) are platform-specific — re-baseline for your platform before enabling, else you manufacture the cross-platform "flakiness" 029 forbids. |
+| `BENCH_P99_MARGIN` | `3` | p99 ceiling multiplier for `BENCH_STRICT` (ceiling = baseline × this). Start generous (×2–3); tighten once reproducible. |
+| `BENCH_RPS_FLOOR_FRAC` | `0.5` | successful-req/s floor fraction for `BENCH_STRICT` (floor = baseline × this). Successful req/s = `Requests/sec × success%`, not oha's error-inclusive `Requests/sec`. |
+| `BENCH_SELFTEST` | unset | `1` ⇒ force `BENCH_STRICT=1` and inject a guaranteed regression (a fast-labeled workload pointed at `/bench/slow`) so the gate deterministically flips `OVERALL=fail` + fires the banner. Proves the gate is live (prompt 030 acceptance #2). |
+| `BENCH_MIN_STATIC_SUCCESS` | (alias) | **Deprecated** (prompt 030): honoured as a back-compat alias for `BENCH_MIN_SUCCESS` when explicitly set. The old `1 %` placeholder default is gone. |
 | `SMOKE_DIR` | `/tmp/pg-web-smoke-<pid>` | Tier 4 scaffold dir (wiped each run; PID-based so sequential runs don't clobber). |
 | `PG_VERSION` | auto-detected | Override the exact PG minor `test-http.sh` targets (it globs `~/.pgrx/<major>.*` and picks the newest). |
 

@@ -33,7 +33,10 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# BASH_SOURCE (not $0) so the path resolves to run.sh itself even when the file
+# is sourced (e.g. unit-testing the gate functions) — identical to $0 on a normal
+# `bash bench/run.sh` execution.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Shared reporting helpers (markers + parsers). Sourced after cd so the relative
@@ -48,6 +51,10 @@ source "$REPO_ROOT/scripts/report-lib.sh"
 export PGWEB_REPO_ROOT="$REPO_ROOT"
 # shellcheck source=scripts/lib/harness.sh
 source "$REPO_ROOT/scripts/lib/harness.sh"
+# Regression-gate knobs + per-tier baseline tables (prompt 030). Kept separate so
+# the platform baselines are easy to re-capture/review (029 open-Q2).
+# shellcheck source=bench/thresholds.sh
+source "$REPO_ROOT/bench/thresholds.sh"
 
 # Output mode: env TEST_MODE, overridable by --short/--errors/--verbose.
 for _arg in "$@"; do
@@ -82,27 +89,26 @@ else
     BENCH_TIER_LABEL="unconstrained (full host)"
 fi
 
-# Regression guard. Currently a conservative success floor; the data-driven
-# tightening is specced in prompts/030_*.md.
-#
-# History: this gate used to be justified by "the loaded legs always report 0%
-# success / n/a — that's the single-worker reality the benchmark exposes." That
-# was WRONG. It was a product regression: the HTTP worker self-terminated 8s
-# after startup (the prompt-016 graceful-shutdown timeout wrapped the *whole*
-# serve future). Fixed in 729eb93; on a healthy server EVERY leg now reports
-# ~100% success with real p50/p99. Had this floor been >=99% it would have caught
-# that regression immediately instead of letting it pass as "expected 0%". The
-# default stays 1% only until the 030 tightening (>=99% per-workload success
-# floor + p99 ceilings + req/s floors on successful requests, per tier, plus a
-# loud regression banner shown at any verbosity) lands.
-# Tune via BENCH_MIN_STATIC_SUCCESS.
-BENCH_MIN_STATIC_SUCCESS="${BENCH_MIN_STATIC_SUCCESS:-1}"   # percent
+# Regression gate (prompt 030). The old "did it serve at all" placeholder
+# (a-static-c1 success >= 1%) is gone: it was justified by "the loaded legs
+# always report 0% success / n/a — that's the single-worker reality," which was
+# WRONG (the worker self-terminated 8s after startup; fixed in 729eb93). On a
+# healthy server EVERY leg is ~100% success with real p50/p99, so the gate is now
+# meaningful: a per-workload >=99% success floor (always on) + per-tier p99
+# ceilings + successful-req/s floors (opt-in via BENCH_STRICT). Knobs + baselines
+# live in bench/thresholds.sh; evaluation is evaluate_gate; breaches print the
+# loud, always-on, itemized banner (print_bench_banner). Tune via BENCH_MIN_SUCCESS
+# / BENCH_P99_MARGIN / BENCH_RPS_FLOOR_FRAC / BENCH_STRICT (all in thresholds.sh).
 
 mkdir -p "$RESULTS_DIR"
 
 # Per-workload accumulators for the compact end-of-run table.
 BENCH_LABELS=(); BENCH_REQS=(); BENCH_SUCC=(); BENCH_P50=(); BENCH_P99=()
 BENCH_VERDICT_PRINTED=0
+# Breached-check accumulators for the loud regression banner (parallel arrays,
+# one entry per failed check). Populated by evaluate_gate / bench_on_exit.
+FAIL_LABEL=(); FAIL_METRIC=(); FAIL_OBS=(); FAIL_REL=(); FAIL_THRESH=(); FAIL_DELTA=()
+BENCH_BANNER_PRINTED=0
 
 log() { echo "[bench] $*"; }
 
@@ -117,6 +123,12 @@ bench_on_exit() {
     # release the parent's; release_lock also pid-guards, so this is doubly safe.
     [[ "${PGWEB_NESTED:-}" != "1" ]] && release_lock "$PGWEB_LOCKDIR"
     if [[ "${BENCH_VERDICT_PRINTED:-0}" != "1" ]]; then
+        # An infra/early exit (no Docker, stack timeout, push failure, oha
+        # missing, missing result file, kill mid-run, …). The banner must be
+        # loud here too — wire it through the trap so these never emit just a
+        # terse one-liner. One synthetic "startup" breach item carries the rc.
+        _gate_add_fail "(infra)" "startup" "rc=$rc" "!=" "clean run (rc=0)" "stack/oha/push/timeout"
+        print_bench_banner "$BENCH_TIER_TAG" "infra/early-exit before the gate ran"
         echo
         printf 'PGWEB-BENCH tier=%s workloads=%d threshold="infra/early-exit (rc=%s)"  OVERALL=fail\n' \
             "$BENCH_TIER_TAG" "${#BENCH_LABELS[@]}" "$rc"
@@ -357,13 +369,27 @@ run_workloads() {
     "$OHA_CMD" --no-tui --no-color -c 16 -z 12s "http://localhost:8080/bench/todos" >"$fast_log" 2>&1 || true
   fi
   wait $slow_pid || true
-  local hr hs hp50 hp99
-  read -r hr hs hp50 hp99 <<<"$(_parse_oha "$fast_log")"
-  mk_ok bench OK "d-fast-under-slow  req/s=$hr succ=$hs p50=${hp50}ms p99=${hp99}ms"
+  # Record it like any other workload so the gate covers it too. The slow
+  # injector degrades this leg's *latency* (that is the whole point of the HOLB
+  # experiment), NOT its success — so the >=99% success floor still applies (a
+  # crater to 0% here is a dead worker), while its p99 ceiling uses the
+  # intentionally-slow ~220ms baseline (see thresholds.sh).
+  _bench_record "d-fast-under-slow" "$fast_log"
 
   # One more pure fast run at same conc for easy before/after in the report.
   seed_todos 100
   run_oha "b-todos100-c16-pure" "/bench/todos" -c 16
+
+  # Self-test probe (BENCH_SELFTEST=1): a fast-labeled workload pointed at the
+  # SLOW path. Its ~220ms p99 (vs the 5ms fast baseline => 15ms ceiling) and
+  # ~1400 req/s (vs the 6000 floor) are a guaranteed, platform-independent double
+  # breach that proves the gate + banner are live (030 B.1 #5 / acceptance #2).
+  # Runs last so the real workload numbers above are untouched; BENCH_SELFTEST
+  # also forces BENCH_STRICT on (see main) so the p99/req-s layer is evaluated.
+  if [[ "${BENCH_SELFTEST:-}" == "1" ]]; then
+    log "BENCH_SELFTEST=1 — injecting a guaranteed regression (fast label -> /bench/slow)"
+    run_oha "selftest-slow-as-fast" "/bench/slow" -c 16
+  fi
 }
 
 # Compact end-of-run table (always printed; the raw histograms stay in the files).
@@ -390,26 +416,122 @@ print_holb() {
   echo "  (single-worker: the fast path's p99 degrades sharply under the slow handler; multi-worker should keep it flat)"
 }
 
-# Threshold check → THRESHOLD_NOTE + return 0(ok)/1(fail). See BENCH_MIN_STATIC_SUCCESS.
+# ── the loud, always-on, itemized regression banner (prompt 030 B.2) ─────────
+# A visually-framed, greppable, one-line-per-breach block that is IMPOSSIBLE to
+# miss when scrolling a long log. ALWAYS prints — every TEST_MODE incl. `short`
+# (a regression is never suppressed) and on infra/early-exit (via bench_on_exit).
+# Print-once (BENCH_BANNER_PRINTED) so main()'s gate-fail path and the EXIT trap
+# can't double it. ASCII `!`-frame (no box-drawing) so it survives non-TTY/CI
+# logs and `grep`. It is IN ADDITION to the machine-parseable PGWEB-BENCH line.
+#   $1 = tier tag   $2 = short headline reason
+print_bench_banner() {
+  [[ "${BENCH_BANNER_PRINTED:-0}" == "1" ]] && return 0
+  BENCH_BANNER_PRINTED=1
+  local tier="$1" reason="$2" n="${#FAIL_LABEL[@]}" i bar
+  # Pure-ASCII frame + headline (no glyphs) so it survives non-TTY/CI logs + grep.
+  bar="!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo
+  echo "$bar"
+  printf '!!  BENCH REGRESSION DETECTED  --  tier=%s  --  %d check(s) failed\n' "$tier" "$n"
+  [[ -n "$reason" ]] && printf '!!  %s\n' "$reason"
+  echo "!!"
+  printf '!!  %-22s %-8s %-13s %s %-24s %s\n' "WORKLOAD" "METRIC" "OBSERVED" " " "THRESHOLD" "DELTA"
+  for i in "${!FAIL_LABEL[@]}"; do
+    printf '!!  %-22s %-8s %-13s %s %-24s %s\n' \
+      "${FAIL_LABEL[$i]}" "${FAIL_METRIC[$i]}" "${FAIL_OBS[$i]}" "${FAIL_REL[$i]}" "${FAIL_THRESH[$i]}" "${FAIL_DELTA[$i]}"
+  done
+  echo "!!"
+  echo "!!  hint: success 0% / p99 n/a on a leg => worker not serving -- check 'docker logs'"
+  echo "!!  raw:  $RESULTS_DIR/<label>.txt   (per-workload oha histograms)"
+  echo "$bar"
+}
+
+# ── the gate (prompt 030 B.1) ────────────────────────────────────────────────
+# Replaces the old "did it serve at all" placeholder. Walks EVERY recorded
+# workload and applies, per the design in bench/thresholds.sh:
+#   1. success floor (ALWAYS): succ >= BENCH_MIN_SUCCESS — platform-independent,
+#      catches a dead/crash-looping/not-serving worker (the 016 regression).
+#   2. p99 ceiling   (BENCH_STRICT): p99 <= baseline * BENCH_P99_MARGIN.
+#   3. req/s floor   (BENCH_STRICT): successful req/s (= reqs * succ/100, NOT
+#      oha's error-inclusive Requests/sec) >= baseline * BENCH_RPS_FLOOR_FRAC.
+# $BENCH_TIER_TAG selects the baseline column. Each breach appends to FAIL_*
+# (for the banner). Sets THRESHOLD_NOTE (summary for the PGWEB-BENCH line) and
+# returns 0 (ok) / 1 (fail).
 THRESHOLD_NOTE=""
-evaluate_threshold() {
-  local f="$RESULTS_DIR/a-static-c1.txt" succ
-  if [[ ! -s "$f" ]]; then
-    THRESHOLD_NOTE="a-static-c1 result missing (oha produced nothing)"
+_gate_add_fail() {   # label metric observed rel threshold delta
+  FAIL_LABEL+=("$1"); FAIL_METRIC+=("$2"); FAIL_OBS+=("$3"); FAIL_REL+=("$4")
+  FAIL_THRESH+=("$5"); FAIL_DELTA+=("${6:-}")
+}
+evaluate_gate() {
+  local tier="$BENCH_TIER_TAG" n="${#BENCH_LABELS[@]}" checks=0 fails_before
+  fails_before=${#FAIL_LABEL[@]}
+
+  if [[ "$n" -eq 0 ]]; then
+    THRESHOLD_NOTE="no workloads recorded (oha produced nothing?)"
+    _gate_add_fail "(all)" "workloads" "0" ">=" "1" "nothing ran"
     return 1
   fi
-  succ=$(LC_ALL=C awk '/Success rate:/{gsub(/%/,"",$NF); print $NF; exit}' "$f" 2>/dev/null)
-  succ=${succ:-0}
-  if LC_ALL=C awk -v s="$succ" -v m="$BENCH_MIN_STATIC_SUCCESS" 'BEGIN{exit !(s+0 >= m+0)}'; then
-    THRESHOLD_NOTE="a-static-c1 success ${succ}% >= floor ${BENCH_MIN_STATIC_SUCCESS}%"
+
+  local i label reqs succ p99 succ_num base ceil floor rps delta
+  for i in "${!BENCH_LABELS[@]}"; do
+    label="${BENCH_LABELS[$i]}"; reqs="${BENCH_REQS[$i]}"
+    succ="${BENCH_SUCC[$i]}"; p99="${BENCH_P99[$i]}"
+    # success% as a number; n/a / non-numeric -> 0 so a not-serving leg always breaches.
+    succ_num=$(LC_ALL=C awk -v s="$succ" 'BEGIN{gsub(/%/,"",s); if(s ~ /^[0-9.]+$/) printf "%s", s; else print "0"}')
+
+    # 1) success floor — ALWAYS.
+    checks=$((checks+1))
+    if ! LC_ALL=C awk -v s="$succ_num" -v m="$BENCH_MIN_SUCCESS" 'BEGIN{exit !(s+0 >= m+0)}'; then
+      delta=$(LC_ALL=C awk -v s="$succ_num" -v m="$BENCH_MIN_SUCCESS" 'BEGIN{printf "%.1fpp under", m-s}')
+      _gate_add_fail "$label" "success" "${succ_num}%" "<" "floor ${BENCH_MIN_SUCCESS}%" "$delta"
+    fi
+
+    # 2) p99 ceiling + 3) req/s floor — only under STRICT, only where a baseline exists.
+    if [[ "${BENCH_STRICT:-}" == "1" ]]; then
+      base=$(bench_baseline_p99 "$tier" "$label")
+      if [[ -n "$base" ]]; then
+        checks=$((checks+1))
+        ceil=$(LC_ALL=C awk -v b="$base" -v mg="$BENCH_P99_MARGIN" 'BEGIN{printf "%.3f", b*mg}')
+        if [[ "$p99" == "n/a" ]]; then
+          _gate_add_fail "$label" "p99" "n/a" ">" "ceil ${ceil}ms (${base}x${BENCH_P99_MARGIN})" "not serving"
+        elif ! LC_ALL=C awk -v v="$p99" -v c="$ceil" 'BEGIN{exit !(v+0 <= c+0)}'; then
+          delta=$(LC_ALL=C awk -v v="$p99" -v c="$ceil" 'BEGIN{printf "%.1fx over", v/c}')
+          _gate_add_fail "$label" "p99" "${p99}ms" ">" "ceil ${ceil}ms (${base}x${BENCH_P99_MARGIN})" "$delta"
+        fi
+      fi
+      base=$(bench_baseline_rps "$tier" "$label")
+      if [[ -n "$base" ]]; then
+        checks=$((checks+1))
+        floor=$(LC_ALL=C awk -v b="$base" -v fr="$BENCH_RPS_FLOOR_FRAC" 'BEGIN{printf "%.0f", b*fr}')
+        rps=$(LC_ALL=C awk -v r="$reqs" -v s="$succ_num" 'BEGIN{ if(r ~ /^[0-9.]+$/) printf "%.0f", r*s/100; else print "0"}')
+        if ! LC_ALL=C awk -v v="$rps" -v f="$floor" 'BEGIN{exit !(v+0 >= f+0)}'; then
+          delta=$(LC_ALL=C awk -v v="$rps" -v f="$floor" 'BEGIN{printf "%.0f short", f-v}')
+          _gate_add_fail "$label" "req/s" "$rps" "<" "floor ${floor} (${base}x${BENCH_RPS_FLOOR_FRAC})" "$delta"
+        fi
+      fi
+    fi
+  done
+
+  local nfail=$(( ${#FAIL_LABEL[@]} - fails_before )) strict_note
+  if [[ "${BENCH_STRICT:-}" == "1" ]]; then strict_note="strict (success+p99+req/s)"; else strict_note="success-floor only; BENCH_STRICT=1 for p99/req-s"; fi
+  if [[ "$nfail" -eq 0 ]]; then
+    THRESHOLD_NOTE="all ${n} workloads pass ${checks} checks [${strict_note}], success>=${BENCH_MIN_SUCCESS}%"
     return 0
   fi
-  THRESHOLD_NOTE="a-static-c1 success ${succ}% < floor ${BENCH_MIN_STATIC_SUCCESS}% (worker not serving?)"
+  THRESHOLD_NOTE="${nfail} of ${checks} checks FAILED across ${n} workloads [${strict_note}] -- see banner"
   return 1
 }
 
 main() {
   trap bench_on_exit EXIT
+
+  # Self-test (prompt 030 B.1 #5): force the strict layer on so the injected
+  # /bench/slow probe (added last in run_workloads) is evaluated against the fast
+  # ceilings and deterministically flips OVERALL=fail + fires the banner.
+  if [[ "${BENCH_SELFTEST:-}" == "1" ]]; then
+    BENCH_STRICT=1
+    log "BENCH_SELFTEST=1 — forcing BENCH_STRICT=1; a guaranteed regression will be injected"
+  fi
 
   # Self-healing lock + unconditional reclaim (prompt 029) — same guarantee as
   # test-all.sh. Skipped when nested under test-all (PGWEB_NESTED=1), which
@@ -435,7 +557,15 @@ main() {
   print_holb
 
   local overall
-  if evaluate_threshold; then overall="ok"; else overall="fail"; fi
+  if evaluate_gate; then overall="ok"; else overall="fail"; fi
+  if [[ "$overall" == "fail" ]]; then
+    # Loud, itemized, always-printed (every TEST_MODE) — before the verdict line
+    # so the verdict stays the last greppable output.
+    print_bench_banner "$BENCH_TIER_TAG" "gate failed: $THRESHOLD_NOTE"
+  else
+    # Nice-to-have green confirmation so a clean run is also unambiguous (B.2).
+    mk_ok bench GATE "$THRESHOLD_NOTE"
+  fi
   echo
   printf 'PGWEB-BENCH tier=%s workloads=%d threshold="%s"  OVERALL=%s\n' \
     "$BENCH_TIER_TAG" "${#BENCH_LABELS[@]}" "$THRESHOLD_NOTE" "$overall"
@@ -447,4 +577,9 @@ main() {
   [[ "$overall" == "ok" ]]
 }
 
-main "$@"
+# Run main only when executed (not when sourced) so the gate/banner functions can
+# be unit-tested in isolation. Every real invocation (`bash bench/run.sh`,
+# test-all's `bash "$REPO_ROOT/bench/run.sh"`) executes the file, so this is true.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
