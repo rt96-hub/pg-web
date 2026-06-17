@@ -17,10 +17,10 @@ This is why the 015 prompt was updated in lockstep: the concurrency work order n
 - Preserve focus, selection ranges, scroll position, and any in-flight HTMX/JS state.
 - Prefer morphing / oob-swap / fine-grained replacement strategies (e.g. Idiomorph or targeted `hx-swap-oob`) over blanket `location.reload()` or wholesale DOM replacement.
 
-The architecture (channel-aware ListenRouter per worker, triggered from DB NOTIFYs, reusable for both framework livereload/cache and app `pgweb_app_*` channels) is the invariant that makes the careful, non-destructive story possible later. The 015 concurrency design must keep this path open and correct under K workers.
+The architecture (channel-aware ListenRouter per worker, triggered from DB NOTIFYs, reusable for both framework livereload/cache and app `pgweb_app_*` channels) is the invariant that makes the careful, non-destructive story possible later. The 015.2 concurrency design must keep this path open and correct under K workers.
 
 **References & related:**
-- `prompts/015_concurrency_throughput_and_benchmark.md` (the primary source of truth for the "every worker must listen" rule, the rejection of "K=1 in dev for livereload simplicity", updated current-behavior text, acceptance criteria, research tasks, and open questions around fan-out + macOS parity).
+- `prompts/015.2_multiworker_serving_realtime_and_worker_config.md` (the primary source of truth for the "every worker must listen" rule, the rejection of "K=1 in dev for livereload simplicity", the cross-worker fan-out design, the `pgweb.toml` worker-count config, acceptance criteria, research tasks, and open questions around fan-out + macOS parity). The completed benchmark record is `prompts/completed/015_concurrency_throughput_and_benchmark.md`.
 - `docs/ROADMAP.md` (Phase 2: "App-level realtime subscriptions via SSE" reuses the Session-4 ListenRouter; "Handler-side `NOTIFY` helper").
 - `docs/BENCHMARKS.md` (records the Step-1 numbers; future re-runs under multi-worker must also exercise cross-worker notify delivery).
 - `crates/pg_web_ext/src/{listen_router.rs,livereload.rs,worker.rs}` (the per-BGW listener + ListenRouter; note that the listen task is now always-on, not dev-gated, precisely so cache + realtime work everywhere).
@@ -28,7 +28,7 @@ The architecture (channel-aware ListenRouter per worker, triggered from DB NOTIF
 - Invariant #4 (one request = one SPI tx) and #7 (async only inside BGWs) still hold; the fan-out work is all inside the worker processes.
 
 **Why this is recorded in IDEAS now:**
-The 015 prompt (and the benchmark harness) were originally framed around pure throughput + HOLB. The owner call-out makes the *realtime contract with app developers* a load-bearing constraint on that work. By writing it here and cross-linking into the active prompt, we ensure that future sessions touching workers, the listen loop, SO_REUSEPORT, or SSE paths treat "updates reach everyone" as non-negotiable rather than a nice-to-have that can be satisfied by "just run with K=1 in dev."
+The 015 prompt (and the benchmark harness) were originally framed around pure throughput + HOLB. The owner call-out makes the *realtime contract with app developers* a load-bearing constraint on that work. By writing it here and cross-linking into the active prompt (`prompts/015.2_*.md`), we ensure that future sessions touching workers, the listen loop, SO_REUSEPORT, or SSE paths treat "updates reach everyone" as non-negotiable rather than a nice-to-have that can be satisfied by "just run with K=1 in dev."
 
 When this graduates further it can move into ROADMAP Phase 2 acceptance criteria or a dedicated realtime prompt, but the concurrency foundation must already be right.
 

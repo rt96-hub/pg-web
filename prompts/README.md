@@ -26,7 +26,8 @@ written; `file:line` citations point into the repo at commit `918f40b`.
 
 | # | Title | Theme | Severity from analysis |
 |---|---|---|---|
-| **015** | Concurrency & throughput — benchmark first, then multi-worker | Performance | Critical |
+| **015** ✅ | Concurrency & throughput — benchmark (Step 1, **done** → `docs/BENCHMARKS.md`; in `completed/`) | Performance | Critical |
+| **015.2** | Multi-worker serving (`SO_REUSEPORT`) + per-worker LISTEN realtime fan-out + `pgweb.toml` worker config | Performance | Critical |
 | **016** | Request-path caching (templates + routes) + graceful shutdown | Performance | High |
 | **017** | HTTP capability floor — full method set, uploads, compression, range | Capability gaps | High |
 | **018** (split) | Lifecycle & observability — upgrade scripts (018.2), health/readiness endpoints (018.1 shipped), metrics/log future | Operations | Medium |
@@ -77,9 +78,9 @@ during it.
 
 Suggested order of execution:
 
-1. **015 benchmark step only** — it has no dependencies and turns the unverified
-   "1,000 req/s" VISION claim into a published number. Do it early so later wins
-   are measured, not asserted.
+1. ✅ **015 benchmark step (done)** — turned the unverified "1,000 req/s" VISION
+   claim into published numbers (`docs/BENCHMARKS.md`); the 030 gate makes it a
+   live regression guard. (Prompt now in `completed/`.)
 2. **013 Response Contract v2**, then **014 privilege floor + threat model** — the
    Phase-2 unblockers. Highest leverage in the set.
 3. **016 caching + graceful shutdown** — cheap, contract-free reliability/perf win;
@@ -96,7 +97,7 @@ Suggested order of execution:
    018.1 ships default overridable `/health` + protected `/_pgweb/health` (plus readiness + disable flags) as part of `pg-web init`.
    018.2 establishes real `--from--to.sql` upgrade scripts + the additive/destructive policy + a proper upgrade test tier.
    Both are urgent operational maturity items.
-8. **015 multi-worker design** — once the benchmark shows where the ceiling is.
+8. **015.2 multi-worker** (`SO_REUSEPORT` + per-worker LISTEN fan-out + `pgweb.toml` worker count) — the benchmark + 030 HOLB data now show the ceiling (~60× p99 blow-up under one slow handler); this is the fix.
 9. **023 Phase 2 core (session_6 tracks A/B/C)** — the actual implementation of
    cookie sessions, RLS bridge, and realtime. Must follow 013+014; produces the
    primitives that 020 dogfoods.

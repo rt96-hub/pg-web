@@ -1,7 +1,7 @@
 # pg-web benchmark harness (prompt 015)
 
 This directory contains the reproducible harness for the concurrency, throughput,
-and head-of-line-blocking measurements required by `prompts/015_concurrency_throughput_and_benchmark.md`.
+and head-of-line-blocking measurements required by `prompts/completed/015_concurrency_throughput_and_benchmark.md`.
 
 ## Layout
 - `docker-compose.yml` — stack shape matching `examples/todo/` (rtaylor96/pg-web:latest, published :8080/:5432).
